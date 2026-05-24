@@ -94,6 +94,37 @@ function itemLocationCode(it) {
   return it?.locationCode || locationById(it?.locationId)?.areaCode || locationById(it?.locationId)?.locationCode || it?.subzoneId || "";
 }
 
+function formatCurrency(value, currency = "MXN") {
+  const n = Number(value || 0);
+  const code = currency || "MXN";
+  try {
+    return new Intl.NumberFormat("es-MX", {
+      style: "currency",
+      currency: code,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    return `${code} ${n.toFixed(2)}`;
+  }
+}
+
+function currencyOptions(selected = "MXN") {
+  const currencies = ["MXN", "USD", "EUR"];
+  return currencies.map(c => `<option value="${esc(c)}" ${String(c) === String(selected || "MXN") ? "selected" : ""}>${esc(c)}</option>`).join("");
+}
+
+function adminPriceBlock(it) {
+  if (!isAdmin()) return "";
+  const currency = it.moneda || "MXN";
+  const price = Number(it.precioUnitario || 0);
+  return `
+    <div class="admin-price-pill mt-2">
+      <span class="admin-price-label">Precio unitario</span>
+      <span class="admin-price-value">${esc(formatCurrency(price, currency))}</span>
+    </div>`;
+}
+
 function locationOptionLabel(l, includeType = true) {
   const code = locationDisplayCode(l);
   const label = LOCATION_TYPE_LABELS[l.type] || l.type || "";
@@ -363,6 +394,7 @@ function renderItems() {
                   <h5 class="card-title mb-1">${esc(it.nombre || "Sin nombre")}</h5>
                   <div class="text-muted small">${esc(it.sku || "")} · ${esc(it.tipo || "")} · Disponible: <strong>${disponible}</strong> · Deseado: <strong>${Number(it.inventarioDeseado || 0)}</strong></div>
                   <div class="mt-1">${statusBadges(it)}</div>
+                  ${adminPriceBlock(it)}
                 </div>
               </div>
               ${pathCards(it)}
@@ -510,13 +542,22 @@ function renderItemEditor(it) {
             <input name="stockPerdido" type="number" class="form-control form-control-sm" value="${Number(it.stockPerdido || 0)}">
           </div>
 
-          <div class="col-md-6">
-            <label class="form-label small">Más info URL</label>
-            <input name="infoUrl" class="form-control form-control-sm" value="${esc(it.infoUrl || "")}">
+          <div class="col-md-4">
+            <label class="form-label small">Precio unitario</label>
+            <input name="precioUnitario" type="number" step="0.01" min="0" class="form-control form-control-sm" value="${Number(it.precioUnitario || 0)}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label small">Moneda</label>
+            <select name="moneda" class="form-select form-select-sm">${currencyOptions(it.moneda || "MXN")}</select>
           </div>
           <div class="col-md-6">
             <label class="form-label small">Liga de compra</label>
             <input name="purchaseUrl" class="form-control form-control-sm" value="${esc(it.purchaseUrl || "")}">
+          </div>
+
+          <div class="col-md-12">
+            <label class="form-label small">Más info URL</label>
+            <input name="infoUrl" class="form-control form-control-sm" value="${esc(it.infoUrl || "")}">
           </div>
         </div>
 
@@ -593,6 +634,8 @@ async function saveInlineItem(e, itemId) {
     stockDanado: Number(form.stockDanado.value || 0),
     stockPerdido: Number(form.stockPerdido.value || 0),
     inventarioDeseado: Number(form.inventarioDeseado.value || 0),
+    precioUnitario: Number(form.precioUnitario?.value || 0),
+    moneda: form.moneda?.value || "MXN",
     visibleParaAlumno: form.visibleParaAlumno.checked,
     prestamoHabilitado: form.prestamoHabilitado.checked,
     reservaHabilitada: form.reservaHabilitada.checked,

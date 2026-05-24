@@ -452,9 +452,9 @@ function buildPurchaseReportRows(rows) {
         inventario_actual: inventarioActualOperativo(it),
         inventario_deseado: num(it.inventarioDeseado),
         cantidad_a_comprar: cantidad,
-        precio_unitario: formatMoney(precio),
+        precio_unitario: precio,
         moneda: it.moneda || "MXN",
-        subtotal: formatMoney(subtotal),
+        subtotal: subtotal,
         descripcion: it.descripcion || "",
         liga_compra: it.purchaseUrl || "",
       };
@@ -482,7 +482,7 @@ function updatePurchaseReportSummary(rows) {
     : "No hay elementos con faltante para compra.";
 }
 
-function exportPurchaseReportCsv() {
+function exportPurchaseReportXlsx() {
   const rows = buildPurchaseReportRows(adminItemsCache);
 
   if (!rows.length) {
@@ -490,44 +490,75 @@ function exportPurchaseReportCsv() {
     return;
   }
 
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
+    return;
+  }
+
   const headers = [
-    "zona",
-    "subzona",
-    "area_codigo",
-    "area",
-    "sku",
-    "nombre",
-    "tipo",
-    "inventario_actual",
-    "inventario_deseado",
-    "cantidad_a_comprar",
-    "precio_unitario",
-    "moneda",
-    "subtotal",
-    "descripcion",
-    "liga_compra",
+    "Zona",
+    "Subzona",
+    "Código de área",
+    "Área",
+    "SKU",
+    "Nombre",
+    "Tipo",
+    "Inventario actual",
+    "Inventario deseado",
+    "Cantidad a comprar",
+    "Precio unitario",
+    "Moneda",
+    "Subtotal",
+    "Descripción",
+    "Liga de compra",
   ];
 
-  // BOM UTF-8 + sep=; para que Excel abra correctamente acentos, ñ y columnas en español.
-  const csv = [
-    "sep=;",
-    headers.join(";"),
-    ...rows.map(row => headers.map(h => csvCell(row[h])).join(";")),
-  ].join("\r\n");
+  const aoa = [
+    headers,
+    ...rows.map(row => [
+      row.zona,
+      row.subzona,
+      row.area_codigo,
+      row.area,
+      row.sku,
+      row.nombre,
+      row.tipo,
+      row.inventario_actual,
+      row.inventario_deseado,
+      row.cantidad_a_comprar,
+      row.precio_unitario,
+      row.moneda,
+      row.subtotal,
+      row.descripcion,
+      row.liga_compra,
+    ]),
+  ];
 
-  const blob = new Blob(["\uFEFF" + csv], {
-    type: "text/csv;charset=utf-8",
-  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
 
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
+  ws["!cols"] = [
+    { wch: 24 }, { wch: 28 }, { wch: 16 }, { wch: 30 }, { wch: 18 },
+    { wch: 35 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 },
+    { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 55 }, { wch: 45 },
+  ];
+
+  const numericColumns = ["H", "I", "J", "K", "M"];
+  for (let r = 2; r <= rows.length + 1; r++) {
+    for (const col of numericColumns) {
+      const cell = ws[`${col}${r}`];
+      if (cell) cell.t = "n";
+    }
+    if (ws[`K${r}`]) ws[`K${r}`].z = "#,##0.00";
+    if (ws[`M${r}`]) ws[`M${r}`].z = "#,##0.00";
+  }
+
+  ws["!autofilter"] = { ref: `A1:O${rows.length + 1}` };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Reporte de compra");
+
   const date = new Date().toISOString().slice(0, 10);
-  a.href = url;
-  a.download = `reporte_compra_fablab_${date}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  XLSX.writeFile(wb, `reporte_compra_fablab_${date}.xlsx`);
 }
 
 
@@ -578,7 +609,7 @@ async function init() {
   $("#clearItemForm").addEventListener("click", clearItemForm);
   $("#technicianForm").addEventListener("submit", createTechnician);
   $("#importForm").addEventListener("submit", importCsv);
-  $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportCsv);
+  $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportXlsx);
 }
 
 init().catch(err => alert(err.message));

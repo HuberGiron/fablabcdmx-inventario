@@ -153,11 +153,11 @@
           <div>
             <h2 class="h5 mb-1">Reporte de compra</h2>
             <p class="small text-muted mb-0">
-              Exporta los elementos cuyo inventario actual está por debajo del inventario deseado.
+              Exporta en XLSX los elementos cuyo inventario actual está por debajo del inventario deseado.
             </p>
           </div>
           <button id="exportPurchaseReport" type="button" class="btn btn-outline-success">
-            Exportar reporte CSV
+            Exportar reporte XLSX
           </button>
         </div>
         <div id="purchaseReportSummary" class="small text-muted mt-2"></div>
@@ -167,4 +167,4 @@
       <div class="form-section shadow-sm"><div class="d-flex justify-content-between align-items-center"><h2 class="h5 mb-0">Inventario activo</h2><span id="itemCount" class="small text-muted"></span></div><div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>Img</th><th>SKU</th><th>Nombre</th><th>Tipo</th><th>Ruta física</th><th>Stock</th><th>Deseado</th><th></th></tr></thead><tbody id="adminItems"></tbody></table></div></div>
     </div>
   </div>
-</main><script type="module" src="js/admin.js"></script></body></html>
+</main><script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script><script type="module" src="js/admin.js"></script></body></html>
