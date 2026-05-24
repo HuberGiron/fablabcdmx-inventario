@@ -6,6 +6,7 @@ import {
 
 setupNav();
 let zones = [], subzones = [], weeks = [], locations = [];
+let adminItemsCache = [];
 
 const LOCATION_TYPES = [
   ["machine", "Máquina"],
@@ -320,6 +321,8 @@ async function saveItem(e) {
     stockDanado: Number($("#itemDanado").value || 0),
     stockPerdido: Number($("#itemPerdido").value || 0),
     inventarioDeseado: Number($("#itemDeseado").value || 0),
+    precioUnitario: Number($("#itemPrecioUnitario")?.value || 0),
+    moneda: $("#itemMoneda")?.value || "MXN",
     visibleParaAlumno: $("#itemVisibleAlumno").checked,
     prestamoHabilitado: $("#itemPrestable").checked,
     reservaHabilitada: $("#itemReservable").checked,
@@ -349,6 +352,8 @@ function clearItemForm() {
 async function renderItems() {
   const snap = await getDocs(query(collection(db, "items"), where("activo", "==", true)));
   const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>String(a.sku||"").localeCompare(String(b.sku||"")));
+  adminItemsCache = rows;
+  updatePurchaseReportSummary(rows);
   $("#itemCount").textContent = `${rows.length} elemento(s)`;
   $("#adminItems").innerHTML = rows.map(it => `
     <tr>
@@ -397,12 +402,134 @@ function fillItemForm(it) {
   $("#itemDanado").value = it.stockDanado || 0;
   $("#itemPerdido").value = it.stockPerdido || 0;
   $("#itemDeseado").value = it.inventarioDeseado || 0;
+  if ($("#itemPrecioUnitario")) $("#itemPrecioUnitario").value = it.precioUnitario ?? it.precio ?? 0;
+  if ($("#itemMoneda")) $("#itemMoneda").value = it.moneda || "MXN";
   const defaults = defaultsForType(it.tipo || "Otro");
   $("#itemVisibleAlumno").checked = it.visibleParaAlumno ?? defaults.visibleParaAlumno;
   $("#itemPrestable").checked = it.prestamoHabilitado ?? defaults.prestamoHabilitado;
   $("#itemReservable").checked = it.reservaHabilitada ?? defaults.reservaHabilitada;
   $("#itemAsistencia").checked = it.requiereAsistencia ?? defaults.requiereAsistencia;
 }
+
+
+function num(value) {
+  return Number(value || 0);
+}
+
+function inventarioActualOperativo(it) {
+  // Inventario actual operativo: lo que está en almacén + lo prestado temporalmente.
+  // No incluye largo plazo porque ya no se considera disponible para resurtido operativo.
+  return num(it.stockAlmacen) + num(it.stockPrestadoTemporal);
+}
+
+function cantidadAComprar(it) {
+  return Math.max(num(it.inventarioDeseado) - inventarioActualOperativo(it), 0);
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function formatMoney(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+function buildPurchaseReportRows(rows) {
+  return rows
+    .map(it => {
+      const cantidad = cantidadAComprar(it);
+      const precio = num(it.precioUnitario);
+      const subtotal = cantidad * precio;
+      return {
+        zona: it.zoneName || "",
+        subzona: it.subzoneName || "",
+        area_codigo: it.locationCode || "",
+        area: it.locationName || "",
+        sku: it.sku || "",
+        nombre: it.nombre || "",
+        tipo: it.tipo || "",
+        inventario_actual: inventarioActualOperativo(it),
+        inventario_deseado: num(it.inventarioDeseado),
+        cantidad_a_comprar: cantidad,
+        precio_unitario: formatMoney(precio),
+        moneda: it.moneda || "MXN",
+        subtotal: formatMoney(subtotal),
+        descripcion: it.descripcion || "",
+        liga_compra: it.purchaseUrl || "",
+      };
+    })
+    .filter(row => row.cantidad_a_comprar > 0);
+}
+
+function updatePurchaseReportSummary(rows) {
+  const el = $("#purchaseReportSummary");
+  if (!el) return;
+
+  const reportRows = buildPurchaseReportRows(rows);
+  const totalsByCurrency = reportRows.reduce((acc, row) => {
+    const currency = row.moneda || "MXN";
+    acc[currency] = (acc[currency] || 0) + Number(row.subtotal || 0);
+    return acc;
+  }, {});
+
+  const totalsText = Object.entries(totalsByCurrency)
+    .map(([currency, total]) => `${currency} ${formatMoney(total)}`)
+    .join(" · ");
+
+  el.textContent = reportRows.length
+    ? `${reportRows.length} elemento(s) requieren compra. Total estimado: ${totalsText}`
+    : "No hay elementos con faltante para compra.";
+}
+
+function exportPurchaseReportCsv() {
+  const rows = buildPurchaseReportRows(adminItemsCache);
+
+  if (!rows.length) {
+    alert("No hay elementos con faltante para compra.");
+    return;
+  }
+
+  const headers = [
+    "zona",
+    "subzona",
+    "area_codigo",
+    "area",
+    "sku",
+    "nombre",
+    "tipo",
+    "inventario_actual",
+    "inventario_deseado",
+    "cantidad_a_comprar",
+    "precio_unitario",
+    "moneda",
+    "subtotal",
+    "descripcion",
+    "liga_compra",
+  ];
+
+  // BOM UTF-8 + sep=; para que Excel abra correctamente acentos, ñ y columnas en español.
+  const csv = [
+    "sep=;",
+    headers.join(";"),
+    ...rows.map(row => headers.map(h => csvCell(row[h])).join(";")),
+  ].join("\r\n");
+
+  const blob = new Blob(["\uFEFF" + csv], {
+    type: "text/csv;charset=utf-8",
+  });
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const date = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `reporte_compra_fablab_${date}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 
 async function createTechnician(e) {
   e.preventDefault();
@@ -451,6 +578,7 @@ async function init() {
   $("#clearItemForm").addEventListener("click", clearItemForm);
   $("#technicianForm").addEventListener("submit", createTechnician);
   $("#importForm").addEventListener("submit", importCsv);
+  $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportCsv);
 }
 
 init().catch(err => alert(err.message));
