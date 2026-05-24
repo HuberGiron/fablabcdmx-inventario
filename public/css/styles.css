@@ -170,3 +170,16 @@ code { color: #334155; }
 .admin-price-value {
   color: #431407;
 }
+
+/* V2.5 · Filtros de reportes administrativos */
+.report-filter-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: .9rem;
+  padding: .9rem;
+}
+
+.report-filter-box .form-label {
+  font-weight: 700;
+  color: #475569;
+}

@@ -1,7 +1,7 @@
 import { db } from "./firebase-app.js";
 import { setupNav, requireRole, $, apiFetch, fileViewUrl } from "./common.js";
 import {
-  collection, doc, getDocs, setDoc, updateDoc, serverTimestamp, query, where
+  collection, doc, getDocs, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 setupNav();
@@ -137,6 +137,79 @@ function refreshLocationSelects() {
   $("#locationParent").innerHTML = '<option value="">Sin ubicación padre</option>' + parentLocs.map(optionLocation).join("");
 }
 
+function fillReportFilterSelects() {
+  const zone = $("#reportZone");
+  const subzone = $("#reportSubzone");
+  const location = $("#reportLocation");
+
+  if (zone) {
+    const current = zone.value || "";
+    zone.innerHTML = '<option value="">Todas las zonas</option>' +
+      zones.map(z => `<option value="${z.zoneId}">${z.zoneId} · ${z.name}</option>`).join("");
+    if ([...zone.options].some(o => o.value === current)) zone.value = current;
+  }
+
+  refreshReportFilterOptions();
+}
+
+function refreshReportFilterOptions() {
+  const zoneId = $("#reportZone")?.value || "";
+  const subzoneId = $("#reportSubzone")?.value || "";
+  const subzone = $("#reportSubzone");
+  const location = $("#reportLocation");
+
+  if (subzone) {
+    const current = subzone.value || "";
+    subzone.innerHTML = '<option value="">Todas las subzonas</option>' +
+      subzones
+        .filter(s => !zoneId || Number(s.zoneId) === Number(zoneId))
+        .map(s => `<option value="${s.subzoneId}">${s.subzoneId} · ${s.name}</option>`)
+        .join("");
+    if ([...subzone.options].some(o => o.value === current)) {
+      subzone.value = current;
+    }
+  }
+
+  const effectiveSubzoneId = $("#reportSubzone")?.value || "";
+  if (location) {
+    const current = location.value || "";
+    const locs = filterLocations(zoneId, effectiveSubzoneId);
+    location.innerHTML = '<option value="">Todas las áreas</option>' + locs.map(optionLocation).join("");
+    if ([...location.options].some(o => o.value === current)) {
+      location.value = current;
+    }
+  }
+
+  updatePurchaseReportSummary(adminItemsCache);
+}
+
+function getReportFilters() {
+  return {
+    zoneId: $("#reportZone")?.value || "",
+    subzoneId: $("#reportSubzone")?.value || "",
+    locationId: $("#reportLocation")?.value || "",
+  };
+}
+
+function applyReportFilters(rows) {
+  const { zoneId, subzoneId, locationId } = getReportFilters();
+
+  return rows.filter(it => {
+    if (zoneId && String(it.zoneId) !== String(zoneId)) return false;
+    if (subzoneId && String(it.subzoneId) !== String(subzoneId)) return false;
+    if (locationId && String(it.locationId || "") !== String(locationId)) return false;
+    return true;
+  });
+}
+
+function clearReportFilters() {
+  if ($("#reportZone")) $("#reportZone").value = "";
+  if ($("#reportSubzone")) $("#reportSubzone").value = "";
+  if ($("#reportLocation")) $("#reportLocation").value = "";
+  refreshReportFilterOptions();
+}
+
+
 async function loadBase() {
   const [z, s, w, l] = await Promise.all([
     getDocs(collection(db, "zones")),
@@ -246,7 +319,8 @@ async function renderLocations() {
       <td><span class="small text-muted">${l.parentLocationName || l.parentLocationId || ""}</span></td>
       <td class="text-nowrap">
         <button class="btn btn-sm btn-outline-primary edit-location" data-id="${l.id}">Editar</button>
-        <button class="btn btn-sm btn-outline-danger deactivate-location" data-id="${l.id}">Desactivar</button>
+        <button class="btn btn-sm btn-outline-warning deactivate-location" data-id="${l.id}">Desactivar</button>
+        <button class="btn btn-sm btn-outline-danger delete-location" data-id="${l.id}">Eliminar</button>
       </td>
     </tr>`).join("");
   document.querySelectorAll(".edit-location").forEach(btn => btn.addEventListener("click", () => {
@@ -259,6 +333,41 @@ async function renderLocations() {
     await updateDoc(doc(db, "locations", btn.dataset.id), { active: false, updatedAt: serverTimestamp() });
     await reloadLocationsAndRender();
   }));
+
+  document.querySelectorAll(".delete-location").forEach(btn => btn.addEventListener("click", async () => {
+    await deleteLocationFromAdmin(btn.dataset.id);
+  }));
+}
+
+async function deleteLocationFromAdmin(locationDocId) {
+  const location = locations.find(l => String(l.id) === String(locationDocId));
+  if (!location) return alert("No se encontró la ubicación.");
+
+  const locationId = location.locationId || location.id;
+  const itemsSnap = await getDocs(collection(db, "items"));
+  const linkedItems = itemsSnap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(it => String(it.locationId || "") === String(locationId) || String(it.relatedMachineId || "") === String(locationId));
+
+  const locationsSnap = await getDocs(collection(db, "locations"));
+  const childLocations = locationsSnap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(l => String(l.parentLocationId || "") === String(locationId));
+
+  if (linkedItems.length || childLocations.length) {
+    alert(
+      `No se puede eliminar esta área porque todavía tiene referencias.\n\n` +
+      `Items asociados o relacionados: ${linkedItems.length}\n` +
+      `Sububicaciones hijas: ${childLocations.length}\n\n` +
+      `Primero reasigna, elimina o desactiva esos elementos.`
+    );
+    return;
+  }
+
+  if (!confirm(`¿Eliminar definitivamente el área "${location.areaCode ? location.areaCode + " · " : ""}${location.name || locationId}"?\n\nEsta acción no se puede deshacer.`)) return;
+
+  await deleteDoc(doc(db, "locations", locationDocId));
+  await reloadLocationsAndRender();
 }
 
 function fillLocationForm(l) {
@@ -367,7 +476,8 @@ async function renderItems() {
       <td>${it.inventarioDeseado || 0}</td>
       <td class="text-nowrap">
         <button class="btn btn-sm btn-outline-primary edit-item" data-id="${it.id}">Editar</button>
-        <button class="btn btn-sm btn-outline-danger deactivate-item" data-id="${it.id}">Desactivar</button>
+        <button class="btn btn-sm btn-outline-warning deactivate-item" data-id="${it.id}">Desactivar</button>
+        <button class="btn btn-sm btn-outline-danger delete-item" data-id="${it.id}">Eliminar</button>
       </td>
     </tr>`).join("");
   document.querySelectorAll(".deactivate-item").forEach(btn => btn.addEventListener("click", async () => {
@@ -375,11 +485,26 @@ async function renderItems() {
     await updateDoc(doc(db, "items", btn.dataset.id), { activo: false, updatedAt: serverTimestamp() });
     await renderItems();
   }));
+
+  document.querySelectorAll(".delete-item").forEach(btn => btn.addEventListener("click", async () => {
+    await deleteItemFromAdmin(btn.dataset.id);
+  }));
+
   document.querySelectorAll(".edit-item").forEach(btn => btn.addEventListener("click", async () => {
     const data = rows.find(x => x.id === btn.dataset.id);
     fillItemForm(data);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
+}
+
+async function deleteItemFromAdmin(itemId) {
+  const item = adminItemsCache.find(x => String(x.id) === String(itemId));
+  const label = item ? `${item.sku || item.id} · ${item.nombre || ""}` : itemId;
+
+  if (!confirm(`¿Eliminar definitivamente el item "${label}"?\n\nEsta acción no se puede deshacer.`)) return;
+
+  await deleteDoc(doc(db, "items", itemId));
+  await renderItems();
 }
 
 function fillItemForm(it) {
@@ -435,39 +560,45 @@ function formatMoney(value) {
   return Number(value || 0).toFixed(2);
 }
 
-function buildPurchaseReportRows(rows) {
-  return rows
-    .map(it => {
-      const cantidad = cantidadAComprar(it);
-      const precio = num(it.precioUnitario);
-      const subtotal = cantidad * precio;
-      return {
-        zona: it.zoneName || "",
-        subzona: it.subzoneName || "",
-        area_codigo: it.locationCode || "",
-        area: it.locationName || "",
-        sku: it.sku || "",
-        nombre: it.nombre || "",
-        tipo: it.tipo || "",
-        inventario_actual: inventarioActualOperativo(it),
-        inventario_deseado: num(it.inventarioDeseado),
-        cantidad_a_comprar: cantidad,
-        precio_unitario: precio,
-        moneda: it.moneda || "MXN",
-        subtotal: subtotal,
-        descripcion: it.descripcion || "",
-        liga_compra: it.purchaseUrl || "",
-      };
-    })
-    .filter(row => row.cantidad_a_comprar > 0);
+function buildPurchaseReportRows(rows, onlyShortage = true) {
+  const reportRows = rows.map(it => {
+    const cantidad = cantidadAComprar(it);
+    const precio = num(it.precioUnitario);
+    const subtotal = cantidad * precio;
+    const location = locationById(it.locationId || "");
+
+    return {
+      zona: it.zoneName || "",
+      subzona: it.subzoneName || "",
+      area_codigo: it.locationCode || locationDisplayCode(location),
+      area: it.locationName || "",
+      sku: it.sku || "",
+      nombre: it.nombre || "",
+      tipo: it.tipo || "",
+      inventario_actual: inventarioActualOperativo(it),
+      inventario_deseado: num(it.inventarioDeseado),
+      cantidad_a_comprar: cantidad,
+      precio_unitario: precio,
+      moneda: it.moneda || "MXN",
+      subtotal: subtotal,
+      descripcion: it.descripcion || "",
+      liga_compra: it.purchaseUrl || "",
+    };
+  });
+
+  return onlyShortage
+    ? reportRows.filter(row => row.cantidad_a_comprar > 0)
+    : reportRows;
 }
 
 function updatePurchaseReportSummary(rows) {
   const el = $("#purchaseReportSummary");
   if (!el) return;
 
-  const reportRows = buildPurchaseReportRows(rows);
-  const totalsByCurrency = reportRows.reduce((acc, row) => {
+  const filteredItems = applyReportFilters(rows);
+  const purchaseRows = buildPurchaseReportRows(filteredItems, true);
+
+  const totalsByCurrency = purchaseRows.reduce((acc, row) => {
     const currency = row.moneda || "MXN";
     acc[currency] = (acc[currency] || 0) + Number(row.subtotal || 0);
     return acc;
@@ -477,9 +608,9 @@ function updatePurchaseReportSummary(rows) {
     .map(([currency, total]) => `${currency} ${formatMoney(total)}`)
     .join(" · ");
 
-  el.textContent = reportRows.length
-    ? `${reportRows.length} elemento(s) requieren compra. Total estimado: ${totalsText}`
-    : "No hay elementos con faltante para compra.";
+  el.textContent = purchaseRows.length
+    ? `${filteredItems.length} elemento(s) en el filtro. ${purchaseRows.length} requieren compra. Total estimado: ${totalsText}`
+    : `${filteredItems.length} elemento(s) en el filtro. No hay elementos con faltante para compra.`;
 }
 
 
@@ -500,11 +631,15 @@ function cleanXlsxNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function exportPurchaseReportXlsx() {
-  const rows = buildPurchaseReportRows(adminItemsCache);
+function exportReportXlsx({ onlyShortage, sheetName, filePrefix }) {
+  const filteredItems = applyReportFilters(adminItemsCache);
+  const rows = buildPurchaseReportRows(filteredItems, onlyShortage);
 
   if (!rows.length) {
-    alert("No hay elementos con faltante para compra.");
+    alert(onlyShortage
+      ? "No hay elementos con faltante para compra en el filtro seleccionado."
+      : "No hay elementos para exportar con el filtro seleccionado."
+    );
     return;
   }
 
@@ -585,10 +720,26 @@ function exportPurchaseReportXlsx() {
   ws["!autofilter"] = { ref: `A1:O${rows.length + 1}` };
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Reporte de compra");
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
 
   const date = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `reporte_compra_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
+  XLSX.writeFile(wb, `${filePrefix}_${date}.xlsx`, { bookType: "xlsx", compression: true });
+}
+
+function exportPurchaseReportXlsx() {
+  exportReportXlsx({
+    onlyShortage: true,
+    sheetName: "Reporte de compra",
+    filePrefix: "reporte_compra_fablab",
+  });
+}
+
+function exportInventoryReportXlsx() {
+  exportReportXlsx({
+    onlyShortage: false,
+    sheetName: "Inventario filtrado",
+    filePrefix: "inventario_filtrado_fablab",
+  });
 }
 
 
@@ -624,6 +775,7 @@ async function importCsv(e) {
 async function init() {
   await requireRole(["admin"]);
   await loadBase();
+  fillReportFilterSelects();
   await renderLocations();
   await renderItems();
 
@@ -639,7 +791,19 @@ async function init() {
   $("#clearItemForm").addEventListener("click", clearItemForm);
   $("#technicianForm").addEventListener("submit", createTechnician);
   $("#importForm").addEventListener("submit", importCsv);
+  $("#reportZone")?.addEventListener("change", () => {
+    if ($("#reportSubzone")) $("#reportSubzone").value = "";
+    if ($("#reportLocation")) $("#reportLocation").value = "";
+    refreshReportFilterOptions();
+  });
+  $("#reportSubzone")?.addEventListener("change", () => {
+    if ($("#reportLocation")) $("#reportLocation").value = "";
+    refreshReportFilterOptions();
+  });
+  $("#reportLocation")?.addEventListener("change", () => updatePurchaseReportSummary(adminItemsCache));
+  $("#clearReportFilters")?.addEventListener("click", clearReportFilters);
   $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportXlsx);
+  $("#exportInventoryReport")?.addEventListener("click", exportInventoryReportXlsx);
 }
 
 init().catch(err => alert(err.message));
