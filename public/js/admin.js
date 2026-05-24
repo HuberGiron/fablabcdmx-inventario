@@ -496,14 +496,14 @@ function exportPurchaseReportXlsx() {
   }
 
   const headers = [
-    "SKU",
-    "Nombre",
-    "Descripción",
     "Zona",
     "Subzona",
     "Código de área",
     "Área",
+    "SKU",
     "Tipo",
+    "Nombre",
+    "Descripción",
     "Inventario actual",
     "Inventario deseado",
     "Cantidad a comprar",
@@ -516,14 +516,14 @@ function exportPurchaseReportXlsx() {
   const aoa = [
     headers,
     ...rows.map(row => [
-      row.sku,
-      row.nombre,
-      row.descripcion,
       row.zona,
       row.subzona,
       row.area_codigo,
       row.area,
+      row.sku,
       row.tipo,
+      row.nombre,
+      row.descripcion,
       row.inventario_actual,
       row.inventario_deseado,
       row.cantidad_a_comprar,
