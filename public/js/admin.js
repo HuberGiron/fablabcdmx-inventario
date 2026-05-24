@@ -482,6 +482,24 @@ function updatePurchaseReportSummary(rows) {
     : "No hay elementos con faltante para compra.";
 }
 
+
+function cleanXlsxText(value) {
+  if (value === null || value === undefined) return "";
+
+  return String(value)
+    .normalize("NFC")
+    // Caracteres de control inválidos en XML 1.0, excepto tab, salto de línea y retorno.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+    // Evita pares sustitutos sueltos que pueden romper el XML interno del XLSX.
+    .replace(/[\uD800-\uDFFF]/g, "")
+    .trim();
+}
+
+function cleanXlsxNumber(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function exportPurchaseReportXlsx() {
   const rows = buildPurchaseReportRows(adminItemsCache);
 
@@ -516,21 +534,21 @@ function exportPurchaseReportXlsx() {
   const aoa = [
     headers,
     ...rows.map(row => [
-      row.zona,
-      row.subzona,
-      row.area_codigo,
-      row.area,
-      row.sku,
-      row.tipo,
-      row.nombre,
-      row.descripcion,
-      row.inventario_actual,
-      row.inventario_deseado,
-      row.cantidad_a_comprar,
-      row.precio_unitario,
-      row.moneda,
-      row.subtotal,
-      row.liga_compra,
+      cleanXlsxText(row.zona),
+      cleanXlsxText(row.subzona),
+      cleanXlsxText(row.area_codigo),
+      cleanXlsxText(row.area),
+      cleanXlsxText(row.sku),
+      cleanXlsxText(row.tipo),
+      cleanXlsxText(row.nombre),
+      cleanXlsxText(row.descripcion),
+      cleanXlsxNumber(row.inventario_actual),
+      cleanXlsxNumber(row.inventario_deseado),
+      cleanXlsxNumber(row.cantidad_a_comprar),
+      cleanXlsxNumber(row.precio_unitario),
+      cleanXlsxText(row.moneda),
+      cleanXlsxNumber(row.subtotal),
+      cleanXlsxText(row.liga_compra),
     ]),
   ];
 
@@ -542,14 +560,14 @@ function exportPurchaseReportXlsx() {
     { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 55 }, { wch: 45 },
   ];
 
-  const numericColumns = ["H", "I", "J", "K", "M"];
+  const numericColumns = ["I", "J", "K", "L", "N"];
   for (let r = 2; r <= rows.length + 1; r++) {
     for (const col of numericColumns) {
       const cell = ws[`${col}${r}`];
       if (cell) cell.t = "n";
     }
-    if (ws[`K${r}`]) ws[`K${r}`].z = "#,##0.00";
-    if (ws[`M${r}`]) ws[`M${r}`].z = "#,##0.00";
+    if (ws[`L${r}`]) ws[`L${r}`].z = "#,##0.00";
+    if (ws[`N${r}`]) ws[`N${r}`].z = "#,##0.00";
   }
 
   ws["!autofilter"] = { ref: `A1:O${rows.length + 1}` };
@@ -558,7 +576,7 @@ function exportPurchaseReportXlsx() {
   XLSX.utils.book_append_sheet(wb, ws, "Reporte de compra");
 
   const date = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `reporte_compra_fablab_${date}.xlsx`);
+  XLSX.writeFile(wb, `reporte_compra_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
 }
 
 
