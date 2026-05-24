@@ -555,9 +555,21 @@ function exportPurchaseReportXlsx() {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
 
   ws["!cols"] = [
-    { wch: 24 }, { wch: 28 }, { wch: 16 }, { wch: 30 }, { wch: 18 },
-    { wch: 35 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 },
-    { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 55 }, { wch: 45 },
+    { wch: 16 }, // A · Zona
+    { wch: 24 }, // B · Subzona
+    { wch: 16 }, // C · Código de área
+    { wch: 30 }, // D · Área
+    { wch: 12 }, // E · SKU
+    { wch: 16 }, // F · Tipo
+    { wch: 36 }, // G · Nombre
+    { wch: 36 }, // H · Descripción
+    { wch: 8 }, // I · Inventario actual
+    { wch: 8 }, // J · Inventario deseado
+    { wch: 8 }, // K · Cantidad a comprar
+    { wch: 8 }, // L · Precio unitario
+    { wch: 8 }, // M · Moneda
+    { wch: 12 }, // N · Subtotal
+    { wch: 40 }, // O · Liga de compra
   ];
 
   const numericColumns = ["I", "J", "K", "L", "N"];
