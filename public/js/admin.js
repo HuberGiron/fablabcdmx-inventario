@@ -26,7 +26,7 @@ const LOCATION_TYPES = [
 ];
 
 const ITEM_TYPES = [
-  "Máquina", "Herramienta", "Consumible", "Material", "Refacción", "Accesorio",
+  "Máquina", "Herramienta", "Consumible","Cómputo", "Material", "Refacción", "Accesorio",
   "Equipo auxiliar", "Equipo de seguridad", "Mobiliario", "Kit", "Otro",
   // Compatibilidad con datos V1:
   "Maquina"
@@ -37,6 +37,7 @@ const ITEM_DEFAULTS = {
   "Maquina": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: true },
   "Herramienta": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Consumible": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
+  "Cómputo": {visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: false},
   "Material": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Refacción": { visibleParaAlumno: false, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
   "Accesorio": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },

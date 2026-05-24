@@ -6,7 +6,7 @@ import {
 
 setupNav();
 
-const ITEM_TYPES = ["Máquina", "Herramienta", "Consumible", "Material", "Refacción", "Accesorio", "Equipo auxiliar", "Equipo de seguridad", "Mobiliario", "Kit", "Otro", "Maquina"];
+const ITEM_TYPES = ["Máquina", "Herramienta", "Consumible","Cómputo", "Material", "Refacción", "Accesorio", "Equipo auxiliar", "Equipo de seguridad", "Mobiliario", "Kit", "Otro", "Maquina"];
 
 const LOCATION_TYPES = [
   ["machine", "Máquina"],
