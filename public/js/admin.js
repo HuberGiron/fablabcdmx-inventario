@@ -1,0 +1,456 @@
+import { db } from "./firebase-app.js";
+import { setupNav, requireRole, $, apiFetch, fileViewUrl } from "./common.js";
+import {
+  collection, doc, getDocs, setDoc, updateDoc, serverTimestamp, query, where
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+setupNav();
+let zones = [], subzones = [], weeks = [], locations = [];
+
+const LOCATION_TYPES = [
+  ["machine", "Máquina"],
+  ["workstation", "Estación de trabajo"],
+  ["table", "Mesa"],
+  ["cabinet", "Gabinete"],
+  ["drawer", "Gaveta"],
+  ["shelf", "Repisa"],
+  ["rack", "Rack"],
+  ["vitrine", "Vitrina"],
+  ["storage", "Almacén"],
+  ["cart", "Carrito"],
+  ["wall_panel", "Panel de herramientas"],
+  ["safety_station", "Estación de seguridad"],
+  ["general", "General"],
+  ["other", "Otro"],
+];
+
+const ITEM_TYPES = [
+  "Máquina", "Herramienta", "Consumible", "Material", "Refacción", "Accesorio",
+  "Equipo auxiliar", "Equipo de seguridad", "Mobiliario", "Kit", "Otro",
+  // Compatibilidad con datos V1:
+  "Maquina"
+];
+
+const ITEM_DEFAULTS = {
+  "Máquina": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: true },
+  "Maquina": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: true },
+  "Herramienta": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
+  "Consumible": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
+  "Material": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
+  "Refacción": { visibleParaAlumno: false, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
+  "Accesorio": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
+  "Equipo auxiliar": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
+  "Equipo de seguridad": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
+  "Mobiliario": { visibleParaAlumno: false, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
+  "Kit": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
+  "Otro": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
+};
+
+function defaultsForType(tipo) {
+  return ITEM_DEFAULTS[tipo] || ITEM_DEFAULTS["Otro"];
+}
+
+function applyDefaultsForSelectedType(force = false) {
+  const isEditing = Boolean($("#itemId")?.value);
+  if (isEditing && !force) return;
+  const d = defaultsForType($("#itemTipo")?.value || "Otro");
+  $("#itemVisibleAlumno").checked = d.visibleParaAlumno;
+  $("#itemPrestable").checked = d.prestamoHabilitado;
+  $("#itemReservable").checked = d.reservaHabilitada;
+  $("#itemAsistencia").checked = d.requiereAsistencia;
+}
+
+function boolBadge(value, label, onClass="text-bg-success", offClass="text-bg-secondary") {
+  return `<span class="badge ${value ? onClass : offClass}">${label}: ${value ? "Sí" : "No"}</span>`;
+}
+
+function normalizeId(text) {
+  return String(text || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+function sortLocations(arr) {
+  return [...arr].sort((a,b)=>
+    String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), undefined, {numeric:true}) ||
+    Number(a.order || 999) - Number(b.order || 999) ||
+    String(a.name || "").localeCompare(String(b.name || ""), "es")
+  );
+}
+
+function typeLabel(type) {
+  return LOCATION_TYPES.find(x => x[0] === type)?.[1] || type || "";
+}
+
+function locationById(id) {
+  return locations.find(l => String(l.locationId) === String(id) || String(l.id) === String(id));
+}
+
+function locationDisplayCode(l) {
+  return l?.areaCode || l?.locationCode || l?.subzoneId || "";
+}
+
+function optionLocation(l) {
+  const code = locationDisplayCode(l);
+  return `<option value="${l.locationId}">${code ? `${code} · ` : ""}${l.name} (${typeLabel(l.type)})</option>`;
+}
+
+function filterSubzones(zoneId) {
+  return subzones.filter(s => !zoneId || Number(s.zoneId) === Number(zoneId));
+}
+
+function filterLocations(zoneId, subzoneId) {
+  return sortLocations(locations.filter(l =>
+    (!zoneId || Number(l.zoneId) === Number(zoneId)) &&
+    (!subzoneId || String(l.subzoneId) === String(subzoneId)) &&
+    l.active !== false
+  ));
+}
+
+function fillZoneSelects() {
+  const zoneOptions = zones.map(x => `<option value="${x.zoneId}">${x.zoneId} · ${x.name}</option>`).join("");
+  $("#itemZone").innerHTML = zoneOptions;
+  $("#locationZone").innerHTML = zoneOptions;
+}
+
+function refreshSubzoneSelect(selectId, zoneId, selected="") {
+  const opts = filterSubzones(zoneId).map(x => `<option value="${x.subzoneId}">${x.subzoneId} · ${x.name}</option>`).join("");
+  $(selectId).innerHTML = opts;
+  if (selected) $(selectId).value = selected;
+}
+
+function refreshLocationSelects() {
+  const itemZone = $("#itemZone")?.value || "";
+  const itemSubzone = $("#itemSubzone")?.value || "";
+  const locs = filterLocations(itemZone, itemSubzone);
+  $("#itemLocation").innerHTML = '<option value="">Sin ubicación específica</option>' + locs.map(optionLocation).join("");
+  const machines = locs.filter(l => l.type === "machine");
+  $("#itemRelatedMachine").innerHTML = '<option value="">Ninguna</option>' + machines.map(optionLocation).join("");
+
+  const locZone = $("#locationZone")?.value || "";
+  const locSubzone = $("#locationSubzone")?.value || "";
+  const parentLocs = filterLocations(locZone, locSubzone).filter(l => l.locationId !== $("#locationId").value);
+  $("#locationParent").innerHTML = '<option value="">Sin ubicación padre</option>' + parentLocs.map(optionLocation).join("");
+}
+
+async function loadBase() {
+  const [z, s, w, l] = await Promise.all([
+    getDocs(collection(db, "zones")),
+    getDocs(collection(db, "subzones")),
+    getDocs(collection(db, "fabacademyWeeks")),
+    getDocs(query(collection(db, "locations"), where("active", "==", true))),
+  ]);
+  zones = z.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>a.zoneId-b.zoneId);
+  subzones = s.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>String(a.subzoneId).localeCompare(String(b.subzoneId), undefined, {numeric:true}));
+  weeks = w.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>a.weekId-b.weekId);
+  locations = sortLocations(l.docs.map(d => ({id: d.id, ...d.data()})));
+
+  fillZoneSelects();
+  $("#itemTipo").innerHTML = ITEM_TYPES.map(x => `<option>${x}</option>`).join("");
+  applyDefaultsForSelectedType(true);
+  $("#locationType").innerHTML = LOCATION_TYPES.map(([v,t]) => `<option value="${v}">${t}</option>`).join("");
+  $("#itemWeeks").innerHTML = weeks.map(x => `<option value="${x.weekId}">${x.weekId} · ${x.name}</option>`).join("");
+  refreshSubzoneSelect("#itemSubzone", $("#itemZone").value);
+  refreshSubzoneSelect("#locationSubzone", $("#locationZone").value);
+  refreshLocationSelects();
+}
+
+async function uploadFile(inputId, fileType, itemId) {
+  const input = $(inputId);
+  if (!input?.files?.length) return "";
+  const form = new FormData();
+  form.append("file", input.files[0]);
+  form.append("fileType", fileType);
+  form.append("itemId", itemId);
+  const res = await apiFetch("/api/files/upload", { method: "POST", body: form });
+  const data = await res.json();
+  return data.fileId;
+}
+
+function selectedOptions(selectId) {
+  return [...$(selectId).selectedOptions].map(o => Number(o.value));
+}
+
+function namesForWeeks(ids) {
+  return ids.map(id => weeks.find(w => Number(w.weekId) === Number(id))?.name || String(id));
+}
+
+async function saveLocation(e) {
+  e.preventDefault();
+  const zoneId = Number($("#locationZone").value);
+  const subzoneId = $("#locationSubzone").value;
+  const name = $("#locationName").value.trim();
+  if (!name) return alert("Escribe el nombre de la ubicación.");
+
+  const editingId = $("#locationEditingId").value;
+  let locationId = $("#locationId").value.trim();
+  if (!locationId) locationId = `${subzoneId}-${normalizeId(name)}`;
+  const zone = zones.find(z => Number(z.zoneId) === zoneId);
+  const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  const parentId = $("#locationParent").value || "";
+  const parent = parentId ? locationById(parentId) : null;
+
+  const data = {
+    locationId,
+    areaCode: $("#locationAreaCode")?.value?.trim() || "",
+    name,
+    type: $("#locationType").value,
+    zoneId,
+    zoneName: zone?.name || "",
+    subzoneId,
+    subzoneName: subzone?.name || "",
+    parentLocationId: parentId || null,
+    parentLocationName: parent?.name || "",
+    description: $("#locationDescription").value.trim(),
+    active: true,
+    order: Number($("#locationOrder").value || 1),
+    updatedAt: serverTimestamp(),
+  };
+  if (!editingId) data.createdAt = serverTimestamp();
+  const docId = editingId || locationId;
+  await setDoc(doc(db, "locations", docId), data, { merge: true });
+  alert("Ubicación guardada.");
+  clearLocationForm();
+  await reloadLocationsAndRender();
+}
+
+function clearLocationForm() {
+  $("#locationForm").reset();
+  $("#locationEditingId").value = "";
+  $("#locationId").disabled = false;
+  refreshSubzoneSelect("#locationSubzone", $("#locationZone").value);
+  refreshLocationSelects();
+}
+
+async function reloadLocationsAndRender() {
+  const l = await getDocs(query(collection(db, "locations"), where("active", "==", true)));
+  locations = sortLocations(l.docs.map(d => ({id: d.id, ...d.data()})));
+  refreshLocationSelects();
+  await renderLocations();
+  await renderItems();
+}
+
+async function renderLocations() {
+  const rows = sortLocations(locations);
+  $("#locationCount").textContent = `${rows.length} ubicación(es)`;
+  $("#adminLocations").innerHTML = rows.map(l => `
+    <tr>
+      <td><code>${l.locationId || l.id}</code></td>
+      <td>${l.areaCode ? `<span class="badge text-bg-light border me-1">${l.areaCode}</span>` : ""}${l.name || ""}</td>
+      <td>${typeLabel(l.type)}</td>
+      <td><span class="small">${l.zoneName || ""} / ${l.subzoneName || ""}</span></td>
+      <td><span class="small text-muted">${l.parentLocationName || l.parentLocationId || ""}</span></td>
+      <td class="text-nowrap">
+        <button class="btn btn-sm btn-outline-primary edit-location" data-id="${l.id}">Editar</button>
+        <button class="btn btn-sm btn-outline-danger deactivate-location" data-id="${l.id}">Desactivar</button>
+      </td>
+    </tr>`).join("");
+  document.querySelectorAll(".edit-location").forEach(btn => btn.addEventListener("click", () => {
+    const data = rows.find(x => x.id === btn.dataset.id);
+    fillLocationForm(data);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }));
+  document.querySelectorAll(".deactivate-location").forEach(btn => btn.addEventListener("click", async () => {
+    if (!confirm("¿Desactivar esta ubicación? Los items existentes conservarán su referencia, pero ya no aparecerá para nuevas capturas.")) return;
+    await updateDoc(doc(db, "locations", btn.dataset.id), { active: false, updatedAt: serverTimestamp() });
+    await reloadLocationsAndRender();
+  }));
+}
+
+function fillLocationForm(l) {
+  $("#locationEditingId").value = l.id;
+  $("#locationId").value = l.locationId || l.id;
+  $("#locationId").disabled = true;
+  if ($("#locationAreaCode")) $("#locationAreaCode").value = l.areaCode || l.locationCode || "";
+  $("#locationZone").value = l.zoneId || "";
+  refreshSubzoneSelect("#locationSubzone", $("#locationZone").value, l.subzoneId || "");
+  $("#locationName").value = l.name || "";
+  $("#locationType").value = l.type || "general";
+  $("#locationOrder").value = l.order || 1;
+  $("#locationDescription").value = l.description || "";
+  refreshLocationSelects();
+  $("#locationParent").value = l.parentLocationId || "";
+}
+
+async function saveItem(e) {
+  e.preventDefault();
+  const itemId = $("#itemId").value || doc(collection(db, "items")).id;
+  const zoneId = Number($("#itemZone").value);
+  const subzoneId = $("#itemSubzone").value;
+  const locationId = $("#itemLocation").value || "";
+  const relatedMachineId = $("#itemRelatedMachine").value || "";
+  const location = locationId ? locationById(locationId) : null;
+  const relatedMachine = relatedMachineId ? locationById(relatedMachineId) : null;
+  const fabIds = selectedOptions("#itemWeeks");
+
+  const [imageFileId, pdfFileId, datasheetFileId] = await Promise.all([
+    uploadFile("#itemImage", "image", itemId),
+    uploadFile("#itemPdf", "pdf", itemId),
+    uploadFile("#itemDatasheet", "datasheet", itemId),
+  ]);
+
+  const zone = zones.find(z => Number(z.zoneId) === zoneId);
+  const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  const base = {
+    sku: $("#itemSku").value.trim(),
+    nombre: $("#itemNombre").value.trim(),
+    descripcion: $("#itemDescripcion").value.trim(),
+    tipo: $("#itemTipo").value,
+    zoneId,
+    zoneName: zone?.name || "",
+    subzoneId,
+    subzoneName: subzone?.name || "",
+    locationId,
+    locationName: location?.name || "",
+    locationCode: locationDisplayCode(location),
+    locationType: location?.type || "",
+    relatedMachineId,
+    relatedMachineName: relatedMachine?.name || "",
+    relatedMachineCode: locationDisplayCode(relatedMachine),
+    fabacademyWeeks: fabIds,
+    fabacademyWeekNames: namesForWeeks(fabIds),
+    infoUrl: $("#itemInfoUrl").value.trim(),
+    purchaseUrl: $("#itemPurchaseUrl").value.trim(),
+    stockAlmacen: Number($("#itemStock").value || 0),
+    stockPrestadoTemporal: Number($("#itemPrestado").value || 0),
+    stockLargoPlazo: Number($("#itemLargo").value || 0),
+    stockDanado: Number($("#itemDanado").value || 0),
+    stockPerdido: Number($("#itemPerdido").value || 0),
+    inventarioDeseado: Number($("#itemDeseado").value || 0),
+    visibleParaAlumno: $("#itemVisibleAlumno").checked,
+    prestamoHabilitado: $("#itemPrestable").checked,
+    reservaHabilitada: $("#itemReservable").checked,
+    requiereAsistencia: $("#itemAsistencia").checked,
+    activo: true,
+    updatedAt: serverTimestamp(),
+  };
+  if (!$("#itemId").value) base.createdAt = serverTimestamp();
+  if (imageFileId) base.imageFileId = imageFileId;
+  if (pdfFileId) base.pdfFileId = pdfFileId;
+  if (datasheetFileId) base.datasheetFileId = datasheetFileId;
+
+  await setDoc(doc(db, "items", itemId), base, { merge: true });
+  alert("Elemento guardado.");
+  clearItemForm();
+  await renderItems();
+}
+
+function clearItemForm() {
+  $("#itemForm").reset();
+  $("#itemId").value = "";
+  refreshSubzoneSelect("#itemSubzone", $("#itemZone").value);
+  refreshLocationSelects();
+  applyDefaultsForSelectedType(true);
+}
+
+async function renderItems() {
+  const snap = await getDocs(query(collection(db, "items"), where("activo", "==", true)));
+  const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>String(a.sku||"").localeCompare(String(b.sku||"")));
+  $("#itemCount").textContent = `${rows.length} elemento(s)`;
+  $("#adminItems").innerHTML = rows.map(it => `
+    <tr>
+      <td><img src="${fileViewUrl(it.imageFileId)}" class="thumb"></td>
+      <td>${it.sku || ""}</td>
+      <td>${it.nombre || ""}</td>
+      <td>${it.tipo || ""}</td>
+      <td><span class="small">${it.zoneName || ""}<br>${it.subzoneName || ""}<br><strong>${it.locationCode ? `${it.locationCode} · ` : ""}${it.locationName || "Sin ubicación"}</strong>${it.relatedMachineName ? `<br><span class="text-muted">Rel.: ${it.relatedMachineName}</span>` : ""}</span></td>
+      <td><div class="d-flex flex-column gap-1 align-items-start">${boolBadge(it.visibleParaAlumno !== false, "Alumno")}${boolBadge(it.prestamoHabilitado === true, "Préstamo", "text-bg-primary")}${boolBadge(it.reservaHabilitada === true, "Reserva", "text-bg-warning", "text-bg-secondary")}</div></td>
+      <td>${it.stockAlmacen || 0}</td>
+      <td>${it.inventarioDeseado || 0}</td>
+      <td class="text-nowrap">
+        <button class="btn btn-sm btn-outline-primary edit-item" data-id="${it.id}">Editar</button>
+        <button class="btn btn-sm btn-outline-danger deactivate-item" data-id="${it.id}">Desactivar</button>
+      </td>
+    </tr>`).join("");
+  document.querySelectorAll(".deactivate-item").forEach(btn => btn.addEventListener("click", async () => {
+    if (!confirm("¿Desactivar este elemento?")) return;
+    await updateDoc(doc(db, "items", btn.dataset.id), { activo: false, updatedAt: serverTimestamp() });
+    await renderItems();
+  }));
+  document.querySelectorAll(".edit-item").forEach(btn => btn.addEventListener("click", async () => {
+    const data = rows.find(x => x.id === btn.dataset.id);
+    fillItemForm(data);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }));
+}
+
+function fillItemForm(it) {
+  $("#itemId").value = it.id;
+  $("#itemSku").value = it.sku || "";
+  $("#itemNombre").value = it.nombre || "";
+  $("#itemDescripcion").value = it.descripcion || "";
+  $("#itemTipo").value = it.tipo || "Herramienta";
+  $("#itemZone").value = it.zoneId || "";
+  refreshSubzoneSelect("#itemSubzone", $("#itemZone").value, it.subzoneId || "");
+  refreshLocationSelects();
+  $("#itemLocation").value = it.locationId || "";
+  $("#itemRelatedMachine").value = it.relatedMachineId || "";
+  [...$("#itemWeeks").options].forEach(o => o.selected = (it.fabacademyWeeks || []).map(String).includes(o.value));
+  $("#itemInfoUrl").value = it.infoUrl || "";
+  $("#itemPurchaseUrl").value = it.purchaseUrl || "";
+  $("#itemStock").value = it.stockAlmacen || 0;
+  $("#itemPrestado").value = it.stockPrestadoTemporal || 0;
+  $("#itemLargo").value = it.stockLargoPlazo || 0;
+  $("#itemDanado").value = it.stockDanado || 0;
+  $("#itemPerdido").value = it.stockPerdido || 0;
+  $("#itemDeseado").value = it.inventarioDeseado || 0;
+  const defaults = defaultsForType(it.tipo || "Otro");
+  $("#itemVisibleAlumno").checked = it.visibleParaAlumno ?? defaults.visibleParaAlumno;
+  $("#itemPrestable").checked = it.prestamoHabilitado ?? defaults.prestamoHabilitado;
+  $("#itemReservable").checked = it.reservaHabilitada ?? defaults.reservaHabilitada;
+  $("#itemAsistencia").checked = it.requiereAsistencia ?? defaults.requiereAsistencia;
+}
+
+async function createTechnician(e) {
+  e.preventDefault();
+  const body = {
+    nombre: $("#tecNombre").value.trim(),
+    correo: $("#tecCorreo").value.trim(),
+    password: $("#tecPassword").value,
+  };
+  const res = await apiFetch("/api/users/technicians", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await res.json();
+  alert("Técnico creado.");
+  $("#technicianForm").reset();
+}
+
+async function importCsv(e) {
+  e.preventDefault();
+  const form = new FormData();
+  if (!$("#csvFile").files.length) return alert("Selecciona un CSV.");
+  form.append("csv_file", $("#csvFile").files[0]);
+  if ($("#assetsZip").files.length) form.append("assets_zip", $("#assetsZip").files[0]);
+  const res = await apiFetch("/api/import/inventory-csv", { method: "POST", body: form });
+  const data = await res.json();
+  $("#importResult").textContent = JSON.stringify(data, null, 2);
+  await renderItems();
+}
+
+async function init() {
+  await requireRole(["admin"]);
+  await loadBase();
+  await renderLocations();
+  await renderItems();
+
+  $("#itemZone").addEventListener("change", () => { refreshSubzoneSelect("#itemSubzone", $("#itemZone").value); refreshLocationSelects(); });
+  $("#itemSubzone").addEventListener("change", refreshLocationSelects);
+  $("#itemTipo").addEventListener("change", () => applyDefaultsForSelectedType(false));
+  $("#locationZone").addEventListener("change", () => { refreshSubzoneSelect("#locationSubzone", $("#locationZone").value); refreshLocationSelects(); });
+  $("#locationSubzone").addEventListener("change", refreshLocationSelects);
+
+  $("#locationForm").addEventListener("submit", saveLocation);
+  $("#clearLocationForm").addEventListener("click", clearLocationForm);
+  $("#itemForm").addEventListener("submit", saveItem);
+  $("#clearItemForm").addEventListener("click", clearItemForm);
+  $("#technicianForm").addEventListener("submit", createTechnician);
+  $("#importForm").addEventListener("submit", importCsv);
+}
+
+init().catch(err => alert(err.message));

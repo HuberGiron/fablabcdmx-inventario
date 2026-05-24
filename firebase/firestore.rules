@@ -1,0 +1,102 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userExists() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function role() {
+      return userExists() ? userDoc().role : null;
+    }
+
+    function isAdmin() {
+      return role() == 'admin';
+    }
+
+    function isTecnico() {
+      return role() == 'tecnico';
+    }
+
+    function isStaff() {
+      return isAdmin() || isTecnico();
+    }
+
+    match /zones/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /subzones/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /locations/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /fabacademyWeeks/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /items/{id} {
+      // Staff ve todo lo activo. Alumnos y público solo ven lo explícitamente visible.
+      allow read: if isStaff()
+        || (resource.data.activo == true && resource.data.visibleParaAlumno == true);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /files/{id} {
+      allow read: if resource.data.active == true || isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /users/{uid} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'alumno'
+        && request.resource.data.uid == request.auth.uid;
+      allow read: if signedIn() && (request.auth.uid == uid || isStaff());
+      allow update: if signedIn() && (
+        isAdmin()
+        || (request.auth.uid == uid
+          && resource.data.role == request.resource.data.role
+          && request.resource.data.role == 'alumno')
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /loanRequests/{id} {
+      allow create: if signedIn()
+        && request.resource.data.alumnoUid == request.auth.uid
+        && request.resource.data.status == 'pendiente';
+      allow read: if signedIn() && (resource.data.alumnoUid == request.auth.uid || isStaff());
+      allow update, delete: if isStaff();
+    }
+
+    // Preparado para una etapa futura de reservas/asistencia de máquinas.
+    match /reservationRequests/{id} {
+      allow create: if signedIn()
+        && request.resource.data.userUid == request.auth.uid
+        && request.resource.data.status == 'pendiente';
+      allow read: if signedIn() && (resource.data.userUid == request.auth.uid || isStaff());
+      allow update, delete: if isStaff();
+    }
+
+    match /inventoryMovements/{id} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+  }
+}
