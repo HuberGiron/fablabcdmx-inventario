@@ -183,3 +183,51 @@ code { color: #334155; }
   font-weight: 700;
   color: #475569;
 }
+
+/* V2.6 · Catálogo principal compacto */
+.navbar .badge.rounded-pill {
+  font-weight: 700;
+}
+
+.path-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem .85rem;
+  padding: .45rem .65rem;
+  background: #f8fafc;
+  border: 1px solid #e5eaf0;
+  border-radius: .75rem;
+  color: #475569;
+  font-size: .82rem;
+}
+
+.path-compact strong {
+  color: #334155;
+}
+
+.path-compact .area-code-chip {
+  padding: .04rem .32rem;
+  font-size: .78rem;
+}
+
+.item-card .card-body {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+@media (max-width: 768px) {
+  .navbar .container-fluid {
+    align-items: flex-start;
+    gap: .5rem;
+  }
+
+  .navbar .ms-auto {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .item-image {
+    height: 180px;
+    border-radius: 0 !important;
+  }
+}

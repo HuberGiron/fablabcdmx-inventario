@@ -1,5 +1,5 @@
 import { db } from "./firebase-app.js";
-import { setupNav, $, fileViewUrl, downloadProtectedFile, waitForUser, getUserProfile } from "./common.js";
+import { setupNav, $, fileViewUrl, downloadProtectedFile, uploadItemAsset, waitForUser, getUserProfile } from "./common.js";
 import {
   collection, getDocs, addDoc, serverTimestamp, query, where, doc, updateDoc, deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
@@ -199,16 +199,6 @@ async function loadCurrentUserContext() {
   const cartBtn = $("#openCart");
   if (cartBtn) cartBtn.classList.toggle("d-none", isStaff);
 
-  const hint = $("#dashboardRoleHint");
-  if (hint) {
-    if (isStaff) {
-      hint.innerHTML = `<span class="badge text-bg-dark">Vista ${esc(currentRole)}</span> Mostrando todos los elementos activos, incluyendo ocultos para alumnos, refacciones y mobiliario.`;
-    } else if (currentUser) {
-      hint.innerHTML = `<span class="badge text-bg-primary">Vista alumno</span> Mostrando solo elementos visibles para alumnos.`;
-    } else {
-      hint.innerHTML = `<span class="badge text-bg-secondary">Vista pública</span> Mostrando catálogo visible. Inicia sesión para solicitar préstamos.`;
-    }
-  }
 }
 
 async function loadBase() {
@@ -318,30 +308,20 @@ function statusBadges(it) {
 }
 
 function pathCards(it) {
+  const zoneText = `${it.zoneId || ""}${it.zoneName ? ` · ${it.zoneName}` : ""}`.trim();
+  const subzoneText = `${it.subzoneId || ""}${it.subzoneName ? ` · ${it.subzoneName}` : ""}`.trim();
+  const areaCode = itemLocationCode(it) || "s/c";
+  const areaText = it.locationName || "Sin ubicación";
   return `
-    <div class="path-card-grid my-3">
-      <div class="path-card">
-        <div class="path-label">Zona</div>
-        <div class="path-value">${esc(it.zoneName || "Sin zona")}</div>
-        <div class="path-id">${esc(it.zoneId || "")}</div>
-      </div>
-      <div class="path-card">
-        <div class="path-label">Subzona</div>
-        <div class="path-value">${esc(it.subzoneName || "Sin subzona")}</div>
-        <div class="path-id">${esc(it.subzoneId || "")}</div>
-      </div>
-      <div class="path-card area-path-card">
-        <div class="path-label">Área / ubicación</div>
-        <div class="path-value">${esc(it.locationName || "Sin ubicación")}</div>
-        <div class="path-id"><span class="area-code-chip">${esc(itemLocationCode(it) || "s/c")}</span>${it.locationId ? ` <span class="text-muted">${esc(it.locationId)}</span>` : ""}</div>
-      </div>
+    <div class="path-compact my-2">
+      <span><strong>Zona:</strong> ${esc(zoneText || "Sin zona")}</span>
+      <span><strong>Subzona:</strong> ${esc(subzoneText || "Sin subzona")}</span>
+      <span><strong>Área:</strong> <span class="area-code-chip">${esc(areaCode)}</span> ${esc(areaText)}</span>
     </div>`;
 }
 
 function actionControls(it, disponible) {
-  if (isStaff) {
-    return `<div class="small text-muted">Vista técnica/admin: consulta completa del inventario.</div>`;
-  }
+  if (isStaff) return "";
 
   if (it.prestamoHabilitado === true) {
     return `
@@ -372,6 +352,14 @@ function adminControls(it) {
     </div>`;
 }
 
+
+function documentationButton(it) {
+  const fileId = it.documentationFileId || it.pdfFileId || "";
+  if (!fileId) return "";
+  const filename = it.documentationFilename || it.pdfFilename || `${it.nombre || "documentacion"}.pdf`;
+  return `<button class="btn btn-sm btn-outline-secondary file-download" data-file="${esc(fileId)}" data-name="${esc(filename)}">Descargar documentación</button>`;
+}
+
 function renderItems() {
   const target = $("#itemsList");
   if (!target) return;
@@ -385,7 +373,7 @@ function renderItems() {
       <div class="item-card card shadow-sm mb-3" data-item-id="${esc(it.id)}">
         <div class="row g-0">
           <div class="col-md-2 image-wrap">
-            <img src="${fileViewUrl(it.imageFileId)}" class="img-fluid rounded-start item-image" alt="${esc(it.nombre || '')}">
+            <img src="${fileViewUrl(it.imageFileId)}" onerror="this.src='assets/placeholder.svg'" class="img-fluid rounded-start item-image" alt="${esc(it.nombre || '')}">
           </div>
           <div class="col-md-10">
             <div class="card-body">
@@ -402,9 +390,9 @@ function renderItems() {
               ${it.relatedMachineName ? `<div class="small mb-1"><strong>Máquina relacionada:</strong> ${esc(it.relatedMachineName)}</div>` : ""}
               <div class="small mb-2"><strong>FabAcademy:</strong> ${esc(weeksText || "Sin clasificación")}</div>
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                ${it.infoUrl ? `<a class="btn btn-sm btn-outline-secondary" href="${esc(it.infoUrl)}" target="_blank">Más info</a>` : ''}
-                ${it.pdfFileId ? `<button class="btn btn-sm btn-outline-secondary file-download" data-file="${esc(it.pdfFileId)}" data-name="${esc(it.nombre || 'archivo')}.pdf">PDF</button>` : ''}
-                ${it.datasheetFileId ? `<button class="btn btn-sm btn-outline-secondary file-download" data-file="${esc(it.datasheetFileId)}" data-name="${esc(it.nombre || 'datasheet')}.pdf">Ficha técnica</button>` : ''}
+                ${it.infoUrl ? `<a class="btn btn-sm btn-outline-primary" href="${esc(it.infoUrl)}" target="_blank" rel="noopener">Más info</a>` : ''}
+                ${documentationButton(it)}
+                ${it.datasheetFileId ? `<button class="btn btn-sm btn-outline-secondary file-download" data-file="${esc(it.datasheetFileId)}" data-name="${esc(it.datasheetFilename || it.nombre || 'ficha-tecnica')}">Ficha técnica</button>` : ''}
                 ${actionControls(it, disponible)}
               </div>
               ${adminControls(it)}
@@ -462,7 +450,7 @@ function renderItemEditor(it) {
       <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
         <div>
           <h6 class="mb-1">Edición rápida del item</h6>
-          <div class="small text-muted">Los archivos se siguen gestionando desde el panel admin completo.</div>
+          <div class="small text-muted">Edita datos básicos y carga imagen/documentación del item.</div>
         </div>
         <button type="button" class="btn btn-sm btn-outline-secondary close-inline-panel">Cerrar</button>
       </div>
@@ -559,6 +547,17 @@ function renderItemEditor(it) {
             <label class="form-label small">Más info URL</label>
             <input name="infoUrl" class="form-control form-control-sm" value="${esc(it.infoUrl || "")}">
           </div>
+
+          <div class="col-md-6">
+            <label class="form-label small">Imagen del item</label>
+            <input name="imageFile" type="file" accept="image/*" class="form-control form-control-sm">
+            <div class="form-text">${it.imageFileId ? `Actual: ${esc(it.imageFilename || it.imageFileId)}` : "Sin imagen cargada"}</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small">Documentación / manual / ficha</label>
+            <input name="documentationFile" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,application/pdf" class="form-control form-control-sm">
+            <div class="form-text">${it.documentationFileId || it.pdfFileId ? `Actual: ${esc(it.documentationFilename || it.pdfFilename || it.documentationFileId || it.pdfFileId)}` : "Sin documento cargado"}</div>
+          </div>
         </div>
 
         <div class="alert alert-warning py-2 mt-3 mb-2 small">
@@ -595,6 +594,25 @@ function bindInlineItemForm(panel, itemId) {
   });
   subSel.addEventListener("change", refreshQuickItemRoute);
   form.addEventListener("submit", e => saveInlineItem(e, itemId));
+}
+
+
+async function uploadSelectedAssets(form, itemId) {
+  const uploaded = {};
+  const image = form.imageFile?.files?.[0];
+  const documentation = form.documentationFile?.files?.[0];
+
+  if (image) {
+    const result = await uploadItemAsset(itemId, "image", image);
+    Object.assign(uploaded, result?.itemFields || {});
+  }
+
+  if (documentation) {
+    const result = await uploadItemAsset(itemId, "documentation", documentation);
+    Object.assign(uploaded, result?.itemFields || {});
+  }
+
+  return uploaded;
 }
 
 async function saveInlineItem(e, itemId) {
@@ -646,7 +664,15 @@ async function saveInlineItem(e, itemId) {
   };
 
   await updateDoc(doc(db, "items", itemId), payload);
-  items = items.map(x => x.id === itemId ? { ...x, ...payload } : x);
+
+  let uploadedFields = {};
+  try {
+    uploadedFields = await uploadSelectedAssets(form, itemId);
+  } catch (err) {
+    alert(`El item se guardó, pero hubo un error al subir archivos: ${err.message}`);
+  }
+
+  items = items.map(x => x.id === itemId ? { ...x, ...payload, ...uploadedFields } : x);
   alert("Item actualizado.");
   applyFilters();
 }
@@ -947,38 +973,138 @@ async function submitLoanRequest() {
   window.location.href = "alumno.html";
 }
 
-function exportVisibleCsv() {
-  const rows = filtered.map(it => ({
-    sku: it.sku || "",
-    nombre: it.nombre || "",
-    descripcion: it.descripcion || "",
-    tipo: it.tipo || "",
+function num(value) {
+  return Number(value || 0);
+}
+
+function inventarioActualOperativo(it) {
+  return num(it.stockAlmacen) + num(it.stockPrestadoTemporal);
+}
+
+function cantidadAComprar(it) {
+  return Math.max(num(it.inventarioDeseado) - inventarioActualOperativo(it), 0);
+}
+
+function cleanXlsxText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .normalize("NFC")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+    .replace(/[\uD800-\uDFFF]/g, "")
+    .trim();
+}
+
+function cleanXlsxNumber(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function buildInventoryReportRows(rows) {
+  return rows.map(it => ({
     zona: it.zoneName || "",
     subzona: it.subzoneName || "",
-    ubicacion_codigo: itemLocationCode(it) || "",
-    ubicacion: it.locationName || "",
-    ubicacion_id: it.locationId || "",
-    maquina_relacionada: it.relatedMachineName || "",
-    maquina_relacionada_id: it.relatedMachineId || "",
-    fabacademy: (it.fabacademyWeekNames || []).join("; "),
-    stock_almacen: it.stockAlmacen || 0,
-    inventario_deseado: it.inventarioDeseado || 0,
-    visible_para_alumno: it.visibleParaAlumno !== false,
-    prestamo_habilitado: it.prestamoHabilitado === true,
-    reserva_habilitada: it.reservaHabilitada === true,
-    requiere_asistencia: it.requiereAsistencia === true,
-    mas_info: it.infoUrl || "",
+    area_codigo: itemLocationCode(it) || "",
+    area: it.locationName || "",
+    sku: it.sku || "",
+    nombre: it.nombre || "",
+    tipo: it.tipo || "",
+    inventario_actual: inventarioActualOperativo(it),
+    inventario_deseado: num(it.inventarioDeseado),
+    cantidad_a_comprar: cantidadAComprar(it),
+    precio_unitario: num(it.precioUnitario),
+    moneda: it.moneda || "MXN",
+    subtotal: cantidadAComprar(it) * num(it.precioUnitario),
+    descripcion: it.descripcion || "",
     liga_compra: it.purchaseUrl || "",
   }));
-  const headers = Object.keys(rows[0] || {sku:"",nombre:"",descripcion:"",tipo:"",zona:"",subzona:"",ubicacion_codigo:"",ubicacion:"",ubicacion_id:"",maquina_relacionada:"",maquina_relacionada_id:"",fabacademy:"",stock_almacen:"",inventario_deseado:"",visible_para_alumno:"",prestamo_habilitado:"",reserva_habilitada:"",requiere_asistencia:"",mas_info:"",liga_compra:""});
-  const csv = [headers.join(","), ...rows.map(r => headers.map(h => `"${String(r[h] ?? "").replaceAll('"','""')}"`).join(","))].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "inventario_filtrado.csv";
-  a.click();
-  URL.revokeObjectURL(url);
+}
+
+function exportVisibleXlsx() {
+  const rows = buildInventoryReportRows(filtered);
+
+  if (!rows.length) {
+    alert("No hay elementos para exportar con el filtro seleccionado.");
+    return;
+  }
+
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
+    return;
+  }
+
+  const headers = [
+    "Zona",
+    "Subzona",
+    "Código de área",
+    "Área",
+    "SKU",
+    "Tipo",
+    "Nombre",
+    "Descripción",
+    "Inventario actual",
+    "Inventario deseado",
+    "Cantidad a comprar",
+    "Precio unitario",
+    "Moneda",
+    "Subtotal",
+    "Liga de compra",
+  ];
+
+  const aoa = [
+    headers,
+    ...rows.map(row => [
+      cleanXlsxText(row.zona),
+      cleanXlsxText(row.subzona),
+      cleanXlsxText(row.area_codigo),
+      cleanXlsxText(row.area),
+      cleanXlsxText(row.sku),
+      cleanXlsxText(row.tipo),
+      cleanXlsxText(row.nombre),
+      cleanXlsxText(row.descripcion),
+      cleanXlsxNumber(row.inventario_actual),
+      cleanXlsxNumber(row.inventario_deseado),
+      cleanXlsxNumber(row.cantidad_a_comprar),
+      cleanXlsxNumber(row.precio_unitario),
+      cleanXlsxText(row.moneda),
+      cleanXlsxNumber(row.subtotal),
+      cleanXlsxText(row.liga_compra),
+    ]),
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 16 },
+    { wch: 30 },
+    { wch: 12 },
+    { wch: 16 },
+    { wch: 36 },
+    { wch: 36 },
+    { wch: 8 },
+    { wch: 8 },
+    { wch: 8 },
+    { wch: 8 },
+    { wch: 8 },
+    { wch: 12 },
+    { wch: 40 },
+  ];
+
+  const numericColumns = ["I", "J", "K", "L", "N"];
+  for (let r = 2; r <= rows.length + 1; r++) {
+    for (const col of numericColumns) {
+      const cell = ws[`${col}${r}`];
+      if (cell) cell.t = "n";
+    }
+    if (ws[`L${r}`]) ws[`L${r}`].z = "#,##0.00";
+    if (ws[`N${r}`]) ws[`N${r}`].z = "#,##0.00";
+  }
+
+  ws["!autofilter"] = { ref: `A1:O${rows.length + 1}` };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Inventario filtrado");
+  const date = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `inventario_filtrado_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
 }
 
 async function init() {
@@ -988,11 +1114,11 @@ async function init() {
   renderItems();
   renderCartCount();
 
-  ["#search", "#filterTipo", "#filterWeek", "#filterLocation", "#filterRelatedMachine"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
+  ["#search", "#filterTipo", "#filterWeek", "#filterLocation"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
   $("#filterZone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#filterSubzone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#clearFilters")?.addEventListener("click", () => { document.querySelectorAll(".filter-input").forEach(x => x.value = ""); refreshDependentFilters(); applyFilters(); });
-  $("#exportCsv")?.addEventListener("click", exportVisibleCsv);
+  $("#exportXlsx")?.addEventListener("click", exportVisibleXlsx);
   $("#openCart")?.addEventListener("click", renderCartModal);
   $("#submitLoan")?.addEventListener("click", submitLoanRequest);
 }

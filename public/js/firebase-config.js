@@ -8,5 +8,6 @@ export const firebaseConfig = {
   appId: "1:103800165084:web:dfee4503b67dba03ff1a19"
 };
 
-// Backend FastAPI desactivado en esta versión mínima online.
-export const API_BASE_URL = ""; // Versión mínima online sin backend FastAPI.
+// Backend FastAPI para imágenes, documentación y futuras funciones protegidas.
+// Ajusta este valor si decides usar otro subdominio.
+export const API_BASE_URL = "https://inventario-api.mecatronica-ibero.mx";

@@ -53,7 +53,7 @@ export async function requireRole(allowedRoles) {
 
 export async function apiFetch(path, options = {}) {
   if (!BACKEND_ENABLED) {
-    throw new Error("Backend no configurado en esta versión mínima online. Esta acción estará disponible cuando se active FastAPI.");
+    throw new Error("Backend no configurado. Define API_BASE_URL en public/js/firebase-config.js.");
   }
   const user = await waitForUser();
   const headers = new Headers(options.headers || {});
@@ -72,15 +72,16 @@ export async function apiFetch(path, options = {}) {
 
 export function fileViewUrl(fileId) {
   if (!fileId || !BACKEND_ENABLED) return "assets/placeholder.svg";
-  return `${API_BASE_URL}/api/files/${fileId}/view`;
+  return `${API_BASE_URL}/api/files/${encodeURIComponent(fileId)}/view`;
 }
 
 export async function downloadProtectedFile(fileId, filename = "archivo") {
+  if (!fileId) return;
   if (!BACKEND_ENABLED) {
     alert("La descarga de archivos estará disponible cuando se active el backend FastAPI.");
     return;
   }
-  const res = await apiFetch(`/api/files/${fileId}/download`);
+  const res = await apiFetch(`/api/files/${encodeURIComponent(fileId)}/download`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -90,9 +91,26 @@ export async function downloadProtectedFile(fileId, filename = "archivo") {
   URL.revokeObjectURL(url);
 }
 
+export async function uploadItemAsset(itemId, assetType, file) {
+  if (!file) return null;
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await apiFetch(`/api/items/${encodeURIComponent(itemId)}/assets/${encodeURIComponent(assetType)}`, {
+    method: "POST",
+    body: formData,
+  });
+  return res.json();
+}
+
 export async function logout() {
   await signOut(auth);
   window.location.href = "login.html";
+}
+
+function roleBadge(role) {
+  const label = role === "admin" ? "Vista admin" : role === "tecnico" ? "Vista técnico" : role === "alumno" ? "Vista alumno" : "Vista pública";
+  const klass = role === "admin" ? "text-bg-dark" : role === "tecnico" ? "text-bg-info" : role === "alumno" ? "text-bg-primary" : "text-bg-secondary";
+  return `<span class="badge rounded-pill ${klass}">${label}</span>`;
 }
 
 export function setupNav() {
@@ -100,16 +118,17 @@ export function setupNav() {
   if (!nav) return;
   onAuthStateChanged(auth, async (user) => {
     if (!user) {
-      nav.innerHTML = `<a class="btn btn-outline-primary btn-sm" href="login.html">Entrar</a>`;
+      nav.innerHTML = `${roleBadge("public")}<a class="btn btn-outline-primary btn-sm" href="login.html">Entrar</a>`;
       return;
     }
     const profile = await getUserProfile(user.uid);
     const role = profile?.role || "alumno";
     nav.innerHTML = `
-      <span class="small text-muted me-2">${profile?.nombre || user.email} · ${role}</span>
-      ${role === "admin" ? '<a class="btn btn-outline-dark btn-sm me-1" href="admin.html">Admin</a>' : ''}
-      ${role === "tecnico" || role === "admin" ? '<a class="btn btn-outline-dark btn-sm me-1" href="tecnico.html">Técnico</a>' : ''}
-      <a class="btn btn-outline-secondary btn-sm me-1" href="alumno.html">Mis préstamos</a>
+      ${roleBadge(role)}
+      <span class="small text-muted d-none d-md-inline">${profile?.nombre || user.email}</span>
+      ${role === "admin" ? '<a class="btn btn-outline-dark btn-sm" href="admin.html">Admin</a>' : ''}
+      ${role === "tecnico" || role === "admin" ? '<a class="btn btn-outline-dark btn-sm" href="tecnico.html">Técnico</a>' : ''}
+      <a class="btn btn-outline-secondary btn-sm" href="alumno.html">Mis préstamos</a>
       <button id="logoutBtn" class="btn btn-danger btn-sm">Salir</button>`;
     document.querySelector("#logoutBtn")?.addEventListener("click", logout);
   });
