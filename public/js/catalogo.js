@@ -370,8 +370,25 @@ function refreshDependentFilters() {
   }
 }
 
+function searchableItemText(it) {
+  return normalizeForCompare([
+    it.sku,
+    it.nombre,
+    it.descripcion,
+    normalizeTipo(it.tipo),
+    it.zoneId,
+    it.zoneName,
+    it.subzoneId,
+    it.subzoneName,
+    itemLocationCode(it),
+    it.locationName,
+    it.relatedMachineName,
+    ...(it.fabacademyWeekNames || []),
+  ].filter(Boolean).join(" "));
+}
+
 function applyFilters() {
-  const search = ($("#search")?.value || "").toLowerCase();
+  const search = normalizeForCompare($("#search")?.value || "");
   const zoneId = $("#filterZone")?.value || "";
   const subzoneId = $("#filterSubzone")?.value || "";
   const locationId = $("#filterLocation")?.value || "";
@@ -388,10 +405,7 @@ function applyFilters() {
     if (weekId && !(it.fabacademyWeeks || []).map(String).includes(weekId)) return false;
     if (selectedTipos.size === 0) return false;
     if (!filterAllKnownTypes && !selectedTipos.has(normalizeTipo(it.tipo))) return false;
-    if (search) {
-      const hay = `${it.sku || ""} ${it.nombre || ""} ${it.descripcion || ""} ${it.zoneName || ""} ${it.subzoneName || ""} ${it.locationName || ""} ${it.relatedMachineName || ""}`.toLowerCase();
-      if (!hay.includes(search)) return false;
-    }
+    if (search && !searchableItemText(it).includes(search)) return false;
     return true;
   });
 
