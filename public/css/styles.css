@@ -444,6 +444,123 @@ body.ibero-home {
 .table th { vertical-align: middle; }
 code { color: #334155; }
 
+
+
+/* --------------------------------------------------------------------------
+   Control de préstamo en tarjetas de inventario
+   -------------------------------------------------------------------------- */
+.loan-action {
+  display: inline-flex;
+  align-items: stretch;
+  gap: .75rem;
+  flex-wrap: wrap;
+  margin-top: .1rem;
+}
+
+.loan-qty {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--ibero-border);
+  border-radius: 999px;
+  background: #fff;
+}
+
+.loan-qty-label {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 .95rem;
+  border-right: 1px solid var(--ibero-border);
+  background: #f7f7f5;
+  color: var(--ibero-black);
+  font-family: var(--ibero-sans);
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.loan-qty-input,
+.qty-input.loan-qty-input {
+  width: 74px;
+  min-height: 48px;
+  height: 48px;
+  padding: 0 .65rem;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  color: var(--ibero-black);
+  box-shadow: none;
+  font-family: var(--ibero-sans);
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+}
+
+.loan-qty-input:focus {
+  border: 0;
+  outline: 0;
+  box-shadow: inset 0 0 0 2px rgba(224, 0, 52, .22);
+}
+
+.loan-add-btn,
+.btn-sm.loan-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: .72rem 1.35rem;
+  border: 1px solid var(--ibero-red);
+  border-radius: 999px;
+  background: var(--ibero-red);
+  color: #fff;
+  box-shadow: 0 9px 18px rgba(224, 0, 52, .16);
+  font-family: var(--ibero-sans);
+  font-size: .98rem;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  transition: transform .16s ease, box-shadow .16s ease, background .16s ease, border-color .16s ease;
+}
+
+.loan-add-btn:hover,
+.loan-add-btn:focus {
+  border-color: var(--ibero-red-dark);
+  background: var(--ibero-red-dark);
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(224, 0, 52, .23);
+  transform: translateY(-1px);
+}
+
+.loan-add-btn:disabled,
+.loan-add-btn.disabled {
+  border-color: #d7d7d7;
+  background: #d7d7d7;
+  color: #777;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.loan-stock-msg,
+.loan-stock-ok {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  font-family: var(--ibero-sans);
+  font-size: .92rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.loan-stock-msg { color: var(--ibero-red); }
+.loan-stock-ok { color: #5f686f; }
+
 /* --------------------------------------------------------------------------
    Paneles administrativos y formularios existentes
    -------------------------------------------------------------------------- */
@@ -597,6 +714,41 @@ code { color: #334155; }
   .card-text { font-size: .88rem; line-height: 1.36; }
   .item-card .btn-sm,
   .item-card .form-control-sm { font-size: .78rem; }
+
+  .loan-action {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .55rem;
+  }
+  .loan-qty,
+  .loan-add-btn,
+  .loan-stock-msg,
+  .loan-stock-ok {
+    width: 100%;
+  }
+  .loan-qty {
+    justify-content: space-between;
+  }
+  .loan-qty-label {
+    flex: 1 1 auto;
+  }
+  .loan-qty-input,
+  .qty-input.loan-qty-input {
+    width: 92px;
+    flex: 0 0 92px;
+  }
+  .loan-add-btn,
+  .btn-sm.loan-add-btn {
+    min-height: 46px;
+    justify-content: center;
+    font-size: .9rem;
+  }
+  .loan-stock-msg,
+  .loan-stock-ok {
+    min-height: 0;
+    font-size: .82rem;
+  }
 }
 
 @media (max-width: 420px) {
@@ -609,4 +761,7 @@ code { color: #334155; }
   .item-image { height: 98px; }
   .item-card .card-title { font-size: 1.16rem; }
   .item-card .card-body { padding: .7rem .72rem; }
+  .loan-qty-label { padding-inline: .72rem; font-size: .7rem; }
+  .loan-qty-input,
+  .qty-input.loan-qty-input { width: 76px; flex-basis: 76px; }
 }

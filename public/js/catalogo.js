@@ -410,10 +410,34 @@ function actionControls(it, disponible) {
   if (isStaff) return "";
 
   if (it.prestamoHabilitado === true) {
+    const disabled = disponible <= 0 ? "disabled" : "";
+    const stockMsg = disponible <= 0
+      ? '<span class="loan-stock-msg">Sin stock disponible</span>'
+      : `<span class="loan-stock-ok">${disponible} disponible${disponible === 1 ? "" : "s"}</span>`;
+
     return `
-      <input type="number" min="1" max="${disponible}" value="1" class="form-control form-control-sm qty-input" id="qty-${esc(it.id)}" ${disponible <= 0 ? 'disabled' : ''}>
-      <button class="btn btn-sm btn-primary add-cart" data-id="${esc(it.id)}" ${disponible <= 0 ? 'disabled' : ''}>Agregar al carrito</button>
-      ${disponible <= 0 ? '<span class="small text-danger">Sin stock disponible</span>' : ''}`;
+      <div class="loan-action" aria-label="Control de préstamo">
+        <label class="loan-qty" for="qty-${esc(it.id)}">
+          <span class="loan-qty-label">Cantidad</span>
+          <input
+            type="number"
+            min="1"
+            max="${disponible}"
+            value="1"
+            class="form-control form-control-sm qty-input loan-qty-input"
+            id="qty-${esc(it.id)}"
+            ${disabled}>
+        </label>
+
+        <button
+          class="btn btn-sm btn-primary add-cart loan-add-btn"
+          data-id="${esc(it.id)}"
+          ${disabled}>
+          Agregar al carrito
+        </button>
+
+        ${stockMsg}
+      </div>`;
   }
 
   if (it.reservaHabilitada === true) {
