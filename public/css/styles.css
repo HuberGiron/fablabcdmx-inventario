@@ -1,46 +1,470 @@
+/* ========================================================================== 
+   Inventario FabLab IBERO · Estilos institucionales + catálogo
+   Basado en la identidad visual activa del sitio de Mecatrónica IBERO.
+   ========================================================================== */
+
 :root {
-  --ibero-red: #c8102e;
-  --soft-gray: #f5f6f8;
+  --ibero-red: #E00034;
+  --ibero-red-dark: #c9002e;
+  --ibero-black: #1f1f24;
+  --ibero-gray: #82786F;
+  --ibero-soft: #f3f3f1;
+  --ibero-border: #d9d9d9;
+  --ibero-muted: #565b65;
+  --ibero-focus: rgba(224, 0, 52, .18);
+  --ibero-serif: alverata, Georgia, "Times New Roman", serif;
+  --ibero-sans: praxis-next, Arial, Helvetica, sans-serif;
+  --bs-primary: var(--ibero-red);
+  --bs-primary-rgb: 224, 0, 52;
+  --bs-body-font-family: var(--ibero-sans);
 }
-body { background: var(--soft-gray); }
-.navbar-brand strong { color: var(--ibero-red); }
-.hero {
-  background: linear-gradient(135deg, #ffffff, #f1f1f1);
-  border: 1px solid #e6e6e6;
-  border-radius: 1.25rem;
-  padding: 1.5rem;
+
+html { scroll-behavior: smooth; background: var(--ibero-soft); }
+body {
+  margin: 0;
+  color: var(--ibero-black);
+  background: var(--ibero-soft);
+  font-family: var(--ibero-sans);
+  font-weight: 300;
+  overflow-x: hidden;
+}
+body.ibero-home {
+  font-family: var(--ibero-sans);
+  color: var(--ibero-black);
+  background: var(--ibero-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Barra institucional IBERO
+   -------------------------------------------------------------------------- */
+.ibero-page { padding-top: 76px; }
+.ibero-main-nav {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 1030;
+  min-height: 76px;
+  background: var(--ibero-red);
+  border-bottom: 1px solid var(--ibero-red);
+  box-shadow: none;
+}
+.ibero-main-nav .container-fluid { min-height: inherit; }
+.ibero-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: .95rem;
+  text-decoration: none;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.ibero-logo-stack {
+  position: relative;
+  width: 118px;
+  height: 46px;
+  flex: 0 0 118px;
+}
+.ibero-logo-stack img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.ibero-logo-stack .logo-white { opacity: 1; }
+.ibero-logo-stack .logo-red { opacity: 0; }
+.ibero-program-mark {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding-left: .9rem;
+  border-left: 2px solid rgba(255,255,255,.75);
+  color: #fff;
+  font-family: var(--ibero-sans);
+  font-weight: 700;
+  font-size: .82rem;
+  line-height: 1.04;
+}
+.ibero-main-nav .navbar-collapse { flex-grow: 0; }
+.ibero-main-nav .navbar-toggler {
+  display: none;
+  border: 0;
+  padding: .2rem;
+  box-shadow: none !important;
+}
+.hamburger-lines {
+  display: block;
+  position: relative;
+  width: 30px;
+  height: 21px;
+}
+.hamburger-lines span {
+  position: absolute;
+  left: 0;
+  width: 30px;
+  height: 3px;
+  border-radius: 999px;
+  background: #fff;
+}
+.hamburger-lines span:nth-child(1) { top: 0; }
+.hamburger-lines span:nth-child(2) { top: 9px; }
+.hamburger-lines span:nth-child(3) { top: 18px; }
+.inventory-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  flex-direction: row;
+}
+.inventory-nav-actions .btn,
+.inventory-nav-actions .badge {
+  border-radius: 999px;
+  font-family: var(--ibero-sans);
+  font-weight: 700;
+  text-decoration: none;
+}
+.btn-inventory-cart,
+.ibero-main-nav .btn-outline-primary,
+.ibero-main-nav .btn-outline-secondary,
+.ibero-main-nav .btn-outline-dark,
+.ibero-main-nav .btn-danger,
+.ibero-main-nav .btn-primary {
+  color: #fff !important;
+  background: transparent !important;
+  border: 2px solid rgba(255,255,255,.82) !important;
+  box-shadow: none !important;
+}
+.btn-inventory-cart:hover,
+.btn-inventory-cart:focus,
+.ibero-main-nav .btn-outline-primary:hover,
+.ibero-main-nav .btn-outline-secondary:hover,
+.ibero-main-nav .btn-outline-dark:hover,
+.ibero-main-nav .btn-danger:hover,
+.ibero-main-nav .btn-primary:hover {
+  color: var(--ibero-red) !important;
+  background: #fff !important;
+  border-color: #fff !important;
+}
+.ibero-main-nav .badge {
+  color: #fff !important;
+  background: rgba(255,255,255,.16) !important;
+  border: 1px solid rgba(255,255,255,.34);
+}
+#cartCount { margin-left: .2rem; }
+.ibero-main-nav .small.text-muted { color: rgba(255,255,255,.88) !important; font-weight: 600; }
+
+@media (max-width: 1199.98px) {
+  .ibero-page { padding-top: 60px; }
+  .ibero-main-nav { min-height: 60px; }
+  .ibero-main-nav .navbar-toggler {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+  }
+  .ibero-main-nav .navbar-collapse {
+    position: absolute;
+    top: 60px;
+    left: 0;
+    right: 0;
+    background: #fff;
+    border-top: 1px solid #ececec;
+    box-shadow: 0 18px 35px rgba(0,0,0,.10);
+    padding: .85rem 1.25rem 1.15rem;
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
+  }
+  .ibero-main-nav .navbar-collapse.collapsing { height: auto !important; transition: none; }
+  .ibero-logo-stack { width: 96px; height: 38px; flex-basis: 96px; }
+  .ibero-program-mark { display: none; }
+  .inventory-nav-actions,
+  #userNav {
+    align-items: stretch !important;
+    width: 100%;
+    gap: .55rem !important;
+  }
+  .inventory-nav-actions { flex-direction: column; }
+  #userNav { flex-direction: column; }
+  .inventory-nav-actions .btn,
+  #userNav .btn,
+  #userNav .badge {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+  .btn-inventory-cart,
+  .ibero-main-nav .btn-outline-primary,
+  .ibero-main-nav .btn-outline-secondary,
+  .ibero-main-nav .btn-outline-dark,
+  .ibero-main-nav .btn-danger,
+  .ibero-main-nav .btn-primary {
+    color: var(--ibero-red) !important;
+    background: #fff !important;
+    border-color: var(--ibero-red) !important;
+  }
+  .ibero-main-nav .badge {
+    color: #fff !important;
+    background: var(--ibero-red) !important;
+    border-color: var(--ibero-red) !important;
+  }
+  .ibero-main-nav .small.text-muted { color: var(--ibero-black) !important; }
+}
+
+/* --------------------------------------------------------------------------
+   Hero de inventario
+   -------------------------------------------------------------------------- */
+.inventory-hero {
+  background: #fff;
+  padding: 4.1rem 0 2.6rem;
+}
+.ibero-breadcrumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 3.1rem;
+  color: #6d6d6d;
+  font-size: 1.02rem;
+}
+.ibero-breadcrumbs a { color: inherit; text-decoration: none; }
+.ibero-breadcrumbs a:hover { color: var(--ibero-red); }
+.ibero-breadcrumbs .separator { color: #777; font-size: 1.5rem; line-height: 1; }
+.ibero-eyebrow {
+  margin-bottom: 1.2rem;
+  color: #222;
+  font-family: var(--ibero-sans);
+  font-size: clamp(.88rem, 1vw, 1.02rem);
+  font-weight: 300;
+  letter-spacing: .32em;
+  text-transform: uppercase;
+}
+.inventory-title {
+  margin: 0;
+  color: var(--ibero-black);
+  font-family: var(--ibero-serif);
+  font-size: clamp(3.35rem, 6.6vw, 7rem);
+  font-weight: 300;
+  line-height: .94;
+  letter-spacing: -.045em;
+}
+.inventory-lead {
+  max-width: 760px;
+  color: #35393e;
+  font-family: var(--ibero-sans);
+  font-size: clamp(1.12rem, 1.55vw, 1.48rem);
+  line-height: 1.46;
+  font-weight: 300;
+}
+.inventory-catalog-section {
+  background: var(--ibero-soft);
+  padding: 2.3rem 0 4rem;
+}
+
+/* --------------------------------------------------------------------------
+   Controles, filtros y tarjetas
+   -------------------------------------------------------------------------- */
+.card {
+  border: 1px solid var(--ibero-border);
+  border-radius: 0;
+  box-shadow: none !important;
+  background: #fff;
+}
+.filter-card { border-color: #d6d6d6; }
+.form-label {
+  color: var(--ibero-black);
+  font-family: var(--ibero-sans);
+  font-weight: 700;
+  letter-spacing: .01em;
+}
+.form-control,
+.form-select,
+.btn-filter {
+  min-height: 46px;
+  border-color: var(--ibero-border);
+  border-radius: 0;
+  color: var(--ibero-black);
+  background-color: #fff;
+  font-weight: 300;
+}
+.btn-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.form-control:focus,
+.form-select:focus,
+.btn-filter:focus,
+.form-check-input:focus {
+  border-color: var(--ibero-red);
+  box-shadow: 0 0 0 .2rem var(--ibero-focus);
+}
+.form-check-input:checked {
+  background-color: var(--ibero-red);
+  border-color: var(--ibero-red);
+}
+.btn {
+  border-radius: 999px;
+  font-family: var(--ibero-sans);
+  font-weight: 700;
+}
+.btn-primary {
+  --bs-btn-bg: var(--ibero-red);
+  --bs-btn-border-color: var(--ibero-red);
+  --bs-btn-hover-bg: var(--ibero-red-dark);
+  --bs-btn-hover-border-color: var(--ibero-red-dark);
+  --bs-btn-active-bg: var(--ibero-red-dark);
+  --bs-btn-active-border-color: var(--ibero-red-dark);
+}
+.btn-outline-primary {
+  --bs-btn-color: var(--ibero-red);
+  --bs-btn-border-color: var(--ibero-red);
+  --bs-btn-hover-bg: var(--ibero-red);
+  --bs-btn-hover-border-color: var(--ibero-red);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-active-bg: var(--ibero-red-dark);
+  --bs-btn-active-border-color: var(--ibero-red-dark);
+}
+.btn-outline-success {
+  --bs-btn-border-color: #0f8a45;
+  --bs-btn-color: #0f8a45;
+  --bs-btn-hover-bg: #0f8a45;
+  --bs-btn-hover-border-color: #0f8a45;
+}
+.text-bg-primary { background-color: var(--ibero-red) !important; }
+.result-count {
+  color: var(--ibero-muted);
+  font-size: 1rem;
+  font-weight: 300;
+}
+.tipo-filter-dropdown,
+.tipo-filter-menu { width: 100%; }
+.tipo-filter-menu {
+  border: 1px solid var(--ibero-border);
+  border-radius: 0;
+  box-shadow: 0 18px 36px rgba(0,0,0,.14);
+  max-height: min(68vh, 520px);
+  overflow-y: auto;
+}
+.tipo-actions .btn { border-radius: 999px; }
+.tipo-check-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .35rem .85rem;
+}
+.tipo-check-list .form-check {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: .42rem;
+  margin: 0;
+}
+.tipo-check-list .form-check-input { margin: 0; }
+.tipo-check-list .form-check-label {
+  cursor: pointer;
+  color: var(--ibero-black);
+  font-weight: 300;
+}
+
+.item-card {
+  border-radius: 0;
+  overflow: hidden;
+  transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.item-card:hover {
+  border-color: rgba(224,0,52,.42);
+  box-shadow: 0 18px 36px rgba(0,0,0,.08) !important;
+  transform: translateY(-1px);
+}
+.item-card .card-title {
+  color: var(--ibero-black);
+  font-family: var(--ibero-serif);
+  font-size: clamp(1.7rem, 2.4vw, 2.45rem);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -.035em;
+}
+.item-card .text-muted.small {
+  color: #5d626b !important;
+  font-size: .95rem;
+  font-weight: 300;
+}
+.item-card .card-body {
+  padding: 1.25rem 1.35rem;
+}
+.image-wrap {
+  min-height: 184px;
+  padding: .8rem;
+  background: #fff;
+  border-right: 1px solid #ededed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .item-image {
-  width: 100%; height: 180px; object-fit: cover; background: #fff;
+  width: 100%;
+  height: 170px;
+  object-fit: contain;
+  background: #fff;
 }
-.image-wrap { background: #fff; display: flex; align-items: center; justify-content: center; }
-.qty-input { width: 90px; }
-.thumb { width: 64px; height: 48px; object-fit: cover; border-radius: .5rem; border: 1px solid #ddd; }
-.table td, .table th { vertical-align: middle; }
-.form-section { background: #fff; border-radius: 1rem; padding: 1rem; border: 1px solid #e6e6e6; }
-
-.item-path-badge { max-width: 360px; white-space: normal; line-height: 1.25; }
-.form-section { background: #fff; border: 1px solid #e9ecef; border-radius: 1rem; padding: 1rem; }
-.thumb { width: 54px; height: 54px; object-fit: cover; border-radius: .5rem; border: 1px solid #dee2e6; }
-.item-image { width: 100%; height: 160px; object-fit: cover; background: #f8f9fa; }
-.qty-input { width: 90px; }
+.card-text {
+  color: #20242a;
+  font-weight: 300;
+  line-height: 1.5;
+}
+.path-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .48rem .9rem;
+  padding: .55rem .7rem;
+  background: #fafafa;
+  border: 1px solid #e5e5e5;
+  border-radius: 0;
+  color: #4b5563;
+  font-size: .86rem;
+}
+.path-compact strong { color: var(--ibero-black); font-weight: 700; }
+.area-code-chip {
+  display: inline-block;
+  padding: .06rem .38rem;
+  border-radius: 999px;
+  background: rgba(224,0,52,.08);
+  color: var(--ibero-red-dark);
+  border: 1px solid rgba(224,0,52,.22);
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.qty-input { width: 96px; }
+.thumb {
+  width: 54px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 0;
+  border: 1px solid var(--ibero-border);
+}
+.table td,
+.table th { vertical-align: middle; }
 code { color: #334155; }
 
-/* V2.2 · Dashboard operativo para administración */
+/* --------------------------------------------------------------------------
+   Paneles administrativos y formularios existentes
+   -------------------------------------------------------------------------- */
+.form-section {
+  background: #fff;
+  border: 1px solid var(--ibero-border);
+  border-radius: 0;
+  padding: 1rem;
+}
 .path-card-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: .75rem;
 }
-
 .path-card {
-  background: #f8fafc;
-  border: 1px solid #dfe5ec;
-  border-radius: .85rem;
+  background: #fafafa;
+  border: 1px solid #e1e1e1;
+  border-radius: 0;
   padding: .75rem .9rem;
   min-height: 74px;
 }
-
 .path-label {
   font-size: .72rem;
   color: #64748b;
@@ -49,104 +473,47 @@ code { color: #334155; }
   font-weight: 700;
   margin-bottom: .2rem;
 }
-
 .path-value {
   font-size: .95rem;
   font-weight: 700;
   color: #0f172a;
   line-height: 1.2;
 }
-
 .path-id {
   font-size: .75rem;
   color: #94a3b8;
   margin-top: .25rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
-
+.path-id .text-muted { font-size: .7rem; }
 .admin-card-actions {
   background: #fbfdff;
-  border-radius: .9rem;
+  border-radius: 0;
 }
-
-.inline-admin-panel {
-  border-radius: 1rem;
-}
-
+.inline-admin-panel { border-radius: 0; }
 .quick-edit-card {
-  background: #ffffff;
-  border: 1px solid #dbe3ec;
-  border-radius: 1rem;
+  background: #fff;
+  border: 1px solid var(--ibero-border);
+  border-radius: 0;
   padding: 1rem;
-  box-shadow: 0 .25rem .75rem rgba(15, 23, 42, .06);
+  box-shadow: none;
 }
-
 .quick-edit-card .form-label {
   color: #475569;
   font-weight: 700;
   margin-bottom: .25rem;
 }
-
-.location-edit-card {
-  border-left: 4px solid #0d6efd;
-}
-
+.location-edit-card { border-left: 4px solid var(--ibero-red); }
 .quick-switch-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: .4rem .9rem;
-  background: #f8fafc;
-  border: 1px solid #e5eaf0;
-  border-radius: .75rem;
+  background: #fafafa;
+  border: 1px solid #e5e5e5;
+  border-radius: 0;
   padding: .75rem;
 }
-
-.quick-switch-grid .form-check {
-  margin: 0;
-  font-size: .88rem;
-}
-
-.item-card {
-  overflow: hidden;
-}
-
-.item-card .card-title {
-  color: #0f172a;
-}
-
-@media (max-width: 992px) {
-  .path-card-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .quick-switch-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-
-/* V2.3 · Códigos visibles de área */
-.area-code-chip {
-  display: inline-block;
-  padding: .12rem .42rem;
-  border-radius: .45rem;
-  background: #e0f2fe;
-  color: #075985;
-  border: 1px solid #bae6fd;
-  font-weight: 800;
-  letter-spacing: .02em;
-}
-
-.area-path-card {
-  border-left: 4px solid #0ea5e9;
-}
-
-.path-id .text-muted {
-  font-size: .7rem;
-}
-
-
-/* V2.4 · Precio visible solo para administración */
+.quick-switch-grid .form-check { margin: 0; font-size: .88rem; }
 .admin-price-pill {
   display: inline-flex;
   align-items: center;
@@ -154,80 +521,92 @@ code { color: #334155; }
   background: #fff7ed;
   border: 1px solid #fed7aa;
   color: #7c2d12;
-  border-radius: .75rem;
+  border-radius: 999px;
   padding: .35rem .65rem;
   font-size: .86rem;
   font-weight: 700;
 }
-
 .admin-price-label {
   color: #9a3412;
   text-transform: uppercase;
   font-size: .68rem;
   letter-spacing: .04em;
 }
-
-.admin-price-value {
-  color: #431407;
-}
-
-/* V2.5 · Filtros de reportes administrativos */
+.admin-price-value { color: #431407; }
 .report-filter-box {
-  background: #f8fafc;
+  background: #fafafa;
   border: 1px solid #e2e8f0;
-  border-radius: .9rem;
+  border-radius: 0;
   padding: .9rem;
 }
+.report-filter-box .form-label { font-weight: 700; color: #475569; }
 
-.report-filter-box .form-label {
-  font-weight: 700;
-  color: #475569;
+@media (max-width: 992px) {
+  .path-card-grid,
+  .quick-switch-grid { grid-template-columns: 1fr; }
 }
 
-/* V2.6 · Catálogo principal compacto */
-.navbar .badge.rounded-pill {
-  font-weight: 700;
-}
-
-.path-compact {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .45rem .85rem;
-  padding: .45rem .65rem;
-  background: #f8fafc;
-  border: 1px solid #e5eaf0;
-  border-radius: .75rem;
-  color: #475569;
-  font-size: .82rem;
-}
-
-.path-compact strong {
-  color: #334155;
-}
-
-.path-compact .area-code-chip {
-  padding: .04rem .32rem;
-  font-size: .78rem;
-}
-
-.item-card .card-body {
-  padding-top: 1rem;
-  padding-bottom: 1rem;
-}
-
+/* --------------------------------------------------------------------------
+   Ajustes móvil: imagen compacta y legible sin ocupar todo el ancho
+   -------------------------------------------------------------------------- */
 @media (max-width: 768px) {
-  .navbar .container-fluid {
-    align-items: flex-start;
-    gap: .5rem;
-  }
+  .inventory-hero { padding: 2.6rem 0 1.9rem; }
+  .ibero-breadcrumbs { margin-bottom: 1.8rem; gap: .75rem; font-size: .94rem; }
+  .inventory-title { font-size: clamp(2.8rem, 13vw, 4.2rem); }
+  .inventory-lead { font-size: 1.04rem; line-height: 1.42; }
+  .inventory-catalog-section { padding-top: 1rem; }
+  .tipo-check-list { grid-template-columns: 1fr; }
+  .filter-toolbar .btn { min-height: 44px; }
 
-  .navbar .ms-auto {
-    flex-wrap: wrap;
-    justify-content: flex-end;
+  .item-card .row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: stretch;
   }
-
+  .item-card .image-wrap {
+    flex: 0 0 118px;
+    width: 118px;
+    max-width: 118px;
+    min-height: auto;
+    border-right: 1px solid #ededed;
+    border-bottom: 0;
+    padding: .45rem;
+  }
+  .item-card .col-md-10 {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
   .item-image {
-    height: 180px;
+    width: 100%;
+    height: 112px;
+    object-fit: contain;
     border-radius: 0 !important;
   }
+  .item-card .card-body { padding: .82rem .9rem; }
+  .item-card .card-title {
+    font-size: 1.35rem;
+    line-height: 1.03;
+  }
+  .item-card .text-muted.small { font-size: .78rem; }
+  .path-compact {
+    gap: .32rem .55rem;
+    padding: .42rem .5rem;
+    font-size: .72rem;
+  }
+  .card-text { font-size: .88rem; line-height: 1.36; }
+  .item-card .btn-sm,
+  .item-card .form-control-sm { font-size: .78rem; }
+}
+
+@media (max-width: 420px) {
+  .ibero-logo-stack { width: 86px; height: 34px; flex-basis: 86px; }
+  .item-card .image-wrap {
+    flex-basis: 100px;
+    width: 100px;
+    max-width: 100px;
+  }
+  .item-image { height: 98px; }
+  .item-card .card-title { font-size: 1.16rem; }
+  .item-card .card-body { padding: .7rem .72rem; }
 }

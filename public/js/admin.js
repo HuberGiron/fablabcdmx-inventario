@@ -26,15 +26,22 @@ const LOCATION_TYPES = [
 ];
 
 const ITEM_TYPES = [
-  "Máquina", "Herramienta", "Consumible","Cómputo", "Material", "Refacción", "Accesorio",
-  "Equipo auxiliar", "Equipo de seguridad", "Mobiliario", "Kit", "Otro",
-  // Compatibilidad con datos V1:
-  "Maquina"
+  "Máquina",
+  "Mobiliario",
+  "Cómputo",
+  "Herramienta",
+  "Consumible",
+  "Material",
+  "Refacción",
+  "Accesorio",
+  "Equipo auxiliar",
+  "Equipo de seguridad",
+  "Kit",
+  "Otro",
 ];
 
 const ITEM_DEFAULTS = {
   "Máquina": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: true },
-  "Maquina": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: true },
   "Herramienta": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Consumible": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Cómputo": {visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: false},
@@ -48,8 +55,24 @@ const ITEM_DEFAULTS = {
   "Otro": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
 };
 
+function normalizeForCompare(value) {
+  return String(value || "")
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function normalizeTipo(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Otro";
+  const comparable = normalizeForCompare(raw);
+  if (comparable === "maquina") return "Máquina";
+  return ITEM_TYPES.find(t => normalizeForCompare(t) === comparable) || raw;
+}
+
 function defaultsForType(tipo) {
-  return ITEM_DEFAULTS[tipo] || ITEM_DEFAULTS["Otro"];
+  return ITEM_DEFAULTS[normalizeTipo(tipo)] || ITEM_DEFAULTS["Otro"];
 }
 
 function applyDefaultsForSelectedType(force = false) {
@@ -470,7 +493,7 @@ async function renderItems() {
       <td><img src="${fileViewUrl(it.imageFileId)}" class="thumb"></td>
       <td>${it.sku || ""}</td>
       <td>${it.nombre || ""}</td>
-      <td>${it.tipo || ""}</td>
+      <td>${normalizeTipo(it.tipo)}</td>
       <td><span class="small">${it.zoneName || ""}<br>${it.subzoneName || ""}<br><strong>${it.locationCode ? `${it.locationCode} · ` : ""}${it.locationName || "Sin ubicación"}</strong>${it.relatedMachineName ? `<br><span class="text-muted">Rel.: ${it.relatedMachineName}</span>` : ""}</span></td>
       <td><div class="d-flex flex-column gap-1 align-items-start">${boolBadge(it.visibleParaAlumno !== false, "Alumno")}${boolBadge(it.prestamoHabilitado === true, "Préstamo", "text-bg-primary")}${boolBadge(it.reservaHabilitada === true, "Reserva", "text-bg-warning", "text-bg-secondary")}</div></td>
       <td>${it.stockAlmacen || 0}</td>
@@ -513,7 +536,7 @@ function fillItemForm(it) {
   $("#itemSku").value = it.sku || "";
   $("#itemNombre").value = it.nombre || "";
   $("#itemDescripcion").value = it.descripcion || "";
-  $("#itemTipo").value = it.tipo || "Herramienta";
+  $("#itemTipo").value = normalizeTipo(it.tipo || "Herramienta");
   $("#itemZone").value = it.zoneId || "";
   refreshSubzoneSelect("#itemSubzone", $("#itemZone").value, it.subzoneId || "");
   refreshLocationSelects();
@@ -530,7 +553,7 @@ function fillItemForm(it) {
   $("#itemDeseado").value = it.inventarioDeseado || 0;
   if ($("#itemPrecioUnitario")) $("#itemPrecioUnitario").value = it.precioUnitario ?? it.precio ?? 0;
   if ($("#itemMoneda")) $("#itemMoneda").value = it.moneda || "MXN";
-  const defaults = defaultsForType(it.tipo || "Otro");
+  const defaults = defaultsForType(normalizeTipo(it.tipo || "Otro"));
   $("#itemVisibleAlumno").checked = it.visibleParaAlumno ?? defaults.visibleParaAlumno;
   $("#itemPrestable").checked = it.prestamoHabilitado ?? defaults.prestamoHabilitado;
   $("#itemReservable").checked = it.reservaHabilitada ?? defaults.reservaHabilitada;
@@ -575,7 +598,7 @@ function buildPurchaseReportRows(rows, onlyShortage = true) {
       area: it.locationName || "",
       sku: it.sku || "",
       nombre: it.nombre || "",
-      tipo: it.tipo || "",
+      tipo: normalizeTipo(it.tipo),
       inventario_actual: inventarioActualOperativo(it),
       inventario_deseado: num(it.inventarioDeseado),
       cantidad_a_comprar: cantidad,

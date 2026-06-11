@@ -6,7 +6,20 @@ import {
 
 setupNav();
 
-const ITEM_TYPES = ["Máquina", "Herramienta", "Consumible","Cómputo", "Material", "Refacción", "Accesorio", "Equipo auxiliar", "Equipo de seguridad", "Mobiliario", "Kit", "Otro", "Maquina"];
+const ITEM_TYPES = [
+  "Máquina",
+  "Mobiliario",
+  "Cómputo",
+  "Herramienta",
+  "Consumible",
+  "Material",
+  "Refacción",
+  "Accesorio",
+  "Equipo auxiliar",
+  "Equipo de seguridad",
+  "Kit",
+  "Otro",
+];
 
 const LOCATION_TYPES = [
   ["machine", "Máquina"],
@@ -64,6 +77,77 @@ function esc(value) {
 
 function safeDomId(value) {
   return encodeURIComponent(String(value || "id")).replaceAll("%", "_");
+}
+
+function normalizeForCompare(value) {
+  return String(value || "")
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function normalizeTipo(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Otro";
+  const comparable = normalizeForCompare(raw);
+  if (comparable === "maquina") return "Máquina";
+  return ITEM_TYPES.find(t => normalizeForCompare(t) === comparable) || raw;
+}
+
+function getSelectedTipos() {
+  const checks = [...document.querySelectorAll(".tipo-check")];
+  if (!checks.length) return new Set(ITEM_TYPES);
+  return new Set(checks.filter(ch => ch.checked).map(ch => normalizeTipo(ch.value)));
+}
+
+function setTipoChecks(checked) {
+  document.querySelectorAll(".tipo-check").forEach(ch => { ch.checked = checked; });
+  updateTipoDropdownLabel();
+}
+
+function updateTipoDropdownLabel() {
+  const btn = $("#tipoDropdownBtn");
+  if (!btn) return;
+  const selected = getSelectedTipos();
+  if (selected.size === ITEM_TYPES.length) {
+    btn.textContent = "Todas las categorías de tipo";
+  } else if (selected.size === 0) {
+    btn.textContent = "Ningún tipo seleccionado";
+  } else if (selected.size === 1) {
+    btn.textContent = [...selected][0];
+  } else {
+    btn.textContent = `${selected.size} tipos seleccionados`;
+  }
+}
+
+function renderTipoCheckboxes() {
+  const target = $("#filterTipoChecks");
+  if (!target) return;
+  target.innerHTML = ITEM_TYPES.map(t => {
+    const id = `tipo-check-${safeDomId(t)}`;
+    return `
+      <label class="form-check" for="${esc(id)}">
+        <input class="form-check-input tipo-check" type="checkbox" id="${esc(id)}" value="${esc(t)}" checked>
+        <span class="form-check-label">${esc(t)}</span>
+      </label>`;
+  }).join("");
+  updateTipoDropdownLabel();
+}
+
+function bindTipoFilterEvents() {
+  document.querySelectorAll(".tipo-check").forEach(ch => ch.addEventListener("change", () => {
+    updateTipoDropdownLabel();
+    applyFilters();
+  }));
+  $("#selectAllTypes")?.addEventListener("click", () => {
+    setTipoChecks(true);
+    applyFilters();
+  });
+  $("#clearTypeFilters")?.addEventListener("click", () => {
+    setTipoChecks(false);
+    applyFilters();
+  });
 }
 
 function isAdmin() {
@@ -174,7 +258,8 @@ function parentLocationOptionsFor(zoneId = "", subzoneId = "", selected = "", cu
 }
 
 function itemTypeOptions(selected = "") {
-  return ITEM_TYPES.map(t => `<option value="${esc(t)}" ${String(t) === String(selected) ? "selected" : ""}>${esc(t)}</option>`).join("");
+  const normalizedSelected = normalizeTipo(selected);
+  return ITEM_TYPES.map(t => `<option value="${esc(t)}" ${String(t) === String(normalizedSelected) ? "selected" : ""}>${esc(t)}</option>`).join("");
 }
 
 function locationTypeOptions(selected = "") {
@@ -227,11 +312,10 @@ function fillSelects() {
   const zone = $("#filterZone");
   const sub = $("#filterSubzone");
   const week = $("#filterWeek");
-  const tipo = $("#filterTipo");
   const loc = $("#filterLocation");
   const rel = $("#filterRelatedMachine");
 
-  if (tipo) tipo.innerHTML = '<option value="">Todos los tipos</option>' + ITEM_TYPES.map(t => `<option>${esc(t)}</option>`).join("");
+  renderTipoCheckboxes();
   if (zone) zone.innerHTML = '<option value="">Todas las zonas</option>' + zones.map(z => `<option value="${esc(z.zoneId)}">${esc(z.zoneId)} · ${esc(z.name)}</option>`).join("");
   if (sub) sub.innerHTML = '<option value="">Todas las subzonas</option>' + subzones.map(s => `<option value="${esc(s.subzoneId)}" data-zone="${esc(s.zoneId)}">${esc(s.subzoneId)} · ${esc(s.name)}</option>`).join("");
   if (week) week.innerHTML = '<option value="">Todas las semanas FabAcademy</option>' + weeks.map(w => `<option value="${esc(w.weekId)}">${esc(w.weekId)} · ${esc(w.name)}</option>`).join("");
@@ -278,7 +362,8 @@ function applyFilters() {
   const locationId = $("#filterLocation")?.value || "";
   const relatedMachineId = $("#filterRelatedMachine")?.value || "";
   const weekId = $("#filterWeek")?.value || "";
-  const tipo = $("#filterTipo")?.value || "";
+  const selectedTipos = getSelectedTipos();
+  const filterAllKnownTypes = selectedTipos.size === ITEM_TYPES.length;
 
   filtered = items.filter(it => {
     if (zoneId && String(it.zoneId) !== zoneId) return false;
@@ -286,7 +371,8 @@ function applyFilters() {
     if (locationId && String(it.locationId || "") !== locationId) return false;
     if (relatedMachineId && String(it.relatedMachineId || "") !== relatedMachineId) return false;
     if (weekId && !(it.fabacademyWeeks || []).map(String).includes(weekId)) return false;
-    if (tipo && it.tipo !== tipo) return false;
+    if (selectedTipos.size === 0) return false;
+    if (!filterAllKnownTypes && !selectedTipos.has(normalizeTipo(it.tipo))) return false;
     if (search) {
       const hay = `${it.sku || ""} ${it.nombre || ""} ${it.descripcion || ""} ${it.zoneName || ""} ${it.subzoneName || ""} ${it.locationName || ""} ${it.relatedMachineName || ""}`.toLowerCase();
       if (!hay.includes(search)) return false;
@@ -380,7 +466,7 @@ function renderItems() {
               <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
                 <div>
                   <h5 class="card-title mb-1">${esc(it.nombre || "Sin nombre")}</h5>
-                  <div class="text-muted small">${esc(it.sku || "")} · ${esc(it.tipo || "")} · Disponible: <strong>${disponible}</strong> · Deseado: <strong>${Number(it.inventarioDeseado || 0)}</strong></div>
+                  <div class="text-muted small">${esc(it.sku || "")} · ${esc(normalizeTipo(it.tipo))} · Disponible: <strong>${disponible}</strong> · Deseado: <strong>${Number(it.inventarioDeseado || 0)}</strong></div>
                   <div class="mt-1">${statusBadges(it)}</div>
                   ${adminPriceBlock(it)}
                 </div>
@@ -1007,7 +1093,7 @@ function buildInventoryReportRows(rows) {
     area: it.locationName || "",
     sku: it.sku || "",
     nombre: it.nombre || "",
-    tipo: it.tipo || "",
+    tipo: normalizeTipo(it.tipo),
     inventario_actual: inventarioActualOperativo(it),
     inventario_deseado: num(it.inventarioDeseado),
     cantidad_a_comprar: cantidadAComprar(it),
@@ -1114,10 +1200,16 @@ async function init() {
   renderItems();
   renderCartCount();
 
-  ["#search", "#filterTipo", "#filterWeek", "#filterLocation"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
+  ["#search", "#filterWeek", "#filterLocation"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
+  bindTipoFilterEvents();
   $("#filterZone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#filterSubzone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
-  $("#clearFilters")?.addEventListener("click", () => { document.querySelectorAll(".filter-input").forEach(x => x.value = ""); refreshDependentFilters(); applyFilters(); });
+  $("#clearFilters")?.addEventListener("click", () => {
+    document.querySelectorAll(".filter-input").forEach(x => { x.value = ""; });
+    setTipoChecks(true);
+    refreshDependentFilters();
+    applyFilters();
+  });
   $("#exportXlsx")?.addEventListener("click", exportVisibleXlsx);
   $("#openCart")?.addEventListener("click", renderCartModal);
   $("#submitLoan")?.addEventListener("click", submitLoanRequest);
