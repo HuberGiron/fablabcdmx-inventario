@@ -451,61 +451,84 @@ code { color: #334155; }
    -------------------------------------------------------------------------- */
 .loan-action {
   display: inline-flex;
-  align-items: stretch;
-  gap: .75rem;
+  align-items: center;
+  gap: .45rem;
   flex-wrap: wrap;
-  margin-top: .1rem;
+  margin-top: .05rem;
 }
 
-.loan-qty {
+.loan-qty-stepper {
   display: inline-flex;
   align-items: center;
-  min-height: 48px;
-  margin: 0;
+  height: 36px;
   overflow: hidden;
   border: 1px solid var(--ibero-border);
   border-radius: 999px;
   background: #fff;
 }
 
-.loan-qty-label {
+.loan-qty-step {
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
-  align-self: stretch;
-  padding: 0 .95rem;
-  border-right: 1px solid var(--ibero-border);
+  justify-content: center;
+  border: 0;
   background: #f7f7f5;
   color: var(--ibero-black);
   font-family: var(--ibero-sans);
-  font-size: .78rem;
-  font-weight: 700;
-  letter-spacing: .045em;
-  text-transform: uppercase;
-  white-space: nowrap;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  transition: background .16s ease, color .16s ease;
+}
+
+.loan-qty-step:hover,
+.loan-qty-step:focus {
+  background: var(--ibero-red);
+  color: #fff;
+  outline: 0;
+}
+
+.loan-qty-step:disabled {
+  color: #aaa;
+  background: #f3f3f1;
+  cursor: not-allowed;
 }
 
 .loan-qty-input,
 .qty-input.loan-qty-input {
-  width: 74px;
-  min-height: 48px;
-  height: 48px;
-  padding: 0 .65rem;
+  width: 48px;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 .2rem;
   border: 0;
+  border-left: 1px solid var(--ibero-border);
+  border-right: 1px solid var(--ibero-border);
   border-radius: 0;
   background: #fff;
   color: var(--ibero-black);
   box-shadow: none;
   font-family: var(--ibero-sans);
-  font-size: 1.05rem;
-  font-weight: 600;
+  font-size: .95rem;
+  font-weight: 700;
   line-height: 1;
   text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.loan-qty-input::-webkit-outer-spin-button,
+.loan-qty-input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
 }
 
 .loan-qty-input:focus {
-  border: 0;
+  border-left: 1px solid var(--ibero-border);
+  border-right: 1px solid var(--ibero-border);
   outline: 0;
-  box-shadow: inset 0 0 0 2px rgba(224, 0, 52, .22);
+  box-shadow: inset 0 0 0 2px rgba(224, 0, 52, .18);
 }
 
 .loan-add-btn,
@@ -513,19 +536,19 @@ code { color: #334155; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 48px;
-  padding: .72rem 1.35rem;
+  min-height: 36px;
+  padding: .42rem .95rem;
   border: 1px solid var(--ibero-red);
   border-radius: 999px;
   background: var(--ibero-red);
   color: #fff;
-  box-shadow: 0 9px 18px rgba(224, 0, 52, .16);
+  box-shadow: none;
   font-family: var(--ibero-sans);
-  font-size: .98rem;
+  font-size: .86rem;
   font-weight: 800;
   line-height: 1;
   text-decoration: none;
-  transition: transform .16s ease, box-shadow .16s ease, background .16s ease, border-color .16s ease;
+  transition: background .16s ease, border-color .16s ease;
 }
 
 .loan-add-btn:hover,
@@ -533,8 +556,6 @@ code { color: #334155; }
   border-color: var(--ibero-red-dark);
   background: var(--ibero-red-dark);
   color: #fff;
-  box-shadow: 0 12px 24px rgba(224, 0, 52, .23);
-  transform: translateY(-1px);
 }
 
 .loan-add-btn:disabled,
@@ -542,24 +563,22 @@ code { color: #334155; }
   border-color: #d7d7d7;
   background: #d7d7d7;
   color: #777;
-  box-shadow: none;
   cursor: not-allowed;
-  transform: none;
 }
 
 .loan-stock-msg,
 .loan-stock-ok {
   display: inline-flex;
   align-items: center;
-  min-height: 48px;
+  min-height: 36px;
   font-family: var(--ibero-sans);
-  font-size: .92rem;
+  font-size: .82rem;
   font-weight: 700;
   line-height: 1.15;
 }
 
 .loan-stock-msg { color: var(--ibero-red); }
-.loan-stock-ok { color: #5f686f; }
+.loan-stock-ok { color: #68717a; }
 
 /* --------------------------------------------------------------------------
    Paneles administrativos y formularios existentes
@@ -717,37 +736,26 @@ code { color: #334155; }
 
   .loan-action {
     width: 100%;
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: .55rem;
+    gap: .4rem;
   }
-  .loan-qty,
-  .loan-add-btn,
-  .loan-stock-msg,
-  .loan-stock-ok {
-    width: 100%;
-  }
-  .loan-qty {
-    justify-content: space-between;
-  }
-  .loan-qty-label {
-    flex: 1 1 auto;
-  }
+  .loan-qty-stepper { height: 34px; }
+  .loan-qty-step { width: 32px; height: 32px; }
   .loan-qty-input,
   .qty-input.loan-qty-input {
-    width: 92px;
-    flex: 0 0 92px;
+    width: 46px;
+    height: 32px;
+    min-height: 32px;
   }
   .loan-add-btn,
   .btn-sm.loan-add-btn {
-    min-height: 46px;
-    justify-content: center;
-    font-size: .9rem;
+    min-height: 34px;
+    padding: .38rem .82rem;
+    font-size: .78rem;
   }
   .loan-stock-msg,
   .loan-stock-ok {
-    min-height: 0;
-    font-size: .82rem;
+    min-height: 34px;
+    font-size: .76rem;
   }
 }
 
@@ -761,7 +769,9 @@ code { color: #334155; }
   .item-image { height: 98px; }
   .item-card .card-title { font-size: 1.16rem; }
   .item-card .card-body { padding: .7rem .72rem; }
-  .loan-qty-label { padding-inline: .72rem; font-size: .7rem; }
+  .loan-qty-step { width: 30px; }
   .loan-qty-input,
-  .qty-input.loan-qty-input { width: 76px; flex-basis: 76px; }
+  .qty-input.loan-qty-input { width: 42px; }
+  .loan-add-btn,
+  .btn-sm.loan-add-btn { padding-inline: .72rem; }
 }

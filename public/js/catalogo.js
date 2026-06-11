@@ -412,13 +412,19 @@ function actionControls(it, disponible) {
   if (it.prestamoHabilitado === true) {
     const disabled = disponible <= 0 ? "disabled" : "";
     const stockMsg = disponible <= 0
-      ? '<span class="loan-stock-msg">Sin stock disponible</span>'
-      : `<span class="loan-stock-ok">${disponible} disponible${disponible === 1 ? "" : "s"}</span>`;
+      ? '<span class="loan-stock-msg">Sin stock</span>'
+      : `<span class="loan-stock-ok">${disponible} disp.</span>`;
 
     return `
       <div class="loan-action" aria-label="Control de préstamo">
-        <label class="loan-qty" for="qty-${esc(it.id)}">
-          <span class="loan-qty-label">Cantidad</span>
+        <div class="loan-qty-stepper" aria-label="Cantidad a solicitar">
+          <button
+            type="button"
+            class="loan-qty-step qty-step"
+            data-id="${esc(it.id)}"
+            data-step="-1"
+            aria-label="Disminuir cantidad"
+            ${disabled}>−</button>
           <input
             type="number"
             min="1"
@@ -426,14 +432,22 @@ function actionControls(it, disponible) {
             value="1"
             class="form-control form-control-sm qty-input loan-qty-input"
             id="qty-${esc(it.id)}"
+            aria-label="Cantidad a solicitar"
             ${disabled}>
-        </label>
+          <button
+            type="button"
+            class="loan-qty-step qty-step"
+            data-id="${esc(it.id)}"
+            data-step="1"
+            aria-label="Aumentar cantidad"
+            ${disabled}>+</button>
+        </div>
 
         <button
           class="btn btn-sm btn-primary add-cart loan-add-btn"
           data-id="${esc(it.id)}"
           ${disabled}>
-          Agregar al carrito
+          Agregar
         </button>
 
         ${stockMsg}
@@ -515,8 +529,24 @@ function renderItems() {
   bindCardActions();
 }
 
+function clampLoanQuantity(input, delta = 0) {
+  if (!input || input.disabled) return;
+  const min = Number(input.min || 1);
+  const max = Number(input.max || min);
+  const current = Number(input.value || min);
+  const next = Math.max(min, Math.min(max, current + delta));
+  input.value = next;
+}
+
+function adjustLoanQuantity(itemId, delta) {
+  const input = document.getElementById(`qty-${itemId}`);
+  clampLoanQuantity(input, Number(delta || 0));
+}
+
 function bindCardActions() {
   document.querySelectorAll(".add-cart").forEach(btn => btn.addEventListener("click", () => addToCart(btn.dataset.id)));
+  document.querySelectorAll(".qty-step").forEach(btn => btn.addEventListener("click", () => adjustLoanQuantity(btn.dataset.id, btn.dataset.step)));
+  document.querySelectorAll(".loan-qty-input").forEach(input => input.addEventListener("change", () => clampLoanQuantity(input)));
   document.querySelectorAll(".reserve-assistance").forEach(btn => btn.addEventListener("click", () => requestAssistance(btn.dataset.id)));
   document.querySelectorAll(".file-download").forEach(btn => btn.addEventListener("click", () => downloadProtectedFile(btn.dataset.file, btn.dataset.name)));
 
@@ -1005,7 +1035,9 @@ async function deleteItem(itemId) {
 function addToCart(itemId) {
   const it = items.find(x => x.id === itemId);
   if (!it || it.prestamoHabilitado !== true) return alert("Este elemento no está habilitado para préstamo.");
-  const qty = Number($(`#qty-${itemId}`)?.value || 1);
+  const qtyInput = document.getElementById(`qty-${itemId}`);
+  clampLoanQuantity(qtyInput);
+  const qty = Number(qtyInput?.value || 1);
   if (qty <= 0) return;
   const data = cart();
   const existing = data.find(x => x.itemId === itemId);
