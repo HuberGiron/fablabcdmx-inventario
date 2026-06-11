@@ -775,3 +775,10 @@ code { color: #334155; }
   .loan-add-btn,
   .btn-sm.loan-add-btn { padding-inline: .72rem; }
 }
+
+/* Ajuste: el filtro de Tipo debe mantener esquinas cuadradas como los demás filtros */
+.tipo-filter-dropdown .btn-filter,
+button#tipoDropdownBtn.btn-filter,
+.btn.btn-filter {
+  border-radius: 0 !important;
+}

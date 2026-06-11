@@ -111,7 +111,7 @@ function updateTipoDropdownLabel() {
   if (!btn) return;
   const selected = getSelectedTipos();
   if (selected.size === ITEM_TYPES.length) {
-    btn.textContent = "Todas las categorías";
+    btn.textContent = "Todas las categorías de tipo";
   } else if (selected.size === 0) {
     btn.textContent = "Ningún tipo seleccionado";
   } else if (selected.size === 1) {
