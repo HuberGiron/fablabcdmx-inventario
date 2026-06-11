@@ -11,7 +11,7 @@ $("#loginForm")?.addEventListener("submit", async (e) => {
   const password = $("#loginPassword").value;
   try {
     await signInWithEmailAndPassword(auth, email, password);
-    window.location.href = "index.html";
+    window.location.href = "./";
   } catch (err) {
     alert(`No se pudo iniciar sesión: ${err.message}`);
   }
@@ -36,7 +36,7 @@ $("#registerForm")?.addEventListener("submit", async (e) => {
       updatedAt: serverTimestamp(),
     });
     alert("Registro exitoso.");
-    window.location.href = "index.html";
+    window.location.href = "./";
   } catch (err) {
     alert(`No se pudo registrar: ${err.message}`);
   }

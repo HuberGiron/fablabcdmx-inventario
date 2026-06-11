@@ -45,7 +45,7 @@ export async function requireRole(allowedRoles) {
   const profile = await getUserProfile(user.uid);
   if (!profile || !allowedRoles.includes(profile.role)) {
     alert("No tienes permisos para acceder a esta página.");
-    window.location.href = "index.html";
+    window.location.href = "./";
     return null;
   }
   return { user, profile };
