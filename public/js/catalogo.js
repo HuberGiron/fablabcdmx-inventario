@@ -178,6 +178,21 @@ function itemLocationCode(it) {
   return it?.locationCode || locationById(it?.locationId)?.areaCode || locationById(it?.locationId)?.locationCode || it?.subzoneId || "";
 }
 
+function numericSortValue(value, fallback = 999) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function sortItems(arr) {
+  return [...arr].sort((a, b) =>
+    numericSortValue(a.zoneId) - numericSortValue(b.zoneId) ||
+    String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), "es", { numeric: true }) ||
+    String(itemLocationCode(a) || "").localeCompare(String(itemLocationCode(b) || ""), "es", { numeric: true }) ||
+    String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }) ||
+    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
+  );
+}
+
 function formatCurrency(value, currency = "MXN") {
   const n = Number(value || 0);
   const code = currency || "MXN";
@@ -305,7 +320,7 @@ async function loadBase() {
   subzones = sSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>String(a.subzoneId).localeCompare(String(b.subzoneId), undefined, {numeric:true}));
   weeks = wSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>a.weekId-b.weekId);
   locations = sortLocations(lSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-  items = iSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  items = sortItems(iSnap.docs.map(d => ({ id: d.id, ...d.data() })));
 }
 
 function fillSelects() {
@@ -812,7 +827,7 @@ async function saveInlineItem(e, itemId) {
     alert(`El item se guardó, pero hubo un error al subir archivos: ${err.message}`);
   }
 
-  items = items.map(x => x.id === itemId ? { ...x, ...payload, ...uploadedFields } : x);
+  items = sortItems(items.map(x => x.id === itemId ? { ...x, ...payload, ...uploadedFields } : x));
   alert("Item actualizado.");
   applyFilters();
 }
@@ -972,11 +987,11 @@ async function saveInlineLocation(e, loc, itemId) {
 
   await Promise.all([...itemUpdates.entries()].map(([id, data]) => updateDoc(doc(db, "items", id), data)));
 
-  locations = locations.map(x => x.id === loc.id ? { ...x, ...payload } : x);
-  items = items.map(x => {
+  locations = sortLocations(locations.map(x => x.id === loc.id ? { ...x, ...payload } : x));
+  items = sortItems(items.map(x => {
     const upd = itemUpdates.get(x.id);
     return upd ? { ...x, ...upd } : x;
-  });
+  }));
 
   alert(`Área actualizada. Items sincronizados: ${itemUpdates.size}`);
   applyFilters();
