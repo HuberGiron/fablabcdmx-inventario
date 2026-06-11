@@ -272,6 +272,55 @@ function selectedOptions(selectId) {
   return [...$(selectId).selectedOptions].map(o => Number(o.value));
 }
 
+function normalizeSku(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+async function findDuplicateSku(sku, currentItemId = "") {
+  const normalizedSku = normalizeSku(sku);
+  if (!normalizedSku) return null;
+
+  const exactSnap = await getDocs(query(collection(db, "items"), where("sku", "==", String(sku || "").trim())));
+  const exactDuplicate = exactSnap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .find(it => String(it.id) !== String(currentItemId));
+
+  if (exactDuplicate) return exactDuplicate;
+
+  // Respaldo ligero con los items activos ya cargados en el panel, por si hubiera
+  // diferencias de mayúsculas/minúsculas o espacios en datos existentes.
+  return adminItemsCache.find(it =>
+    normalizeSku(it.sku) === normalizedSku &&
+    String(it.id) !== String(currentItemId)
+  ) || null;
+}
+
+async function validateSkuBeforeSave(sku, currentItemId = "") {
+  const cleanSku = String(sku || "").trim();
+
+  if (!cleanSku) {
+    alert("El SKU es obligatorio.");
+    $("#itemSku")?.focus();
+    return false;
+  }
+
+  const duplicate = await findDuplicateSku(cleanSku, currentItemId);
+  if (!duplicate) return true;
+
+  alert(
+    `No se puede guardar el elemento porque el SKU "${cleanSku}" ya existe.\n\n` +
+    `Elemento existente:\n` +
+    `${duplicate.sku || "Sin SKU"} · ${duplicate.nombre || "Sin nombre"}\n` +
+    `${duplicate.locationCode ? `Área: ${duplicate.locationCode} · ` : ""}${duplicate.locationName || ""}\n\n` +
+    `Cambia el SKU antes de guardar.`
+  );
+
+  const skuInput = $("#itemSku");
+  skuInput?.focus();
+  skuInput?.select?.();
+  return false;
+}
+
 function namesForWeeks(ids) {
   return ids.map(id => weeks.find(w => Number(w.weekId) === Number(id))?.name || String(id));
 }
@@ -411,25 +460,35 @@ function fillLocationForm(l) {
 
 async function saveItem(e) {
   e.preventDefault();
-  const itemId = $("#itemId").value || doc(collection(db, "items")).id;
-  const zoneId = Number($("#itemZone").value);
-  const subzoneId = $("#itemSubzone").value;
-  const locationId = $("#itemLocation").value || "";
-  const relatedMachineId = $("#itemRelatedMachine").value || "";
-  const location = locationId ? locationById(locationId) : null;
-  const relatedMachine = relatedMachineId ? locationById(relatedMachineId) : null;
-  const fabIds = selectedOptions("#itemWeeks");
 
-  const [imageFileId, pdfFileId, datasheetFileId] = await Promise.all([
-    uploadFile("#itemImage", "image", itemId),
-    uploadFile("#itemPdf", "pdf", itemId),
-    uploadFile("#itemDatasheet", "datasheet", itemId),
-  ]);
+  const submitBtn = e.submitter || e.currentTarget.querySelector('button[type="submit"], button:not([type])');
+  if (submitBtn) submitBtn.disabled = true;
 
-  const zone = zones.find(z => Number(z.zoneId) === zoneId);
-  const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
-  const base = {
-    sku: $("#itemSku").value.trim(),
+  try {
+    const currentItemId = $("#itemId").value || "";
+    const sku = $("#itemSku").value.trim();
+
+    if (!(await validateSkuBeforeSave(sku, currentItemId))) return;
+
+    const itemId = currentItemId || doc(collection(db, "items")).id;
+    const zoneId = Number($("#itemZone").value);
+    const subzoneId = $("#itemSubzone").value;
+    const locationId = $("#itemLocation").value || "";
+    const relatedMachineId = $("#itemRelatedMachine").value || "";
+    const location = locationId ? locationById(locationId) : null;
+    const relatedMachine = relatedMachineId ? locationById(relatedMachineId) : null;
+    const fabIds = selectedOptions("#itemWeeks");
+
+    const [imageFileId, pdfFileId, datasheetFileId] = await Promise.all([
+      uploadFile("#itemImage", "image", itemId),
+      uploadFile("#itemPdf", "pdf", itemId),
+      uploadFile("#itemDatasheet", "datasheet", itemId),
+    ]);
+
+    const zone = zones.find(z => Number(z.zoneId) === zoneId);
+    const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+    const base = {
+    sku,
     nombre: $("#itemNombre").value.trim(),
     descripcion: $("#itemDescripcion").value.trim(),
     tipo: $("#itemTipo").value,
@@ -463,15 +522,18 @@ async function saveItem(e) {
     activo: true,
     updatedAt: serverTimestamp(),
   };
-  if (!$("#itemId").value) base.createdAt = serverTimestamp();
-  if (imageFileId) base.imageFileId = imageFileId;
-  if (pdfFileId) base.pdfFileId = pdfFileId;
-  if (datasheetFileId) base.datasheetFileId = datasheetFileId;
+    if (!currentItemId) base.createdAt = serverTimestamp();
+    if (imageFileId) base.imageFileId = imageFileId;
+    if (pdfFileId) base.pdfFileId = pdfFileId;
+    if (datasheetFileId) base.datasheetFileId = datasheetFileId;
 
-  await setDoc(doc(db, "items", itemId), base, { merge: true });
-  alert("Elemento guardado.");
-  clearItemForm();
-  await renderItems();
+    await setDoc(doc(db, "items", itemId), base, { merge: true });
+    alert("Elemento guardado.");
+    clearItemForm();
+    await renderItems();
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
 }
 
 function clearItemForm() {
