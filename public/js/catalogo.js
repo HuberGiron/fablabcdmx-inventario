@@ -193,6 +193,31 @@ function sortItems(arr) {
   );
 }
 
+function normalizeSku(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+async function findDuplicateSku(sku, ignoreItemId = "") {
+  const normalized = normalizeSku(sku);
+  if (!normalized) return null;
+
+  const localDuplicate = items.find(it =>
+    String(it.id) !== String(ignoreItemId) &&
+    normalizeSku(it.sku) === normalized
+  );
+  if (localDuplicate) return localDuplicate;
+
+  const exactSku = String(sku || "").trim();
+  if (!exactSku) return null;
+
+  const snap = await getDocs(query(collection(db, "items"), where("sku", "==", exactSku)));
+  const remoteDuplicate = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .find(it => String(it.id) !== String(ignoreItemId));
+
+  return remoteDuplicate || null;
+}
+
 function formatCurrency(value, currency = "MXN") {
   const n = Number(value || 0);
   const code = currency || "MXN";
@@ -497,6 +522,7 @@ function adminControls(it) {
     <div class="admin-card-actions mt-3 pt-3 border-top">
       <div class="d-flex flex-wrap gap-2">
         <button class="btn btn-sm btn-outline-primary admin-edit-item" data-id="${esc(it.id)}">Editar item</button>
+        <button class="btn btn-sm btn-outline-primary admin-copy-item" data-id="${esc(it.id)}">Copiar</button>
         <button class="btn btn-sm btn-outline-dark admin-edit-location" data-id="${esc(it.id)}" ${hasLocation ? "" : "disabled"}>Editar área</button>
         <button class="btn btn-sm btn-outline-warning admin-deactivate-item" data-id="${esc(it.id)}">Desactivar</button>
         <button class="btn btn-sm btn-outline-danger admin-delete-item" data-id="${esc(it.id)}">Eliminar</button>
@@ -582,6 +608,7 @@ function bindCardActions() {
   if (!isAdmin()) return;
 
   document.querySelectorAll(".admin-edit-item").forEach(btn => btn.addEventListener("click", () => openItemEditor(btn.dataset.id)));
+  document.querySelectorAll(".admin-copy-item").forEach(btn => btn.addEventListener("click", () => openCopyItemPanel(btn.dataset.id)));
   document.querySelectorAll(".admin-edit-location").forEach(btn => btn.addEventListener("click", () => openLocationEditorForItem(btn.dataset.id)));
   document.querySelectorAll(".admin-deactivate-item").forEach(btn => btn.addEventListener("click", () => deactivateItem(btn.dataset.id)));
   document.querySelectorAll(".admin-delete-item").forEach(btn => btn.addEventListener("click", () => deleteItem(btn.dataset.id)));
@@ -611,6 +638,157 @@ function openItemEditor(itemId) {
   panel.dataset.mode = "item";
   panel.innerHTML = renderItemEditor(it);
   bindInlineItemForm(panel, itemId);
+}
+
+function openCopyItemPanel(itemId) {
+  const it = items.find(x => x.id === itemId);
+  if (!it) return;
+  closeAllPanelsExcept(itemId);
+  const panel = panelForItem(itemId);
+  if (!panel) return;
+  if (panel.dataset.mode === "copy") {
+    panel.innerHTML = "";
+    panel.dataset.mode = "";
+    return;
+  }
+  panel.dataset.mode = "copy";
+  panel.innerHTML = renderCopyItemForm(it);
+  bindCopyItemForm(panel, itemId);
+}
+
+function renderCopyItemForm(it) {
+  return `
+    <div class="quick-edit-card copy-item-card">
+      <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+        <div>
+          <h6 class="mb-1">Copiar item</h6>
+          <div class="small text-muted">
+            Crea una copia de <strong>${esc(it.sku || "s/SKU")}</strong> · ${esc(it.nombre || "Sin nombre")}.
+          </div>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary close-inline-panel">Cerrar</button>
+      </div>
+
+      <form class="copy-item-form" data-id="${esc(it.id)}">
+        <div class="row g-2">
+          <div class="col-md-3">
+            <label class="form-label small">SKU nuevo</label>
+            <input name="sku" class="form-control form-control-sm" value="" placeholder="Ej. 0604007" required>
+            <div class="form-text">Debe ser único; se valida antes de guardar.</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small">Zona</label>
+            <select name="zoneId" class="form-select form-select-sm copy-zone" required>${zoneOptions(it.zoneId)}</select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small">Subzona</label>
+            <select name="subzoneId" class="form-select form-select-sm copy-subzone" required>${subzoneOptions(it.zoneId, it.subzoneId)}</select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small">Área / ubicación</label>
+            <select name="locationId" class="form-select form-select-sm copy-location">${locationOptionsFor(it.zoneId, it.subzoneId, it.locationId)}</select>
+          </div>
+        </div>
+
+        <div class="alert alert-info py-2 mt-3 mb-2 small">
+          La copia conserva nombre, descripción, tipo, stock, precio, enlaces, imagen, documentación, visibilidad y configuración de préstamo. Solo cambia el SKU y, si lo ajustas, la ruta física.
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mt-2">
+          <button class="btn btn-sm btn-primary create-copy-item">Crear copia</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary close-inline-panel">Cancelar</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function bindCopyItemForm(panel, itemId) {
+  panel.querySelectorAll(".close-inline-panel").forEach(btn => btn.addEventListener("click", () => {
+    panel.innerHTML = "";
+    panel.dataset.mode = "";
+  }));
+
+  const form = panel.querySelector(".copy-item-form");
+  const zoneSel = form.querySelector(".copy-zone");
+  const subSel = form.querySelector(".copy-subzone");
+  const locSel = form.querySelector(".copy-location");
+
+  zoneSel.addEventListener("change", () => {
+    subSel.innerHTML = subzoneOptions(zoneSel.value, "");
+    locSel.innerHTML = locationOptionsFor(zoneSel.value, subSel.value, "");
+  });
+
+  subSel.addEventListener("change", () => {
+    locSel.innerHTML = locationOptionsFor(zoneSel.value, subSel.value, locSel.value);
+  });
+
+  form.addEventListener("submit", e => createCopiedItem(e, itemId));
+}
+
+async function createCopiedItem(e, itemId) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const submitBtn = form.querySelector(".create-copy-item");
+  const original = items.find(x => x.id === itemId);
+  if (!original) return alert("No encontré el item original para copiar.");
+
+  const newSku = form.sku.value.trim();
+  if (!newSku) {
+    form.sku.focus();
+    return alert("Escribe un SKU nuevo para la copia.");
+  }
+
+  const duplicate = await findDuplicateSku(newSku);
+  if (duplicate) {
+    form.sku.focus();
+    return alert(`No se puede crear la copia. El SKU "${newSku}" ya existe en:\n\n${duplicate.sku || "s/SKU"} · ${duplicate.nombre || "Sin nombre"}`);
+  }
+
+  const zoneId = Number(form.zoneId.value);
+  const subzoneId = form.subzoneId.value;
+  const locationId = form.locationId.value || "";
+  const zone = zones.find(z => Number(z.zoneId) === Number(zoneId));
+  const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  const location = locationId ? locationById(locationId) : null;
+
+  if (!zone || !subzone) {
+    return alert("Selecciona una zona y subzona válidas para crear la copia.");
+  }
+
+  const payload = { ...original };
+  delete payload.id;
+  delete payload.createdAt;
+  delete payload.updatedAt;
+
+  Object.assign(payload, {
+    sku: newSku,
+    tipo: normalizeTipo(original.tipo),
+    zoneId,
+    zoneName: zone.name || "",
+    subzoneId,
+    subzoneName: subzone.name || "",
+    locationId,
+    locationName: location?.name || "",
+    locationCode: locationDisplayCode(location),
+    locationType: location?.type || "",
+    activo: original.activo !== false,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Creando...";
+
+  try {
+    const ref = await addDoc(collection(db, "items"), payload);
+    items = sortItems([...items, { id: ref.id, ...payload }]);
+    alert(`Copia creada con SKU ${newSku}.`);
+    applyFilters();
+  } catch (err) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Crear copia";
+    alert(`No se pudo crear la copia: ${err.message}`);
+  }
 }
 
 function renderItemEditor(it) {
