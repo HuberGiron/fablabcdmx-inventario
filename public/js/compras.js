@@ -336,7 +336,7 @@ async function loadCurrentUserContext() {
   isStaff = currentRole === "admin" || currentRole === "tecnico";
 
   const cartBtn = $("#openCart");
-  if (cartBtn) cartBtn.classList.toggle("d-none", isStaff);
+  if (cartBtn) cartBtn.classList.toggle("d-none", PURCHASE_VIEW || isStaff);
 
 }
 
@@ -475,58 +475,7 @@ function pathCards(it) {
 }
 
 function actionControls(it, disponible) {
-  if (isStaff) return "";
-
-  if (it.prestamoHabilitado === true) {
-    const disabled = disponible <= 0 ? "disabled" : "";
-    const stockMsg = disponible <= 0
-      ? '<span class="loan-stock-msg">Sin stock</span>'
-      : `<span class="loan-stock-ok">${disponible} disp.</span>`;
-
-    return `
-      <div class="loan-action" aria-label="Control de préstamo">
-        <div class="loan-qty-stepper" aria-label="Cantidad a solicitar">
-          <button
-            type="button"
-            class="loan-qty-step qty-step"
-            data-id="${esc(it.id)}"
-            data-step="-1"
-            aria-label="Disminuir cantidad"
-            ${disabled}>−</button>
-          <input
-            type="number"
-            min="1"
-            max="${disponible}"
-            value="1"
-            class="form-control form-control-sm qty-input loan-qty-input"
-            id="qty-${esc(it.id)}"
-            aria-label="Cantidad a solicitar"
-            ${disabled}>
-          <button
-            type="button"
-            class="loan-qty-step qty-step"
-            data-id="${esc(it.id)}"
-            data-step="1"
-            aria-label="Aumentar cantidad"
-            ${disabled}>+</button>
-        </div>
-
-        <button
-          class="btn btn-sm btn-primary add-cart loan-add-btn"
-          data-id="${esc(it.id)}"
-          ${disabled}>
-          Agregar
-        </button>
-
-        ${stockMsg}
-      </div>`;
-  }
-
-  if (it.reservaHabilitada === true) {
-    return `<button class="btn btn-sm btn-outline-primary reserve-assistance" data-id="${esc(it.id)}">Reservar / pedir asistencia</button>`;
-  }
-
-  return `<span class="small text-muted">Elemento solo de consulta.</span>`;
+  return "";
 }
 
 function adminControls(it) {
@@ -567,6 +516,141 @@ function purchaseSummaryByCurrency(rows) {
   }, {});
 }
 
+
+function purchaseCategory(tipo) {
+  const normalized = normalizeTipo(tipo);
+  if (normalized === "Máquina") return "Máquina";
+  if (normalized === "Mobiliario") return "Mobiliario";
+  if (normalized === "Cómputo") return "Cómputo";
+  return "Otros";
+}
+
+function emptyMoneyTotals() {
+  return {};
+}
+
+function addMoneyTotal(totals, currency, amount) {
+  const code = currency || "MXN";
+  totals[code] = Number(totals[code] || 0) + Number(amount || 0);
+}
+
+function formatMoneyTotals(totals) {
+  const entries = Object.entries(totals || {})
+    .filter(([, value]) => Number(value || 0) !== 0)
+    .sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
+  return entries.length
+    ? entries.map(([currency, total]) => esc(formatCurrency(total, currency))).join(" · ")
+    : esc(formatCurrency(0, "MXN"));
+}
+
+function ensureReportGroup(map, key, factory) {
+  if (!map.has(key)) map.set(key, factory());
+  return map.get(key);
+}
+
+function buildPurchaseBreakdown(rows) {
+  const categoryOrder = { "Máquina": 1, "Mobiliario": 2, "Cómputo": 3, "Otros": 4 };
+  const zoneMap = new Map();
+
+  rows.forEach(it => {
+    const qty = cantidadAComprar(it);
+    if (qty <= 0) return;
+
+    const currency = it.moneda || "MXN";
+    const subtotal = qty * num(it.precioUnitario);
+    const zoneId = String(it.zoneId || "s/z");
+    const subzoneId = String(it.subzoneId || "s/s");
+    const category = purchaseCategory(it.tipo);
+
+    const zone = ensureReportGroup(zoneMap, zoneId, () => ({
+      zoneId,
+      zoneName: it.zoneName || "Sin zona",
+      totals: emptyMoneyTotals(),
+      qty: 0,
+      items: 0,
+      subzones: new Map(),
+    }));
+
+    const subzone = ensureReportGroup(zone.subzones, subzoneId, () => ({
+      subzoneId,
+      subzoneName: it.subzoneName || "Sin subzona",
+      totals: emptyMoneyTotals(),
+      qty: 0,
+      items: 0,
+      categories: new Map(),
+    }));
+
+    const cat = ensureReportGroup(subzone.categories, category, () => ({
+      category,
+      sort: categoryOrder[category] || 99,
+      totals: emptyMoneyTotals(),
+      qty: 0,
+      items: 0,
+    }));
+
+    [zone, subzone, cat].forEach(group => {
+      addMoneyTotal(group.totals, currency, subtotal);
+      group.qty += qty;
+      group.items += 1;
+    });
+  });
+
+  return [...zoneMap.values()].sort((a, b) =>
+    String(a.zoneId).localeCompare(String(b.zoneId), "es", { numeric: true })
+  ).map(zone => ({
+    ...zone,
+    subzones: [...zone.subzones.values()].sort((a, b) =>
+      String(a.subzoneId).localeCompare(String(b.subzoneId), "es", { numeric: true })
+    ).map(subzone => ({
+      ...subzone,
+      categories: [...subzone.categories.values()].sort((a, b) =>
+        a.sort - b.sort || String(a.category).localeCompare(String(b.category), "es")
+      ),
+    })),
+  }));
+}
+
+function renderPurchaseBreakdown() {
+  const target = $("#purchaseBreakdownReport");
+  if (!target) return;
+
+  const breakdown = buildPurchaseBreakdown(filtered);
+  if (!breakdown.length) {
+    target.innerHTML = '<p class="purchase-report-empty">No hay elementos con cantidad sugerida a comprar dentro del filtro actual.</p>';
+    return;
+  }
+
+  target.innerHTML = `
+    <div class="purchase-report-grid">
+      ${breakdown.map(zone => `
+        <section class="purchase-zone-report">
+          <div class="purchase-zone-header">
+            <h3 class="purchase-zone-title">Zona ${esc(zone.zoneId)} · ${esc(zone.zoneName)}</h3>
+            <div class="purchase-zone-total">${formatMoneyTotals(zone.totals)}</div>
+          </div>
+          <div class="purchase-subzone-list">
+            ${zone.subzones.map(subzone => `
+              <div class="purchase-subzone-report">
+                <div class="purchase-subzone-header">
+                  <div class="purchase-subzone-title">Subzona ${esc(subzone.subzoneId)} · ${esc(subzone.subzoneName)}</div>
+                  <div class="purchase-subzone-total">${formatMoneyTotals(subzone.totals)}</div>
+                </div>
+                <div class="purchase-category-table">
+                  ${subzone.categories.map(cat => `
+                    <div class="purchase-category-row">
+                      <div>
+                        <div class="purchase-category-name">${esc(cat.category)}</div>
+                        <div class="purchase-category-meta">${cat.items} item${cat.items === 1 ? "" : "s"} · ${cat.qty} pieza${cat.qty === 1 ? "" : "s"} sugerida${cat.qty === 1 ? "" : "s"}</div>
+                      </div>
+                      <div class="purchase-category-total">${formatMoneyTotals(cat.totals)}</div>
+                    </div>`).join("")}
+                </div>
+              </div>`).join("")}
+          </div>
+        </section>`).join("")}
+    </div>`;
+}
+
 function updatePurchaseSummary() {
   const totalsEl = $("#purchaseSummaryTotals");
   const metaEl = $("#purchaseSummaryMeta");
@@ -582,6 +666,7 @@ function updatePurchaseSummary() {
   const totalQty = groups.reduce((sum, g) => sum + g.quantity, 0);
   totalsEl.innerHTML = totalText;
   metaEl.textContent = `${filtered.length} elemento${filtered.length === 1 ? "" : "s"} seleccionado${filtered.length === 1 ? "" : "s"} por el filtro · ${totalQty} pieza${totalQty === 1 ? "" : "s"} sugerida${totalQty === 1 ? "" : "s"} a comprar`;
+  renderPurchaseBreakdown();
 }
 
 function renderItems() {

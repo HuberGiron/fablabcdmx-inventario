@@ -856,3 +856,303 @@ code { color: #334155; }
     font-size: .78rem;
   }
 }
+
+
+/* --------------------------------------------------------------------------
+   Ajuste fino: control de préstamo compacto y consistente
+   -------------------------------------------------------------------------- */
+.loan-action {
+  display: inline-flex !important;
+  align-items: center !important;
+  flex-wrap: wrap !important;
+  width: auto !important;
+  gap: .45rem !important;
+  margin-top: .05rem !important;
+}
+
+.loan-qty-stepper {
+  display: inline-flex !important;
+  align-items: center !important;
+  flex: 0 0 auto !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  overflow: hidden !important;
+  border: 1px solid var(--ibero-border) !important;
+  border-radius: 999px !important;
+  background: #fff !important;
+}
+
+.loan-qty-step {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: #f7f7f5 !important;
+  color: var(--ibero-black) !important;
+  font-family: var(--ibero-sans) !important;
+  font-size: 1rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+}
+
+.loan-qty-step:hover,
+.loan-qty-step:focus {
+  background: var(--ibero-red) !important;
+  color: #fff !important;
+}
+
+.loan-qty-step:disabled {
+  background: #f1f1f1 !important;
+  color: #aaa !important;
+  cursor: not-allowed !important;
+}
+
+.loan-qty-input,
+.qty-input.loan-qty-input {
+  flex: 0 0 48px !important;
+  width: 48px !important;
+  min-width: 48px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 .25rem !important;
+  border: 0 !important;
+  border-right: 1px solid var(--ibero-border) !important;
+  border-left: 1px solid var(--ibero-border) !important;
+  border-radius: 0 !important;
+  background: #fff !important;
+  color: var(--ibero-black) !important;
+  box-shadow: none !important;
+  font-size: .92rem !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  text-align: center !important;
+}
+
+.loan-qty-input::-webkit-outer-spin-button,
+.loan-qty-input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.loan-qty-input[type=number] {
+  -moz-appearance: textfield;
+}
+
+.loan-add-btn,
+.btn-sm.loan-add-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 34px !important;
+  height: 34px !important;
+  padding: .42rem .9rem !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  font-size: .86rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  transform: none !important;
+}
+
+.loan-add-btn:hover,
+.loan-add-btn:focus {
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.loan-stock-msg,
+.loan-stock-ok {
+  width: auto !important;
+  min-height: 34px !important;
+  font-size: .82rem !important;
+  font-weight: 700 !important;
+  white-space: nowrap !important;
+}
+
+.purchase-catalog-section .loan-action {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .loan-action {
+    display: inline-flex !important;
+    width: auto !important;
+    max-width: 100% !important;
+    grid-template-columns: none !important;
+  }
+
+  .loan-qty-stepper,
+  .loan-add-btn,
+  .loan-stock-msg,
+  .loan-stock-ok {
+    width: auto !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Reporte visual de compras por zona, subzona y clasificación
+   -------------------------------------------------------------------------- */
+.purchase-breakdown-card {
+  background: #fff;
+  border-left: 5px solid #111;
+}
+
+.purchase-breakdown-title {
+  margin: 0;
+  color: var(--ibero-black);
+  font-family: var(--ibero-serif);
+  font-size: clamp(1.55rem, 2.3vw, 2.35rem);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -.035em;
+}
+
+.purchase-breakdown-subtitle {
+  margin-top: .25rem;
+  color: var(--ibero-muted);
+  font-size: .92rem;
+}
+
+.purchase-report-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.purchase-zone-report {
+  border: 1px solid var(--ibero-border);
+  background: #fff;
+}
+
+.purchase-zone-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .9rem 1rem;
+  border-bottom: 1px solid var(--ibero-border);
+  background: #fafafa;
+}
+
+.purchase-zone-title {
+  margin: 0;
+  color: var(--ibero-black);
+  font-family: var(--ibero-sans);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.purchase-zone-total {
+  color: var(--ibero-red);
+  font-size: .95rem;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.purchase-subzone-list {
+  display: grid;
+  gap: .75rem;
+  padding: .85rem;
+}
+
+.purchase-subzone-report {
+  border: 1px solid #e6e6e6;
+  background: #fff;
+}
+
+.purchase-subzone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .7rem .8rem;
+  border-bottom: 1px solid #ededed;
+  background: #fff;
+}
+
+.purchase-subzone-title {
+  color: var(--ibero-black);
+  font-size: .92rem;
+  font-weight: 800;
+}
+
+.purchase-subzone-total {
+  color: #5f686f;
+  font-size: .86rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.purchase-category-table {
+  display: grid;
+}
+
+.purchase-category-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .8rem;
+  align-items: center;
+  padding: .65rem .8rem;
+  border-top: 1px solid #f1f1f1;
+}
+
+.purchase-category-row:first-child {
+  border-top: 0;
+}
+
+.purchase-category-name {
+  color: var(--ibero-black);
+  font-size: .9rem;
+  font-weight: 800;
+}
+
+.purchase-category-meta {
+  color: var(--ibero-muted);
+  font-size: .78rem;
+}
+
+.purchase-category-total {
+  color: var(--ibero-red-dark);
+  font-size: .9rem;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.purchase-report-empty {
+  margin: 0;
+  padding: 1rem;
+  border: 1px dashed var(--ibero-border);
+  color: var(--ibero-muted);
+  background: #fafafa;
+}
+
+@media (max-width: 768px) {
+  .purchase-zone-header,
+  .purchase-subzone-header,
+  .purchase-category-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .purchase-zone-header,
+  .purchase-subzone-header {
+    display: grid;
+  }
+
+  .purchase-zone-total,
+  .purchase-subzone-total,
+  .purchase-category-total {
+    text-align: left;
+    white-space: normal;
+  }
+}

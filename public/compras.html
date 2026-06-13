@@ -139,6 +139,24 @@
         </div>
       </section>
 
+
+      <section class="card purchase-breakdown-card mb-4">
+        <div class="card-body">
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+            <div>
+              <h2 class="purchase-breakdown-title">Reporte visual de compras</h2>
+              <div class="purchase-breakdown-subtitle">Agrupa el presupuesto filtrado por zona, subzona y clasificación general.</div>
+            </div>
+            <button class="btn btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#purchaseBreakdownCollapse" aria-expanded="false" aria-controls="purchaseBreakdownCollapse">
+              Ver reporte
+            </button>
+          </div>
+          <div class="collapse mt-3" id="purchaseBreakdownCollapse">
+            <div id="purchaseBreakdownReport"></div>
+          </div>
+        </div>
+      </section>
+
       <section id="itemsList" class="items-list"></section>
     </div>
   </section>
