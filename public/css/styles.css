@@ -1156,3 +1156,53 @@ code { color: #334155; }
     white-space: normal;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Compras: resumen inicial por categoría y exportación
+   -------------------------------------------------------------------------- */
+.purchase-category-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+
+.purchase-category-summary-card {
+  border: 1px solid var(--ibero-border);
+  background: #fafafa;
+  padding: .85rem .9rem;
+}
+
+.purchase-category-summary-label {
+  color: var(--ibero-black);
+  font-size: .78rem;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.purchase-category-summary-total {
+  margin-top: .25rem;
+  color: var(--ibero-red);
+  font-size: 1.08rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.purchase-category-summary-meta {
+  margin-top: .25rem;
+  color: var(--ibero-muted);
+  font-size: .78rem;
+}
+
+@media (max-width: 992px) {
+  .purchase-category-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 576px) {
+  .purchase-category-summary {
+    grid-template-columns: 1fr;
+  }
+}

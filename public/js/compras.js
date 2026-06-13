@@ -235,6 +235,11 @@ function formatCurrency(value, currency = "MXN") {
   }
 }
 
+function formatCurrencyWithCode(value, currency = "MXN") {
+  const code = String(currency || "MXN").toUpperCase();
+  return `${formatCurrency(value, code)} ${code}`;
+}
+
 function currencyOptions(selected = "MXN") {
   const currencies = ["MXN", "USD", "EUR"];
   return currencies.map(c => `<option value="${esc(c)}" ${String(c) === String(selected || "MXN") ? "selected" : ""}>${esc(c)}</option>`).join("");
@@ -250,9 +255,9 @@ function adminPriceBlock(it) {
   if (PURCHASE_VIEW) {
     return `
       <div class="purchase-item-cost mt-2">
-        <span><strong>Precio unitario:</strong> ${esc(formatCurrency(price, currency))}</span>
+        <span><strong>Precio unitario:</strong> ${esc(formatCurrencyWithCode(price, currency))}</span>
         <span><strong>A comprar:</strong> ${qtyToBuy}</span>
-        <span><strong>Subtotal:</strong> ${esc(formatCurrency(subtotal, currency))}</span>
+        <span><strong>Subtotal:</strong> ${esc(formatCurrencyWithCode(subtotal, currency))}</span>
       </div>`;
   }
 
@@ -539,8 +544,8 @@ function formatMoneyTotals(totals) {
     .filter(([, value]) => Number(value || 0) !== 0)
     .sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
   return entries.length
-    ? entries.map(([currency, total]) => esc(formatCurrency(total, currency))).join(" · ")
-    : esc(formatCurrency(0, "MXN"));
+    ? entries.map(([currency, total]) => esc(formatCurrencyWithCode(total, currency))).join(" · ")
+    : esc(formatCurrencyWithCode(0, "MXN"));
 }
 
 function ensureReportGroup(map, key, factory) {
@@ -549,7 +554,7 @@ function ensureReportGroup(map, key, factory) {
 }
 
 function buildPurchaseBreakdown(rows) {
-  const categoryOrder = { "Máquina": 1, "Mobiliario": 2, "Cómputo": 3, "Otros": 4 };
+  const categoryOrder = { "Mobiliario": 1, "Cómputo": 2, "Máquina": 3, "Otros": 4 };
   const zoneMap = new Map();
 
   rows.forEach(it => {
@@ -610,6 +615,54 @@ function buildPurchaseBreakdown(rows) {
   }));
 }
 
+function buildPurchaseCategorySummary(rows) {
+  const categoryOrder = { "Mobiliario": 1, "Cómputo": 2, "Máquina": 3, "Otros": 4 };
+  const categories = new Map();
+
+  rows.forEach(it => {
+    const qty = cantidadAComprar(it);
+    if (qty <= 0) return;
+
+    const category = purchaseCategory(it.tipo);
+    const currency = it.moneda || "MXN";
+    const subtotal = qty * num(it.precioUnitario);
+    const group = ensureReportGroup(categories, category, () => ({
+      category,
+      sort: categoryOrder[category] || 99,
+      totals: emptyMoneyTotals(),
+      qty: 0,
+      items: 0,
+    }));
+
+    addMoneyTotal(group.totals, currency, subtotal);
+    group.qty += qty;
+    group.items += 1;
+  });
+
+  return ["Mobiliario", "Cómputo", "Máquina", "Otros"].map(category =>
+    categories.get(category) || {
+      category,
+      sort: categoryOrder[category] || 99,
+      totals: emptyMoneyTotals(),
+      qty: 0,
+      items: 0,
+    }
+  );
+}
+
+function renderPurchaseCategorySummary(rows) {
+  const summary = buildPurchaseCategorySummary(rows);
+  return `
+    <div class="purchase-category-summary" aria-label="Totales por categoría">
+      ${summary.map(cat => `
+        <div class="purchase-category-summary-card">
+          <div class="purchase-category-summary-label">${esc(cat.category)}</div>
+          <div class="purchase-category-summary-total">${formatMoneyTotals(cat.totals)}</div>
+          <div class="purchase-category-summary-meta">${cat.items} item${cat.items === 1 ? "" : "s"} · ${cat.qty} pieza${cat.qty === 1 ? "" : "s"}</div>
+        </div>`).join("")}
+    </div>`;
+}
+
 function renderPurchaseBreakdown() {
   const target = $("#purchaseBreakdownReport");
   if (!target) return;
@@ -621,6 +674,7 @@ function renderPurchaseBreakdown() {
   }
 
   target.innerHTML = `
+    ${renderPurchaseCategorySummary(filtered)}
     <div class="purchase-report-grid">
       ${breakdown.map(zone => `
         <section class="purchase-zone-report">
@@ -660,8 +714,8 @@ function updatePurchaseSummary() {
     .sort((a, b) => String(a.currency).localeCompare(String(b.currency), "es"));
 
   const totalText = groups.length
-    ? groups.map(g => esc(formatCurrency(g.total, g.currency))).join(" · ")
-    : esc(formatCurrency(0, "MXN"));
+    ? groups.map(g => esc(formatCurrencyWithCode(g.total, g.currency))).join(" · ")
+    : esc(formatCurrencyWithCode(0, "MXN"));
 
   const totalQty = groups.reduce((sum, g) => sum + g.quantity, 0);
   totalsEl.innerHTML = totalText;
@@ -1499,6 +1553,91 @@ function buildInventoryReportRows(rows) {
   }));
 }
 
+function flattenMoneyTotals(totals) {
+  const entries = Object.entries(totals || {})
+    .sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
+  return entries.length ? entries : [["MXN", 0]];
+}
+
+function exportPurchaseReportXlsx() {
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
+    return;
+  }
+
+  const purchasableRows = filtered.filter(it => cantidadAComprar(it) > 0);
+  if (!purchasableRows.length) {
+    alert("No hay elementos con cantidad sugerida a comprar dentro del filtro actual.");
+    return;
+  }
+
+  const categorySummary = buildPurchaseCategorySummary(purchasableRows);
+  const categoryAoa = [
+    ["Categoría", "Items", "Piezas sugeridas", "Moneda", "Total"],
+    ...categorySummary.flatMap(cat => flattenMoneyTotals(cat.totals).map(([currency, total]) => [
+      cleanXlsxText(cat.category),
+      cleanXlsxNumber(cat.items),
+      cleanXlsxNumber(cat.qty),
+      cleanXlsxText(currency),
+      cleanXlsxNumber(total),
+    ])),
+  ];
+
+  const breakdown = buildPurchaseBreakdown(purchasableRows);
+  const breakdownAoa = [
+    ["Zona", "Nombre zona", "Subzona", "Nombre subzona", "Categoría", "Items", "Piezas sugeridas", "Moneda", "Total"],
+    ...breakdown.flatMap(zone => zone.subzones.flatMap(subzone => subzone.categories.flatMap(cat =>
+      flattenMoneyTotals(cat.totals).map(([currency, total]) => [
+        cleanXlsxText(zone.zoneId),
+        cleanXlsxText(zone.zoneName),
+        cleanXlsxText(subzone.subzoneId),
+        cleanXlsxText(subzone.subzoneName),
+        cleanXlsxText(cat.category),
+        cleanXlsxNumber(cat.items),
+        cleanXlsxNumber(cat.qty),
+        cleanXlsxText(currency),
+        cleanXlsxNumber(total),
+      ])
+    ))),
+  ];
+
+  const detailRows = buildInventoryReportRows(purchasableRows);
+  const detailAoa = [
+    ["Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Inventario actual", "Inventario deseado", "Cantidad a comprar", "Precio unitario", "Moneda", "Subtotal", "Liga de compra"],
+    ...detailRows.map(row => [
+      cleanXlsxText(row.zona),
+      cleanXlsxText(row.subzona),
+      cleanXlsxText(row.area_codigo),
+      cleanXlsxText(row.area),
+      cleanXlsxText(row.sku),
+      cleanXlsxText(row.tipo),
+      cleanXlsxText(row.nombre),
+      cleanXlsxNumber(row.inventario_actual),
+      cleanXlsxNumber(row.inventario_deseado),
+      cleanXlsxNumber(row.cantidad_a_comprar),
+      cleanXlsxNumber(row.precio_unitario),
+      cleanXlsxText(row.moneda),
+      cleanXlsxNumber(row.subtotal),
+      cleanXlsxText(row.liga_compra),
+    ]),
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const wsCategories = XLSX.utils.aoa_to_sheet(categoryAoa);
+  wsCategories["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
+  const wsBreakdown = XLSX.utils.aoa_to_sheet(breakdownAoa);
+  wsBreakdown["!cols"] = [{ wch: 10 }, { wch: 28 }, { wch: 12 }, { wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
+  const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
+  wsDetail["!cols"] = [{ wch: 20 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 }];
+
+  XLSX.utils.book_append_sheet(wb, wsCategories, "Totales categoria");
+  XLSX.utils.book_append_sheet(wb, wsBreakdown, "Zona subzona categoria");
+  XLSX.utils.book_append_sheet(wb, wsDetail, "Detalle items");
+
+  const date = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `reporte_compras_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
+}
+
 function exportVisibleXlsx() {
   const rows = buildInventoryReportRows(filtered);
 
@@ -1605,6 +1744,7 @@ async function init() {
     applyFilters();
   });
   $("#exportXlsx")?.addEventListener("click", exportVisibleXlsx);
+  $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportXlsx);
   $("#openCart")?.addEventListener("click", renderCartModal);
   $("#submitLoan")?.addEventListener("click", submitLoanRequest);
 }
