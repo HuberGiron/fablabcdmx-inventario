@@ -1533,6 +1533,31 @@ function cleanXlsxNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function xlsxMoneyFormat(currency = "MXN") {
+  const code = String(currency || "MXN").trim().toUpperCase();
+  if (code === "USD") return '"US$"#,##0.00';
+  if (code === "EUR") return '"€"#,##0.00';
+  if (code === "MXN") return '"$"#,##0.00';
+  return '#,##0.00';
+}
+
+function setXlsxNumericCell(ws, cellRef, numberFormat = "") {
+  const cell = ws?.[cellRef];
+  if (!cell) return;
+  cell.t = "n";
+  if (numberFormat) cell.z = numberFormat;
+}
+
+function applyXlsxMoneyFormat(ws, rowCount, moneyColumns, currencyColumn, startRow = 2) {
+  for (let r = startRow; r < startRow + rowCount; r++) {
+    const currency = ws?.[`${currencyColumn}${r}`]?.v || "MXN";
+    const format = xlsxMoneyFormat(currency);
+    for (const col of moneyColumns) {
+      setXlsxNumericCell(ws, `${col}${r}`, format);
+    }
+  }
+}
+
 function buildInventoryReportRows(rows) {
   return rows.map(it => ({
     zona: it.zoneName || "",
@@ -1625,10 +1650,15 @@ function exportPurchaseReportXlsx() {
   const wb = XLSX.utils.book_new();
   const wsCategories = XLSX.utils.aoa_to_sheet(categoryAoa);
   wsCategories["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
+  applyXlsxMoneyFormat(wsCategories, categoryAoa.length - 1, ["E"], "D");
+
   const wsBreakdown = XLSX.utils.aoa_to_sheet(breakdownAoa);
   wsBreakdown["!cols"] = [{ wch: 10 }, { wch: 28 }, { wch: 12 }, { wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
+  applyXlsxMoneyFormat(wsBreakdown, breakdownAoa.length - 1, ["I"], "H");
+
   const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
   wsDetail["!cols"] = [{ wch: 20 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 }];
+  applyXlsxMoneyFormat(wsDetail, detailAoa.length - 1, ["K", "M"], "L");
 
   XLSX.utils.book_append_sheet(wb, wsCategories, "Totales categoria");
   XLSX.utils.book_append_sheet(wb, wsBreakdown, "Zona subzona categoria");
@@ -1709,15 +1739,13 @@ function exportVisibleXlsx() {
     { wch: 40 },
   ];
 
-  const numericColumns = ["I", "J", "K", "L", "N"];
+  const numericColumns = ["I", "J", "K"];
   for (let r = 2; r <= rows.length + 1; r++) {
     for (const col of numericColumns) {
-      const cell = ws[`${col}${r}`];
-      if (cell) cell.t = "n";
+      setXlsxNumericCell(ws, `${col}${r}`);
     }
-    if (ws[`L${r}`]) ws[`L${r}`].z = "#,##0.00";
-    if (ws[`N${r}`]) ws[`N${r}`].z = "#,##0.00";
   }
+  applyXlsxMoneyFormat(ws, rows.length, ["L", "N"], "M");
 
   ws["!autofilter"] = { ref: `A1:O${rows.length + 1}` };
   const wb = XLSX.utils.book_new();
