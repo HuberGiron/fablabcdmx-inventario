@@ -212,8 +212,27 @@ function sortItems(arr) {
   return [...arr].sort(compareByPhysicalRoute);
 }
 
+function isPriceSortMode(mode) {
+  return mode === "precio_desc" || mode === "precio_asc";
+}
+
+function configureSortOptionsForRole() {
+  const sort = $("#sortMode");
+  if (!sort) return;
+
+  sort.querySelectorAll('option[value="precio_desc"], option[value="precio_asc"]').forEach(option => {
+    option.hidden = !isAdmin();
+    option.disabled = !isAdmin();
+  });
+
+  if (!isAdmin() && isPriceSortMode(sort.value)) {
+    sort.value = "zone";
+  }
+}
+
 function currentSortMode() {
-  return $("#sortMode")?.value || "zone";
+  const mode = $("#sortMode")?.value || "zone";
+  return !isAdmin() && isPriceSortMode(mode) ? "zone" : mode;
 }
 
 function sortItemsForDisplay(arr, mode = currentSortMode()) {
@@ -1634,6 +1653,7 @@ function exportVisibleXlsx() {
 async function init() {
   await loadBase();
   fillSelects();
+  configureSortOptionsForRole();
   showAdminBackupControls();
   filtered = sortItemsForDisplay(items);
   renderItems();
