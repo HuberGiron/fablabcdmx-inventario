@@ -14,7 +14,7 @@
 
 <nav class="navbar navbar-expand-xl ibero-main-nav" id="mainNav" aria-label="Navegación principal Inventario FabLab">
   <div class="container-fluid px-4 px-lg-5">
-    <a class="ibero-logo navbar-brand" href="./" aria-label="Inicio Inventario FabLab IBERO Ciudad de México">
+    <a class="ibero-logo navbar-brand" href="index.html" aria-label="Inicio Inventario FabLab IBERO Ciudad de México">
       <span class="ibero-logo-stack">
         <img class="logo-red" src="/assets/img/logos/ibero-logo-red.svg" onerror="this.onerror=null;this.src='assets/img/logos/ibero-logo-red.svg'" alt="IBERO Ciudad de México rojo">
         <img class="logo-white" src="/assets/img/logos/ibero-logo-white.svg" onerror="this.onerror=null;this.src='assets/img/logos/ibero-logo-white.svg'" alt="IBERO Ciudad de México blanco">
@@ -82,11 +82,11 @@
         </div>
 
         <div class="row g-3 align-items-end mt-1">
-          <div class="col-lg-4 col-md-6">
+          <div class="col-lg-3 col-md-6">
             <label class="form-label small mb-1" for="tipoDropdownBtn">Tipo</label>
             <div class="dropdown tipo-filter-dropdown">
               <button class="btn btn-filter dropdown-toggle w-100 text-start" type="button" id="tipoDropdownBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
-                Todas las categorías
+                Todas las categorías de tipo
               </button>
               <div class="dropdown-menu tipo-filter-menu p-3" aria-labelledby="tipoDropdownBtn">
                 <div class="d-flex gap-2 mb-3 tipo-actions">
@@ -97,25 +97,39 @@
               </div>
             </div>
           </div>
-          <div class="col-lg-4 col-md-6">
+          <div class="col-lg-3 col-md-6">
             <label class="form-label small mb-1" for="filterWeek">FabAcademy</label>
             <select id="filterWeek" class="form-select filter-input"></select>
           </div>
-          <div class="col-lg-4 col-md-12">
+          <div class="col-lg-3 col-md-6">
             <label class="form-label small mb-1" for="search">Buscar</label>
             <input id="search" class="form-control filter-input" placeholder="Nombre, SKU o descripción">
+          </div>
+          <div class="col-lg-3 col-md-6">
+            <label class="form-label small mb-1" for="sortMode">Ordenar</label>
+            <select id="sortMode" class="form-select">
+              <option value="zone" selected>Zona / subzona</option>
+              <option value="nombre">Alfabético nombre</option>
+              <option value="sku">SKU</option>
+              <option value="tipo">Tipo (alfabético)</option>
+              <option value="precio_desc">Precio más alto</option>
+              <option value="precio_asc">Precio más bajo</option>
+            </select>
           </div>
         </div>
 
         <div class="row g-3 align-items-center mt-3 filter-toolbar">
-          <div class="col-lg-6 col-md-12">
+          <div class="col-lg-4 col-md-12">
             <span id="resultCount" class="result-count">0 resultado(s)</span>
           </div>
-          <div class="col-lg-3 col-md-6">
+          <div class="col-lg-2 col-md-6">
             <button id="clearFilters" class="btn btn-outline-secondary w-100">Limpiar filtros</button>
           </div>
           <div class="col-lg-3 col-md-6">
             <button id="exportXlsx" class="btn btn-outline-success w-100">Exportar Excel filtrado</button>
+          </div>
+          <div class="col-lg-3 col-md-12 d-none" id="adminBackupExportCol">
+            <button id="exportFullBackupXlsx" class="btn btn-outline-dark w-100">Exportar respaldo completo</button>
           </div>
         </div>
       </div></section>

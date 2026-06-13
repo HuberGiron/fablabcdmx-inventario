@@ -185,14 +185,60 @@ function numericSortValue(value, fallback = 999) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function sortItems(arr) {
-  return [...arr].sort((a, b) =>
-    numericSortValue(a.zoneId) - numericSortValue(b.zoneId) ||
+function compareByPhysicalRoute(a, b) {
+  return numericSortValue(a.zoneId) - numericSortValue(b.zoneId) ||
     String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), "es", { numeric: true }) ||
     String(itemLocationCode(a) || "").localeCompare(String(itemLocationCode(b) || ""), "es", { numeric: true }) ||
     String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }) ||
-    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
-  );
+    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es");
+}
+
+function itemPriceSortValue(it) {
+  const n = Number(it?.precioUnitario || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function itemNameSortValue(it) {
+  return normalizeForCompare(it?.nombre || "");
+}
+
+function itemSkuSortValue(it) {
+  return normalizeForCompare(it?.sku || "");
+}
+
+function itemTypeSortValue(it) {
+  return normalizeForCompare(normalizeTipo(it?.tipo || "Otro"));
+}
+
+function sortItems(arr) {
+  return [...arr].sort(compareByPhysicalRoute);
+}
+
+function currentSortMode() {
+  return $("#sortMode")?.value || "zone";
+}
+
+function sortItemsForDisplay(arr, mode = currentSortMode()) {
+  const routeFallback = (a, b) => compareByPhysicalRoute(a, b);
+  const textCompare = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" });
+
+  return [...arr].sort((a, b) => {
+    switch (mode) {
+      case "nombre":
+        return textCompare(itemNameSortValue(a), itemNameSortValue(b)) || routeFallback(a, b);
+      case "sku":
+        return textCompare(itemSkuSortValue(a), itemSkuSortValue(b)) || routeFallback(a, b);
+      case "tipo":
+        return textCompare(itemTypeSortValue(a), itemTypeSortValue(b)) || textCompare(itemNameSortValue(a), itemNameSortValue(b)) || routeFallback(a, b);
+      case "precio_desc":
+        return itemPriceSortValue(b) - itemPriceSortValue(a) || routeFallback(a, b);
+      case "precio_asc":
+        return itemPriceSortValue(a) - itemPriceSortValue(b) || routeFallback(a, b);
+      case "zone":
+      default:
+        return routeFallback(a, b);
+    }
+  });
 }
 
 function normalizeSku(value) {
@@ -441,7 +487,7 @@ function applyFilters() {
   const selectedTipos = getSelectedTipos();
   const filterAllKnownTypes = selectedTipos.size === ITEM_TYPES.length;
 
-  filtered = items.filter(it => {
+  filtered = sortItemsForDisplay(items.filter(it => {
     if (zoneId && String(it.zoneId) !== zoneId) return false;
     if (subzoneId && String(it.subzoneId) !== subzoneId) return false;
     if (locationId && String(it.locationId || "") !== locationId) return false;
@@ -451,7 +497,7 @@ function applyFilters() {
     if (!filterAllKnownTypes && !selectedTipos.has(normalizeTipo(it.tipo))) return false;
     if (search && !searchableItemText(it).includes(search)) return false;
     return true;
-  });
+  }));
 
   renderItems();
 }
@@ -1772,16 +1818,18 @@ function bindPurchaseReportToggle() {
 async function init() {
   await loadBase();
   fillSelects();
-  filtered = [...items];
+  filtered = sortItemsForDisplay(items);
   renderItems();
   renderCartCount();
 
-  ["#search", "#filterWeek", "#filterLocation"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
+  ["#search", "#filterWeek", "#filterLocation", "#sortMode"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
   bindTipoFilterEvents();
   $("#filterZone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#filterSubzone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#clearFilters")?.addEventListener("click", () => {
     document.querySelectorAll(".filter-input").forEach(x => { x.value = ""; });
+    const sortMode = $("#sortMode");
+    if (sortMode) sortMode.value = "zone";
     setTipoChecks(true);
     refreshDependentFilters();
     applyFilters();

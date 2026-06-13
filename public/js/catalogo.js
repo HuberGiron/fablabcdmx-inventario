@@ -183,14 +183,60 @@ function numericSortValue(value, fallback = 999) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function sortItems(arr) {
-  return [...arr].sort((a, b) =>
-    numericSortValue(a.zoneId) - numericSortValue(b.zoneId) ||
+function compareByPhysicalRoute(a, b) {
+  return numericSortValue(a.zoneId) - numericSortValue(b.zoneId) ||
     String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), "es", { numeric: true }) ||
     String(itemLocationCode(a) || "").localeCompare(String(itemLocationCode(b) || ""), "es", { numeric: true }) ||
     String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }) ||
-    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
-  );
+    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es");
+}
+
+function itemPriceSortValue(it) {
+  const n = Number(it?.precioUnitario || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function itemNameSortValue(it) {
+  return normalizeForCompare(it?.nombre || "");
+}
+
+function itemSkuSortValue(it) {
+  return normalizeForCompare(it?.sku || "");
+}
+
+function itemTypeSortValue(it) {
+  return normalizeForCompare(normalizeTipo(it?.tipo || "Otro"));
+}
+
+function sortItems(arr) {
+  return [...arr].sort(compareByPhysicalRoute);
+}
+
+function currentSortMode() {
+  return $("#sortMode")?.value || "zone";
+}
+
+function sortItemsForDisplay(arr, mode = currentSortMode()) {
+  const routeFallback = (a, b) => compareByPhysicalRoute(a, b);
+  const textCompare = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" });
+
+  return [...arr].sort((a, b) => {
+    switch (mode) {
+      case "nombre":
+        return textCompare(itemNameSortValue(a), itemNameSortValue(b)) || routeFallback(a, b);
+      case "sku":
+        return textCompare(itemSkuSortValue(a), itemSkuSortValue(b)) || routeFallback(a, b);
+      case "tipo":
+        return textCompare(itemTypeSortValue(a), itemTypeSortValue(b)) || textCompare(itemNameSortValue(a), itemNameSortValue(b)) || routeFallback(a, b);
+      case "precio_desc":
+        return itemPriceSortValue(b) - itemPriceSortValue(a) || routeFallback(a, b);
+      case "precio_asc":
+        return itemPriceSortValue(a) - itemPriceSortValue(b) || routeFallback(a, b);
+      case "zone":
+      default:
+        return routeFallback(a, b);
+    }
+  });
 }
 
 function normalizeSku(value) {
@@ -422,7 +468,7 @@ function applyFilters() {
   const selectedTipos = getSelectedTipos();
   const filterAllKnownTypes = selectedTipos.size === ITEM_TYPES.length;
 
-  filtered = items.filter(it => {
+  filtered = sortItemsForDisplay(items.filter(it => {
     if (zoneId && String(it.zoneId) !== zoneId) return false;
     if (subzoneId && String(it.subzoneId) !== subzoneId) return false;
     if (locationId && String(it.locationId || "") !== locationId) return false;
@@ -432,7 +478,7 @@ function applyFilters() {
     if (!filterAllKnownTypes && !selectedTipos.has(normalizeTipo(it.tipo))) return false;
     if (search && !searchableItemText(it).includes(search)) return false;
     return true;
-  });
+  }));
 
   renderItems();
 }
@@ -1368,6 +1414,135 @@ function buildInventoryReportRows(rows) {
   }));
 }
 
+
+function showAdminBackupControls() {
+  const wrapper = $("#adminBackupExportCol");
+  if (wrapper) wrapper.classList.toggle("d-none", !isAdmin());
+}
+
+function backupValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value?.toDate === "function") return value.toDate().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return JSON.stringify(value.map(backupJsonValue));
+  if (typeof value === "object") return JSON.stringify(backupJsonValue(value));
+  return value;
+}
+
+function backupJsonValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value?.toDate === "function") return value.toDate().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(backupJsonValue);
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, backupJsonValue(v)]));
+  }
+  return value;
+}
+
+function preferredBackupFields(allFields) {
+  const preferred = [
+    "__docId",
+    "sku",
+    "nombre",
+    "descripcion",
+    "tipo",
+    "activo",
+    "visibleParaAlumno",
+    "prestamoHabilitado",
+    "reservaHabilitada",
+    "requiereAsistencia",
+    "zoneId",
+    "zoneName",
+    "subzoneId",
+    "subzoneName",
+    "locationId",
+    "locationName",
+    "locationCode",
+    "locationType",
+    "relatedMachineId",
+    "relatedMachineName",
+    "relatedMachineCode",
+    "fabacademyWeeks",
+    "fabacademyWeekNames",
+    "stockAlmacen",
+    "stockPrestadoTemporal",
+    "stockLargoPlazo",
+    "stockDanado",
+    "stockPerdido",
+    "inventarioDeseado",
+    "precioUnitario",
+    "moneda",
+    "purchaseUrl",
+    "infoUrl",
+    "imageFileId",
+    "imageFilename",
+    "documentationFileId",
+    "documentationFilename",
+    "pdfFileId",
+    "pdfFilename",
+    "datasheetFileId",
+    "datasheetFilename",
+    "createdAt",
+    "updatedAt",
+    "__rawJson",
+  ];
+  const seen = new Set(preferred);
+  const rest = [...allFields].filter(f => !seen.has(f)).sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+  return [...preferred.filter(f => allFields.has(f) || f === "__docId" || f === "__rawJson"), ...rest];
+}
+
+async function exportFullItemsBackupXlsx() {
+  if (!isAdmin()) return alert("Solo la vista admin puede exportar el respaldo completo de items.");
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
+    return;
+  }
+
+  const snap = await getDocs(collection(db, "items"));
+  const rawRows = snap.docs.map(d => ({ __docId: d.id, ...d.data() }));
+  if (!rawRows.length) return alert("No hay items para respaldar.");
+
+  const allFields = new Set(["__docId", "__rawJson"]);
+  rawRows.forEach(row => Object.keys(row).forEach(k => allFields.add(k)));
+  const headers = preferredBackupFields(allFields);
+  const exportedAt = new Date().toISOString();
+
+  const rows = rawRows.map(row => {
+    const out = {};
+    const rawJson = backupJsonValue(row);
+    headers.forEach(field => {
+      if (field === "__rawJson") out[field] = JSON.stringify(rawJson);
+      else out[field] = backupValue(row[field]);
+    });
+    return out;
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+  ws["!autofilter"] = { ref: `A1:${XLSX.utils.encode_col(headers.length - 1)}${rows.length + 1}` };
+  ws["!cols"] = headers.map(h => {
+    if (["descripcion", "__rawJson", "purchaseUrl", "infoUrl"].includes(h)) return { wch: 52 };
+    if (h.endsWith("FileId") || h.endsWith("Filename")) return { wch: 28 };
+    if (["createdAt", "updatedAt"].includes(h)) return { wch: 24 };
+    return { wch: Math.max(12, Math.min(28, h.length + 4)) };
+  });
+
+  const metaRows = [
+    { campo: "exportado_en", valor: exportedAt },
+    { campo: "coleccion", valor: "items" },
+    { campo: "documentos", valor: rawRows.length },
+    { campo: "nota", valor: "Este respaldo contiene los campos de Firestore e identificadores de archivos. No incluye los binarios de imágenes o documentación." },
+  ];
+  const meta = XLSX.utils.json_to_sheet(metaRows, { header: ["campo", "valor"] });
+  meta["!cols"] = [{ wch: 22 }, { wch: 120 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "items_completo");
+  XLSX.utils.book_append_sheet(wb, meta, "metadatos");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  XLSX.writeFile(wb, `respaldo_completo_items_fablab_${stamp}.xlsx`, { bookType: "xlsx", compression: true });
+}
+
 function exportVisibleXlsx() {
   const rows = buildInventoryReportRows(filtered);
 
@@ -1459,21 +1634,25 @@ function exportVisibleXlsx() {
 async function init() {
   await loadBase();
   fillSelects();
-  filtered = [...items];
+  showAdminBackupControls();
+  filtered = sortItemsForDisplay(items);
   renderItems();
   renderCartCount();
 
-  ["#search", "#filterWeek", "#filterLocation"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
+  ["#search", "#filterWeek", "#filterLocation", "#sortMode"].forEach(sel => $(sel)?.addEventListener("input", applyFilters));
   bindTipoFilterEvents();
   $("#filterZone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#filterSubzone")?.addEventListener("input", () => { refreshDependentFilters(); applyFilters(); });
   $("#clearFilters")?.addEventListener("click", () => {
     document.querySelectorAll(".filter-input").forEach(x => { x.value = ""; });
+    const sortMode = $("#sortMode");
+    if (sortMode) sortMode.value = "zone";
     setTipoChecks(true);
     refreshDependentFilters();
     applyFilters();
   });
   $("#exportXlsx")?.addEventListener("click", exportVisibleXlsx);
+  $("#exportFullBackupXlsx")?.addEventListener("click", exportFullItemsBackupXlsx);
   $("#openCart")?.addEventListener("click", renderCartModal);
   $("#submitLoan")?.addEventListener("click", submitLoanRequest);
 }

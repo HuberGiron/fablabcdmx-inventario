@@ -83,7 +83,7 @@
         </div>
 
         <div class="row g-3 align-items-end mt-1">
-          <div class="col-lg-4 col-md-6">
+          <div class="col-lg-3 col-md-6">
             <label class="form-label small mb-1" for="tipoDropdownBtn">Tipo</label>
             <div class="dropdown tipo-filter-dropdown">
               <button class="btn btn-filter dropdown-toggle w-100 text-start" type="button" id="tipoDropdownBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
@@ -98,13 +98,24 @@
               </div>
             </div>
           </div>
-          <div class="col-lg-4 col-md-6">
+          <div class="col-lg-3 col-md-6">
             <label class="form-label small mb-1" for="filterWeek">FabAcademy</label>
             <select id="filterWeek" class="form-select filter-input"></select>
           </div>
-          <div class="col-lg-4 col-md-12">
+          <div class="col-lg-3 col-md-6">
             <label class="form-label small mb-1" for="search">Buscar</label>
             <input id="search" class="form-control filter-input" placeholder="Nombre, SKU o descripción">
+          </div>
+          <div class="col-lg-3 col-md-6">
+            <label class="form-label small mb-1" for="sortMode">Ordenar</label>
+            <select id="sortMode" class="form-select">
+              <option value="zone" selected>Zona / subzona</option>
+              <option value="nombre">Alfabético nombre</option>
+              <option value="sku">SKU</option>
+              <option value="tipo">Tipo (alfabético)</option>
+              <option value="precio_desc">Precio más alto</option>
+              <option value="precio_asc">Precio más bajo</option>
+            </select>
           </div>
         </div>
 
