@@ -1754,6 +1754,21 @@ function exportVisibleXlsx() {
   XLSX.writeFile(wb, `inventario_filtrado_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
 }
 
+function bindPurchaseReportToggle() {
+  const button = $("#togglePurchaseReport");
+  const collapseEl = $("#purchaseBreakdownCollapse");
+  if (!button || !collapseEl) return;
+
+  const setExpandedState = expanded => {
+    button.textContent = expanded ? "Ocultar reporte" : "Ver reporte";
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  };
+
+  setExpandedState(collapseEl.classList.contains("show"));
+  collapseEl.addEventListener("shown.bs.collapse", () => setExpandedState(true));
+  collapseEl.addEventListener("hidden.bs.collapse", () => setExpandedState(false));
+}
+
 async function init() {
   await loadBase();
   fillSelects();
@@ -1773,6 +1788,7 @@ async function init() {
   });
   $("#exportXlsx")?.addEventListener("click", exportVisibleXlsx);
   $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportXlsx);
+  bindPurchaseReportToggle();
   $("#openCart")?.addEventListener("click", renderCartModal);
   $("#submitLoan")?.addEventListener("click", submitLoanRequest);
 }
