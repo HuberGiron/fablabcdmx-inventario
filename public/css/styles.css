@@ -451,84 +451,61 @@ code { color: #334155; }
    -------------------------------------------------------------------------- */
 .loan-action {
   display: inline-flex;
-  align-items: center;
-  gap: .45rem;
+  align-items: stretch;
+  gap: .75rem;
   flex-wrap: wrap;
-  margin-top: .05rem;
+  margin-top: .1rem;
 }
 
-.loan-qty-stepper {
+.loan-qty {
   display: inline-flex;
   align-items: center;
-  height: 36px;
+  min-height: 48px;
+  margin: 0;
   overflow: hidden;
   border: 1px solid var(--ibero-border);
   border-radius: 999px;
   background: #fff;
 }
 
-.loan-qty-step {
-  width: 34px;
-  height: 34px;
+.loan-qty-label {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  border: 0;
+  align-self: stretch;
+  padding: 0 .95rem;
+  border-right: 1px solid var(--ibero-border);
   background: #f7f7f5;
   color: var(--ibero-black);
   font-family: var(--ibero-sans);
-  font-size: 1rem;
-  font-weight: 800;
-  line-height: 1;
-  transition: background .16s ease, color .16s ease;
-}
-
-.loan-qty-step:hover,
-.loan-qty-step:focus {
-  background: var(--ibero-red);
-  color: #fff;
-  outline: 0;
-}
-
-.loan-qty-step:disabled {
-  color: #aaa;
-  background: #f3f3f1;
-  cursor: not-allowed;
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .loan-qty-input,
 .qty-input.loan-qty-input {
-  width: 48px;
-  min-height: 34px;
-  height: 34px;
-  padding: 0 .2rem;
+  width: 74px;
+  min-height: 48px;
+  height: 48px;
+  padding: 0 .65rem;
   border: 0;
-  border-left: 1px solid var(--ibero-border);
-  border-right: 1px solid var(--ibero-border);
   border-radius: 0;
   background: #fff;
   color: var(--ibero-black);
   box-shadow: none;
   font-family: var(--ibero-sans);
-  font-size: .95rem;
-  font-weight: 700;
+  font-size: 1.05rem;
+  font-weight: 600;
   line-height: 1;
   text-align: center;
-  appearance: textfield;
-  -moz-appearance: textfield;
-}
-
-.loan-qty-input::-webkit-outer-spin-button,
-.loan-qty-input::-webkit-inner-spin-button {
-  margin: 0;
-  -webkit-appearance: none;
 }
 
 .loan-qty-input:focus {
-  border-left: 1px solid var(--ibero-border);
-  border-right: 1px solid var(--ibero-border);
+  border: 0;
   outline: 0;
-  box-shadow: inset 0 0 0 2px rgba(224, 0, 52, .18);
+  box-shadow: inset 0 0 0 2px rgba(224, 0, 52, .22);
 }
 
 .loan-add-btn,
@@ -536,19 +513,19 @@ code { color: #334155; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  padding: .42rem .95rem;
+  min-height: 48px;
+  padding: .72rem 1.35rem;
   border: 1px solid var(--ibero-red);
   border-radius: 999px;
   background: var(--ibero-red);
   color: #fff;
-  box-shadow: none;
+  box-shadow: 0 9px 18px rgba(224, 0, 52, .16);
   font-family: var(--ibero-sans);
-  font-size: .86rem;
+  font-size: .98rem;
   font-weight: 800;
   line-height: 1;
   text-decoration: none;
-  transition: background .16s ease, border-color .16s ease;
+  transition: transform .16s ease, box-shadow .16s ease, background .16s ease, border-color .16s ease;
 }
 
 .loan-add-btn:hover,
@@ -556,6 +533,8 @@ code { color: #334155; }
   border-color: var(--ibero-red-dark);
   background: var(--ibero-red-dark);
   color: #fff;
+  box-shadow: 0 12px 24px rgba(224, 0, 52, .23);
+  transform: translateY(-1px);
 }
 
 .loan-add-btn:disabled,
@@ -563,22 +542,24 @@ code { color: #334155; }
   border-color: #d7d7d7;
   background: #d7d7d7;
   color: #777;
+  box-shadow: none;
   cursor: not-allowed;
+  transform: none;
 }
 
 .loan-stock-msg,
 .loan-stock-ok {
   display: inline-flex;
   align-items: center;
-  min-height: 36px;
+  min-height: 48px;
   font-family: var(--ibero-sans);
-  font-size: .82rem;
+  font-size: .92rem;
   font-weight: 700;
   line-height: 1.15;
 }
 
 .loan-stock-msg { color: var(--ibero-red); }
-.loan-stock-ok { color: #68717a; }
+.loan-stock-ok { color: #5f686f; }
 
 /* --------------------------------------------------------------------------
    Paneles administrativos y formularios existentes
@@ -736,26 +717,37 @@ code { color: #334155; }
 
   .loan-action {
     width: 100%;
-    gap: .4rem;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .55rem;
   }
-  .loan-qty-stepper { height: 34px; }
-  .loan-qty-step { width: 32px; height: 32px; }
+  .loan-qty,
+  .loan-add-btn,
+  .loan-stock-msg,
+  .loan-stock-ok {
+    width: 100%;
+  }
+  .loan-qty {
+    justify-content: space-between;
+  }
+  .loan-qty-label {
+    flex: 1 1 auto;
+  }
   .loan-qty-input,
   .qty-input.loan-qty-input {
-    width: 46px;
-    height: 32px;
-    min-height: 32px;
+    width: 92px;
+    flex: 0 0 92px;
   }
   .loan-add-btn,
   .btn-sm.loan-add-btn {
-    min-height: 34px;
-    padding: .38rem .82rem;
-    font-size: .78rem;
+    min-height: 46px;
+    justify-content: center;
+    font-size: .9rem;
   }
   .loan-stock-msg,
   .loan-stock-ok {
-    min-height: 34px;
-    font-size: .76rem;
+    min-height: 0;
+    font-size: .82rem;
   }
 }
 
@@ -769,16 +761,98 @@ code { color: #334155; }
   .item-image { height: 98px; }
   .item-card .card-title { font-size: 1.16rem; }
   .item-card .card-body { padding: .7rem .72rem; }
-  .loan-qty-step { width: 30px; }
+  .loan-qty-label { padding-inline: .72rem; font-size: .7rem; }
   .loan-qty-input,
-  .qty-input.loan-qty-input { width: 42px; }
-  .loan-add-btn,
-  .btn-sm.loan-add-btn { padding-inline: .72rem; }
+  .qty-input.loan-qty-input { width: 76px; flex-basis: 76px; }
 }
 
-/* Ajuste: el filtro de Tipo debe mantener esquinas cuadradas como los demás filtros */
-.tipo-filter-dropdown .btn-filter,
-button#tipoDropdownBtn.btn-filter,
-.btn.btn-filter {
-  border-radius: 0 !important;
+/* --------------------------------------------------------------------------
+   Navegación de secciones y vista de compras
+   -------------------------------------------------------------------------- */
+.nav-section-link.active {
+  color: #fff !important;
+  background: var(--ibero-red) !important;
+  border-color: var(--ibero-red) !important;
+}
+
+.ibero-main-nav .nav-section-link.active {
+  color: var(--ibero-red) !important;
+  background: #fff !important;
+  border-color: #fff !important;
+}
+
+@media (max-width: 1199.98px) {
+  .ibero-main-nav .nav-section-link.active {
+    color: #fff !important;
+    background: var(--ibero-red) !important;
+    border-color: var(--ibero-red) !important;
+  }
+}
+
+.purchase-summary-card {
+  border-left: 5px solid var(--ibero-red);
+  background: #fff;
+}
+
+.purchase-summary-label {
+  color: var(--ibero-black);
+  font-size: .78rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.purchase-summary-total {
+  margin-top: .25rem;
+  color: var(--ibero-red);
+  font-family: var(--ibero-serif);
+  font-size: clamp(2rem, 3.4vw, 3.35rem);
+  font-weight: 300;
+  line-height: .95;
+  letter-spacing: -.04em;
+}
+
+.purchase-summary-meta {
+  margin-top: .35rem;
+  color: var(--ibero-muted);
+  font-size: .95rem;
+}
+
+.purchase-summary-note {
+  color: #343a40;
+  background: #fafafa;
+  border: 1px solid #e7e7e7;
+  padding: .85rem 1rem;
+  font-size: .96rem;
+  line-height: 1.45;
+}
+
+.purchase-item-cost {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem .75rem;
+  padding: .55rem .7rem;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #7c2d12;
+  font-size: .86rem;
+  line-height: 1.25;
+}
+
+.purchase-item-cost strong {
+  color: #9a3412;
+  font-weight: 800;
+}
+
+@media (max-width: 768px) {
+  .purchase-summary-total {
+    font-size: 2rem;
+  }
+
+  .purchase-item-cost {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .25rem;
+    font-size: .78rem;
+  }
 }

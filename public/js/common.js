@@ -45,7 +45,7 @@ export async function requireRole(allowedRoles) {
   const profile = await getUserProfile(user.uid);
   if (!profile || !allowedRoles.includes(profile.role)) {
     alert("No tienes permisos para acceder a esta página.");
-    window.location.href = "./";
+    window.location.href = "index.html";
     return null;
   }
   return { user, profile };
@@ -113,18 +113,35 @@ function roleBadge(role) {
   return `<span class="badge rounded-pill ${klass}">${label}</span>`;
 }
 
+function currentPageName() {
+  const path = window.location.pathname.split("/").pop() || "index.html";
+  return path;
+}
+
+function navLink(href, label) {
+  const active = currentPageName() === href ? " active" : "";
+  const aria = active ? ' aria-current="page"' : "";
+  return `<a class="btn btn-outline-dark btn-sm nav-section-link${active}" href="${href}"${aria}>${label}</a>`;
+}
+
 export function setupNav() {
   const nav = document.querySelector("#userNav");
   if (!nav) return;
   onAuthStateChanged(auth, async (user) => {
     if (!user) {
-      nav.innerHTML = `${roleBadge("public")}<a class="btn btn-outline-primary btn-sm" href="login.html">Entrar</a>`;
+      nav.innerHTML = `
+        ${roleBadge("public")}
+        ${navLink("index.html", "Inventario")}
+        ${navLink("compras.html", "Compras")}
+        <a class="btn btn-outline-primary btn-sm" href="login.html">Entrar</a>`;
       return;
     }
     const profile = await getUserProfile(user.uid);
     const role = profile?.role || "alumno";
     nav.innerHTML = `
       ${roleBadge(role)}
+      ${navLink("index.html", "Inventario")}
+      ${navLink("compras.html", "Compras")}
       <span class="small text-muted d-none d-md-inline">${profile?.nombre || user.email}</span>
       ${role === "admin" ? '<a class="btn btn-outline-dark btn-sm" href="admin.html">Admin</a>' : ''}
       ${role === "tecnico" || role === "admin" ? '<a class="btn btn-outline-dark btn-sm" href="tecnico.html">Técnico</a>' : ''}
