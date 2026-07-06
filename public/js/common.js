@@ -129,10 +129,11 @@ export function setupNav() {
   if (!nav) return;
   onAuthStateChanged(auth, async (user) => {
     if (!user) {
+      const isPurchasesPage = currentPageName() === "compras.html";
       nav.innerHTML = `
         ${roleBadge("public")}
         ${navLink("index.html", "Inventario")}
-        ${navLink("compras.html", "Compras")}
+        ${isPurchasesPage ? navLink("compras.html", "Compras") : ""}
         <a class="btn btn-outline-primary btn-sm" href="login.html">Entrar</a>`;
       return;
     }
