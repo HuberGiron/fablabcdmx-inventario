@@ -157,6 +157,7 @@ function isAdmin() {
 function sortLocations(arr) {
   return [...arr].sort((a,b)=>
     String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), undefined, {numeric:true}) ||
+    String(locationDisplayCode(a) || "").localeCompare(String(locationDisplayCode(b) || ""), "es", {numeric:true, sensitivity:"base"}) ||
     Number(a.order || 999) - Number(b.order || 999) ||
     String(a.name || "").localeCompare(String(b.name || ""), "es")
   );
