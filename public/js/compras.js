@@ -23,6 +23,17 @@ const ITEM_TYPES = [
   "Otro",
 ];
 
+const PURCHASE_CATEGORIES = [
+  "Mobiliario",
+  "Cómputo",
+  "Máquinas",
+  "Consumibles, accesorios, equipo auxiliar, otros",
+];
+
+const PURCHASE_CATEGORY_ORDER = Object.fromEntries(
+  PURCHASE_CATEGORIES.map((category, index) => [category, index + 1])
+);
+
 const LOCATION_TYPES = [
   ["machine", "Máquina"],
   ["workstation", "Estación de trabajo"],
@@ -570,10 +581,10 @@ function purchaseSummaryByCurrency(rows) {
 
 function purchaseCategory(tipo) {
   const normalized = normalizeTipo(tipo);
-  if (normalized === "Máquina") return "Máquina";
   if (normalized === "Mobiliario") return "Mobiliario";
   if (normalized === "Cómputo") return "Cómputo";
-  return "Otros";
+  if (normalized === "Máquina" || normalized === "Herramienta") return "Máquinas";
+  return "Consumibles, accesorios, equipo auxiliar, otros";
 }
 
 function emptyMoneyTotals() {
@@ -600,7 +611,6 @@ function ensureReportGroup(map, key, factory) {
 }
 
 function buildPurchaseBreakdown(rows) {
-  const categoryOrder = { "Mobiliario": 1, "Cómputo": 2, "Máquina": 3, "Otros": 4 };
   const zoneMap = new Map();
 
   rows.forEach(it => {
@@ -633,7 +643,7 @@ function buildPurchaseBreakdown(rows) {
 
     const cat = ensureReportGroup(subzone.categories, category, () => ({
       category,
-      sort: categoryOrder[category] || 99,
+      sort: PURCHASE_CATEGORY_ORDER[category] || 99,
       totals: emptyMoneyTotals(),
       qty: 0,
       items: 0,
@@ -662,7 +672,6 @@ function buildPurchaseBreakdown(rows) {
 }
 
 function buildPurchaseCategorySummary(rows) {
-  const categoryOrder = { "Mobiliario": 1, "Cómputo": 2, "Máquina": 3, "Otros": 4 };
   const categories = new Map();
 
   rows.forEach(it => {
@@ -674,7 +683,7 @@ function buildPurchaseCategorySummary(rows) {
     const subtotal = qty * num(it.precioUnitario);
     const group = ensureReportGroup(categories, category, () => ({
       category,
-      sort: categoryOrder[category] || 99,
+      sort: PURCHASE_CATEGORY_ORDER[category] || 99,
       totals: emptyMoneyTotals(),
       qty: 0,
       items: 0,
@@ -685,10 +694,10 @@ function buildPurchaseCategorySummary(rows) {
     group.items += 1;
   });
 
-  return ["Mobiliario", "Cómputo", "Máquina", "Otros"].map(category =>
+  return PURCHASE_CATEGORIES.map(category =>
     categories.get(category) || {
       category,
-      sort: categoryOrder[category] || 99,
+      sort: PURCHASE_CATEGORY_ORDER[category] || 99,
       totals: emptyMoneyTotals(),
       qty: 0,
       items: 0,
