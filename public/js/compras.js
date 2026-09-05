@@ -809,6 +809,7 @@ function renderItems() {
               <div class="small mb-2"><strong>FabAcademy:</strong> ${esc(weeksText || "Sin clasificación")}</div>
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 ${it.infoUrl ? `<a class="btn btn-sm btn-outline-primary" href="${esc(it.infoUrl)}" target="_blank" rel="noopener">Más info</a>` : ''}
+                ${it.purchaseUrl ? `<a class="btn btn-sm btn-outline-success" href="${esc(it.purchaseUrl)}" target="_blank" rel="noopener">Info Compra</a>` : ''}
                 ${documentationButton(it)}
                 ${it.datasheetFileId ? `<button class="btn btn-sm btn-outline-secondary file-download" data-file="${esc(it.datasheetFileId)}" data-name="${esc(it.datasheetFilename || it.nombre || 'ficha-tecnica')}">Ficha técnica</button>` : ''}
                 ${actionControls(it, disponible)}
