@@ -63,6 +63,202 @@ let currentUser = null;
 let currentProfile = null;
 let currentRole = "public";
 let isStaff = false;
+// ===== Presentación temporal de la estructura objetivo =====
+// Esta capa sólo cambia cómo se muestran y ordenan zonas/subzonas/áreas.
+// Los IDs técnicos reales de Firestore se conservan como value y para guardar datos.
+
+const TARGET_PUBLIC_ZONE_CODES = new Set([
+  "1","2","3","4","5","6","7","8","9","10","11","12"
+]);
+
+const TARGET_PUBLIC_SUBZONE_CODES = new Set([
+  "5.1","5.2","5.3","5.4","5.5","5.6",
+  "6.1","6.2","6.3",
+  "7.1","7.2","7.3","7.4","7.5","7.6","7.7",
+  "8.1","8.2","8.3","8.4","8.5","8.6","8.7","8.8","8.9",
+  "9.1","9.2",
+  "11.1","11.2","11.3","11.4",
+  "12.1","12.2"
+]);
+
+function displayMeta(rawCode, rawName) {
+  const code = String(rawCode ?? "").trim();
+  const name = String(rawName ?? "").trim();
+  // Los registros temporales se crearon con el código final al inicio del nombre:
+  // p. ej. subzoneId=6.5, name="6.1 Maquinado de gran formato CNC".
+  const match = name.match(/^(\d+(?:\.\d+)*)(?:\.)?\s+(.+)$/);
+  if (match) {
+    return {
+      code: match[1],
+      name: match[2].trim(),
+      aliased: match[1] !== code,
+    };
+  }
+  return { code, name, aliased: false };
+}
+
+function zoneDisplay(z) {
+  return displayMeta(z?.zoneId, z?.name);
+}
+
+function zoneDisplayById(zoneId, fallbackName = "") {
+  const live = zones.find(z => String(z.zoneId) === String(zoneId));
+  return zoneDisplay(live || { zoneId, name: fallbackName });
+}
+
+function subzoneDisplay(s) {
+  return displayMeta(s?.subzoneId, s?.name);
+}
+
+function subzoneDisplayById(subzoneId, fallbackName = "") {
+  const live = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  return subzoneDisplay(live || { subzoneId, name: fallbackName });
+}
+
+function locationDisplay(l) {
+  if (!l) return { code: "", name: "", aliased: false };
+  const rawCode = String(l.areaCode || l.locationCode || l.subzoneId || "").trim();
+  const parsed = displayMeta(rawCode, l.name || "");
+
+  // Si el nombre ya trae el código final (caso de las nuevas áreas), manda ese.
+  if (parsed.aliased) return parsed;
+
+  // Si la subzona es temporal (ej. 5.10 -> visible 5.5), proyecta el prefijo
+  // del areaCode sin cambiar el areaCode real guardado en Firestore.
+  const sd = subzoneDisplayById(l.subzoneId, l.subzoneName || "");
+  const rawSubzoneId = String(l.subzoneId || "");
+  if (sd.code && rawSubzoneId && sd.code !== rawSubzoneId) {
+    if (rawCode.startsWith(`${rawSubzoneId}.`)) {
+      return {
+        code: `${sd.code}${rawCode.slice(rawSubzoneId.length)}`,
+        name: parsed.name || l.name || "",
+        aliased: true,
+      };
+    }
+    if (l.type === "general") {
+      return {
+        code: `${sd.code}.0`,
+        name: parsed.name || l.name || "",
+        aliased: true,
+      };
+    }
+  }
+
+  return parsed;
+}
+
+function itemLocationDisplay(it) {
+  const live = locationById(it?.locationId);
+  if (live) return locationDisplay(live);
+
+  const rawCode = String(it?.locationCode || it?.subzoneId || "").trim();
+  const parsed = displayMeta(rawCode, it?.locationName || "");
+  if (parsed.aliased) return parsed;
+
+  const sd = subzoneDisplayById(it?.subzoneId, it?.subzoneName || "");
+  const rawSubzoneId = String(it?.subzoneId || "");
+  if (sd.code && rawSubzoneId && sd.code !== rawSubzoneId && rawCode.startsWith(`${rawSubzoneId}.`)) {
+    return {
+      code: `${sd.code}${rawCode.slice(rawSubzoneId.length)}`,
+      name: parsed.name || it?.locationName || "",
+      aliased: true,
+    };
+  }
+  return parsed;
+}
+
+function adminZoneOptionLabel(z) {
+  const d = zoneDisplay(z);
+  const technical = String(z?.zoneId ?? "");
+  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
+  return `${d.code} · ${d.name}${suffix}`;
+}
+
+function adminSubzoneOptionLabel(s) {
+  const d = subzoneDisplay(s);
+  const technical = String(s?.subzoneId ?? "");
+  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
+  return `${d.code} · ${d.name}${suffix}`;
+}
+
+function locationAdminOptionLabel(l, includeType = true) {
+  const d = locationDisplay(l);
+  const rawCode = String(l?.areaCode || l?.locationCode || l?.subzoneId || "").trim();
+  const label = LOCATION_TYPE_LABELS[l?.type] || l?.type || "";
+  const typeText = includeType && label ? ` (${label})` : "";
+  const suffix = rawCode && rawCode !== d.code ? ` [código técnico ${rawCode}]` : "";
+  return `${d.code ? `${d.code} · ` : ""}${d.name || "Sin nombre"}${suffix}${typeText}`;
+}
+
+function choosePreferredByDisplayCode(rows, displayFn, rawCodeFn) {
+  const byCode = new Map();
+  for (const row of rows) {
+    const d = displayFn(row);
+    if (!d.code) continue;
+    const current = byCode.get(d.code);
+    if (!current) {
+      byCode.set(d.code, row);
+      continue;
+    }
+    const rowIsAlias = String(rawCodeFn(row) ?? "") !== String(d.code);
+    const currentDisplay = displayFn(current);
+    const currentIsAlias = String(rawCodeFn(current) ?? "") !== String(currentDisplay.code);
+    if (rowIsAlias && !currentIsAlias) byCode.set(d.code, row);
+  }
+  return [...byCode.values()];
+}
+
+function publicZones() {
+  return choosePreferredByDisplayCode(
+    zones.filter(z => TARGET_PUBLIC_ZONE_CODES.has(zoneDisplay(z).code)),
+    zoneDisplay,
+    z => z.zoneId
+  ).sort((a, b) => Number(zoneDisplay(a).code) - Number(zoneDisplay(b).code));
+}
+
+function publicSubzones(zoneId = "") {
+  const rows = subzones.filter(s =>
+    (!zoneId || String(s.zoneId) === String(zoneId)) &&
+    TARGET_PUBLIC_SUBZONE_CODES.has(subzoneDisplay(s).code)
+  );
+  return choosePreferredByDisplayCode(rows, subzoneDisplay, s => s.subzoneId)
+    .sort((a, b) => String(subzoneDisplay(a).code).localeCompare(
+      String(subzoneDisplay(b).code), "es", { numeric: true }
+    ));
+}
+
+function publicLocations(zoneId = "", subzoneId = "") {
+  let rows = locations.filter(l =>
+    l.active !== false &&
+    (!zoneId || String(l.zoneId) === String(zoneId)) &&
+    (!subzoneId || String(l.subzoneId) === String(subzoneId))
+  );
+
+  // Si no se eligió subzona, sólo muestra ubicaciones pertenecientes a las
+  // subzonas que forman parte de la estructura objetivo visible.
+  if (!subzoneId) {
+    const allowed = new Set(publicSubzones(zoneId).map(s => String(s.subzoneId)));
+    rows = rows.filter(l => allowed.has(String(l.subzoneId)));
+  }
+
+  return choosePreferredByDisplayCode(
+    rows,
+    locationDisplay,
+    l => l.areaCode || l.locationCode || l.subzoneId
+  ).sort((a, b) =>
+    String(locationDisplay(a).code || "").localeCompare(
+      String(locationDisplay(b).code || ""), "es", { numeric: true, sensitivity: "base" }
+    ) ||
+    Number(a.order || 999) - Number(b.order || 999) ||
+    String(locationDisplay(a).name || "").localeCompare(String(locationDisplay(b).name || ""), "es")
+  );
+}
+
+function shouldShowPublicSubzone(subzoneId, fallbackName = "") {
+  return TARGET_PUBLIC_SUBZONE_CODES.has(subzoneDisplayById(subzoneId, fallbackName).code);
+}
+// ===== Fin presentación temporal =====
+
 
 function cart() {
   return JSON.parse(localStorage.getItem("fablab_cart") || "[]");
@@ -188,7 +384,7 @@ function locationDisplayCode(l) {
 }
 
 function itemLocationCode(it) {
-  return it?.locationCode || locationById(it?.locationId)?.areaCode || locationById(it?.locationId)?.locationCode || it?.subzoneId || "";
+  return itemLocationDisplay(it).code || it?.subzoneId || "";
 }
 
 function numericSortValue(value, fallback = 999) {
@@ -197,8 +393,12 @@ function numericSortValue(value, fallback = 999) {
 }
 
 function compareByPhysicalRoute(a, b) {
-  return numericSortValue(a.zoneId) - numericSortValue(b.zoneId) ||
-    String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), "es", { numeric: true }) ||
+  const za = zoneDisplayById(a.zoneId, a.zoneName);
+  const zb = zoneDisplayById(b.zoneId, b.zoneName);
+  const sa = subzoneDisplayById(a.subzoneId, a.subzoneName);
+  const sb = subzoneDisplayById(b.subzoneId, b.subzoneName);
+  return numericSortValue(za.code) - numericSortValue(zb.code) ||
+    String(sa.code || "").localeCompare(String(sb.code || ""), "es", { numeric: true }) ||
     String(itemLocationCode(a) || "").localeCompare(String(itemLocationCode(b) || ""), "es", { numeric: true }) ||
     String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }) ||
     String(a.nombre || "").localeCompare(String(b.nombre || ""), "es");
@@ -326,20 +526,24 @@ function adminPriceBlock(it) {
 }
 
 function locationOptionLabel(l, includeType = true) {
-  const code = locationDisplayCode(l);
+  const d = locationDisplay(l);
   const label = LOCATION_TYPE_LABELS[l.type] || l.type || "";
   const typeText = includeType && label ? ` (${label})` : "";
-  return `${code ? `${code} · ` : ""}${l.name || "Sin nombre"}${typeText}`;
+  return `${d.code ? `${d.code} · ` : ""}${d.name || "Sin nombre"}${typeText}`;
 }
 
 function zoneOptions(selected = "") {
-  return zones.map(z => `<option value="${esc(z.zoneId)}" ${String(z.zoneId) === String(selected) ? "selected" : ""}>${esc(z.zoneId)} · ${esc(z.name)}</option>`).join("");
+  // Se usa en edición inline: conserva vieja + nueva y marca el ID técnico de los destinos temporales.
+  return zones.map(z =>
+    `<option value="${esc(z.zoneId)}" ${String(z.zoneId) === String(selected) ? "selected" : ""}>${esc(adminZoneOptionLabel(z))}</option>`
+  ).join("");
 }
 
 function subzoneOptions(zoneId = "", selected = "") {
+  // Se usa en edición inline: conserva vieja + nueva para permitir la migración.
   return subzones
     .filter(s => !zoneId || String(s.zoneId) === String(zoneId))
-    .map(s => `<option value="${esc(s.subzoneId)}" ${String(s.subzoneId) === String(selected) ? "selected" : ""}>${esc(s.subzoneId)} · ${esc(s.name)}</option>`)
+    .map(s => `<option value="${esc(s.subzoneId)}" ${String(s.subzoneId) === String(selected) ? "selected" : ""}>${esc(adminSubzoneOptionLabel(s))}</option>`)
     .join("");
 }
 
@@ -353,14 +557,14 @@ function locationsFor(zoneId = "", subzoneId = "") {
 
 function locationOptionsFor(zoneId = "", subzoneId = "", selected = "", includeEmpty = true) {
   const opts = locationsFor(zoneId, subzoneId).map(l =>
-    `<option value="${esc(l.locationId)}" ${String(l.locationId) === String(selected) ? "selected" : ""}>${esc(locationOptionLabel(l, true))}</option>`
+    `<option value="${esc(l.locationId)}" ${String(l.locationId) === String(selected) ? "selected" : ""}>${esc(locationAdminOptionLabel(l, true))}</option>`
   ).join("");
   return `${includeEmpty ? '<option value="">Sin ubicación específica</option>' : ""}${opts}`;
 }
 
 function machineOptionsFor(zoneId = "", subzoneId = "", selected = "", includeEmpty = true) {
   const opts = locationsFor(zoneId, subzoneId).filter(l => l.type === "machine").map(l =>
-    `<option value="${esc(l.locationId)}" ${String(l.locationId) === String(selected) ? "selected" : ""}>${esc(locationOptionLabel(l, false))}</option>`
+    `<option value="${esc(l.locationId)}" ${String(l.locationId) === String(selected) ? "selected" : ""}>${esc(locationAdminOptionLabel(l, false))}</option>`
   ).join("");
   return `${includeEmpty ? '<option value="">Ninguna</option>' : ""}${opts}`;
 }
@@ -368,7 +572,7 @@ function machineOptionsFor(zoneId = "", subzoneId = "", selected = "", includeEm
 function parentLocationOptionsFor(zoneId = "", subzoneId = "", selected = "", currentLocationId = "") {
   const opts = locationsFor(zoneId, subzoneId)
     .filter(l => String(l.locationId) !== String(currentLocationId))
-    .map(l => `<option value="${esc(l.locationId)}" ${String(l.locationId) === String(selected) ? "selected" : ""}>${esc(locationOptionLabel(l, true))}</option>`)
+    .map(l => `<option value="${esc(l.locationId)}" ${String(l.locationId) === String(selected) ? "selected" : ""}>${esc(locationAdminOptionLabel(l, true))}</option>`)
     .join("");
   return `<option value="">Sin ubicación padre</option>${opts}`;
 }
@@ -432,11 +636,37 @@ function fillSelects() {
   const rel = $("#filterRelatedMachine");
 
   renderTipoCheckboxes();
-  if (zone) zone.innerHTML = '<option value="">Todas las zonas</option>' + zones.map(z => `<option value="${esc(z.zoneId)}">${esc(z.zoneId)} · ${esc(z.name)}</option>`).join("");
-  if (sub) sub.innerHTML = '<option value="">Todas las subzonas</option>' + subzones.map(s => `<option value="${esc(s.subzoneId)}" data-zone="${esc(s.zoneId)}">${esc(s.subzoneId)} · ${esc(s.name)}</option>`).join("");
-  if (week) week.innerHTML = '<option value="">Todas las semanas FabAcademy</option>' + weeks.map(w => `<option value="${esc(w.weekId)}">${esc(w.weekId)} · ${esc(w.name)}</option>`).join("");
-  if (loc) loc.innerHTML = '<option value="">Todas las ubicaciones</option>' + locations.map(locationOption).join("");
-  if (rel) rel.innerHTML = '<option value="">Todas las máquinas relacionadas</option>' + locations.filter(l => l.type === "machine").map(locationOption).join("");
+
+  if (zone) {
+    zone.innerHTML = '<option value="">Todas las zonas</option>' +
+      publicZones().map(z => {
+        const d = zoneDisplay(z);
+        return `<option value="${esc(z.zoneId)}">${esc(d.code)} · ${esc(d.name)}</option>`;
+      }).join("");
+  }
+
+  if (sub) {
+    sub.innerHTML = '<option value="">Todas las subzonas</option>' +
+      publicSubzones().map(s => {
+        const d = subzoneDisplay(s);
+        return `<option value="${esc(s.subzoneId)}" data-zone="${esc(s.zoneId)}">${esc(d.code)} · ${esc(d.name)}</option>`;
+      }).join("");
+  }
+
+  if (week) {
+    week.innerHTML = '<option value="">Todas las semanas FabAcademy</option>' +
+      weeks.map(w => `<option value="${esc(w.weekId)}">${esc(w.weekId)} · ${esc(w.name)}</option>`).join("");
+  }
+
+  if (loc) {
+    loc.innerHTML = '<option value="">Todas las ubicaciones</option>' +
+      publicLocations().map(locationOption).join("");
+  }
+
+  if (rel) {
+    rel.innerHTML = '<option value="">Todas las máquinas relacionadas</option>' +
+      publicLocations().filter(l => l.type === "machine").map(locationOption).join("");
+  }
 }
 
 function refreshDependentFilters() {
@@ -448,25 +678,28 @@ function refreshDependentFilters() {
 
   if (sub) {
     const current = sub.value;
-    sub.innerHTML = '<option value="">Todas las subzonas</option>' + subzones
-      .filter(s => !zoneId || String(s.zoneId) === String(zoneId))
-      .map(s => `<option value="${esc(s.subzoneId)}" data-zone="${esc(s.zoneId)}">${esc(s.subzoneId)} · ${esc(s.name)}</option>`).join("");
+    const rows = publicSubzones(zoneId);
+    sub.innerHTML = '<option value="">Todas las subzonas</option>' +
+      rows.map(s => {
+        const d = subzoneDisplay(s);
+        return `<option value="${esc(s.subzoneId)}" data-zone="${esc(s.zoneId)}">${esc(d.code)} · ${esc(d.name)}</option>`;
+      }).join("");
     if ([...sub.options].some(o => o.value === current)) sub.value = current;
   }
 
-  const locs = locations.filter(l =>
-    (!zoneId || String(l.zoneId) === String(zoneId)) &&
-    (!subzoneId || String(l.subzoneId) === String(subzoneId))
-  );
+  const effectiveSubzoneId = $("#filterSubzone")?.value || "";
+  const locs = publicLocations(zoneId, effectiveSubzoneId);
 
   if (loc) {
     const current = loc.value;
     loc.innerHTML = '<option value="">Todas las ubicaciones</option>' + locs.map(locationOption).join("");
     if ([...loc.options].some(o => o.value === current)) loc.value = current;
   }
+
   if (rel) {
     const current = rel.value;
-    rel.innerHTML = '<option value="">Todas las máquinas relacionadas</option>' + locs.filter(l => l.type === "machine").map(locationOption).join("");
+    rel.innerHTML = '<option value="">Todas las máquinas relacionadas</option>' +
+      locs.filter(l => l.type === "machine").map(locationOption).join("");
     if ([...rel.options].some(o => o.value === current)) rel.value = current;
   }
 }
@@ -524,14 +757,20 @@ function statusBadges(it) {
 }
 
 function pathCards(it) {
-  const zoneText = `${it.zoneId || ""}${it.zoneName ? ` · ${it.zoneName}` : ""}`.trim();
-  const subzoneText = `${it.subzoneId || ""}${it.subzoneName ? ` · ${it.subzoneName}` : ""}`.trim();
-  const areaCode = itemLocationCode(it) || "s/c";
-  const areaText = it.locationName || "Sin ubicación";
+  const zd = zoneDisplayById(it.zoneId, it.zoneName);
+  const sd = subzoneDisplayById(it.subzoneId, it.subzoneName);
+  const ld = itemLocationDisplay(it);
+
+  const zoneText = `${zd.code || ""}${zd.name ? ` · ${zd.name}` : ""}`.trim();
+  const subzoneText = `${sd.code || ""}${sd.name ? ` · ${sd.name}` : ""}`.trim();
+  const showSubzone = shouldShowPublicSubzone(it.subzoneId, it.subzoneName);
+  const areaCode = ld.code || "s/c";
+  const areaText = ld.name || it.locationName || "Sin ubicación";
+
   return `
     <div class="path-compact my-2">
       <span><strong>Zona:</strong> ${esc(zoneText || "Sin zona")}</span>
-      <span><strong>Subzona:</strong> ${esc(subzoneText || "Sin subzona")}</span>
+      ${showSubzone ? `<span><strong>Subzona:</strong> ${esc(subzoneText || "Sin subzona")}</span>` : ""}
       <span><strong>Área:</strong> <span class="area-code-chip">${esc(areaCode)}</span> ${esc(areaText)}</span>
     </div>`;
 }

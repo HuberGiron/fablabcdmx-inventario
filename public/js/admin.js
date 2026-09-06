@@ -7,6 +7,87 @@ import {
 setupNav();
 let zones = [], subzones = [], weeks = [], locations = [];
 let adminItemsCache = [];
+// ===== Presentación temporal de la estructura objetivo =====
+// En Admin NO se ocultan registros antiguos: se necesitan para migrar ítems.
+// Sólo se corrigen las etiquetas visuales y se muestra el ID técnico cuando difiere.
+
+function displayMeta(rawCode, rawName) {
+  const code = String(rawCode ?? "").trim();
+  const name = String(rawName ?? "").trim();
+  const match = name.match(/^(\d+(?:\.\d+)*)(?:\.)?\s+(.+)$/);
+  if (match) {
+    return {
+      code: match[1],
+      name: match[2].trim(),
+      aliased: match[1] !== code,
+    };
+  }
+  return { code, name, aliased: false };
+}
+
+function zoneDisplay(z) {
+  return displayMeta(z?.zoneId, z?.name);
+}
+
+function subzoneDisplay(s) {
+  return displayMeta(s?.subzoneId, s?.name);
+}
+
+function subzoneDisplayById(subzoneId, fallbackName = "") {
+  const live = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  return subzoneDisplay(live || { subzoneId, name: fallbackName });
+}
+
+function locationDisplay(l) {
+  if (!l) return { code: "", name: "", aliased: false };
+  const rawCode = String(l.areaCode || l.locationCode || l.subzoneId || "").trim();
+  const parsed = displayMeta(rawCode, l.name || "");
+  if (parsed.aliased) return parsed;
+
+  const sd = subzoneDisplayById(l.subzoneId, l.subzoneName || "");
+  const rawSubzoneId = String(l.subzoneId || "");
+  if (sd.code && rawSubzoneId && sd.code !== rawSubzoneId) {
+    if (rawCode.startsWith(`${rawSubzoneId}.`)) {
+      return {
+        code: `${sd.code}${rawCode.slice(rawSubzoneId.length)}`,
+        name: parsed.name || l.name || "",
+        aliased: true,
+      };
+    }
+    if (l.type === "general") {
+      return {
+        code: `${sd.code}.0`,
+        name: parsed.name || l.name || "",
+        aliased: true,
+      };
+    }
+  }
+  return parsed;
+}
+
+function adminZoneOptionLabel(z) {
+  const d = zoneDisplay(z);
+  const technical = String(z?.zoneId ?? "");
+  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
+  return `${d.code} · ${d.name}${suffix}`;
+}
+
+function adminSubzoneOptionLabel(s) {
+  const d = subzoneDisplay(s);
+  const technical = String(s?.subzoneId ?? "");
+  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
+  return `${d.code} · ${d.name}${suffix}`;
+}
+
+function adminLocationOptionLabel(l, includeType = true) {
+  const d = locationDisplay(l);
+  const rawCode = String(l?.areaCode || l?.locationCode || l?.subzoneId || "").trim();
+  const typeText = includeType ? ` (${typeLabel(l?.type)})` : "";
+  const suffix = rawCode && rawCode !== d.code ? ` [código técnico ${rawCode}]` : "";
+  return `${d.code ? `${d.code} · ` : ""}${d.name || "Sin nombre"}${suffix}${typeText}`;
+}
+// ===== Fin presentación temporal =====
+
 
 const LOCATION_TYPES = [
   ["machine", "Máquina"],
@@ -119,8 +200,7 @@ function locationDisplayCode(l) {
 }
 
 function optionLocation(l) {
-  const code = locationDisplayCode(l);
-  return `<option value="${l.locationId}">${code ? `${code} · ` : ""}${l.name} (${typeLabel(l.type)})</option>`;
+  return `<option value="${l.locationId}">${adminLocationOptionLabel(l, true)}</option>`;
 }
 
 function filterSubzones(zoneId) {
@@ -136,13 +216,18 @@ function filterLocations(zoneId, subzoneId) {
 }
 
 function fillZoneSelects() {
-  const zoneOptions = zones.map(x => `<option value="${x.zoneId}">${x.zoneId} · ${x.name}</option>`).join("");
+  // Mantiene estructura anterior + nueva para que puedas migrar sin perder destinos.
+  const zoneOptions = zones.map(x =>
+    `<option value="${x.zoneId}">${adminZoneOptionLabel(x)}</option>`
+  ).join("");
   $("#itemZone").innerHTML = zoneOptions;
   $("#locationZone").innerHTML = zoneOptions;
 }
 
 function refreshSubzoneSelect(selectId, zoneId, selected="") {
-  const opts = filterSubzones(zoneId).map(x => `<option value="${x.subzoneId}">${x.subzoneId} · ${x.name}</option>`).join("");
+  const opts = filterSubzones(zoneId).map(x =>
+    `<option value="${x.subzoneId}">${adminSubzoneOptionLabel(x)}</option>`
+  ).join("");
   $(selectId).innerHTML = opts;
   if (selected) $(selectId).value = selected;
 }
@@ -169,7 +254,7 @@ function fillReportFilterSelects() {
   if (zone) {
     const current = zone.value || "";
     zone.innerHTML = '<option value="">Todas las zonas</option>' +
-      zones.map(z => `<option value="${z.zoneId}">${z.zoneId} · ${z.name}</option>`).join("");
+      zones.map(z => `<option value="${z.zoneId}">${adminZoneOptionLabel(z)}</option>`).join("");
     if ([...zone.options].some(o => o.value === current)) zone.value = current;
   }
 
@@ -187,7 +272,7 @@ function refreshReportFilterOptions() {
     subzone.innerHTML = '<option value="">Todas las subzonas</option>' +
       subzones
         .filter(s => !zoneId || Number(s.zoneId) === Number(zoneId))
-        .map(s => `<option value="${s.subzoneId}">${s.subzoneId} · ${s.name}</option>`)
+        .map(s => `<option value="${s.subzoneId}">${adminSubzoneOptionLabel(s)}</option>`)
         .join("");
     if ([...subzone.options].some(o => o.value === current)) {
       subzone.value = current;
@@ -383,24 +468,38 @@ async function reloadLocationsAndRender() {
 async function renderLocations() {
   const rows = sortLocations(locations);
   $("#locationCount").textContent = `${rows.length} ubicación(es)`;
-  $("#adminLocations").innerHTML = rows.map(l => `
+  $("#adminLocations").innerHTML = rows.map(l => {
+    const ld = locationDisplay(l);
+    const zone = zones.find(z => Number(z.zoneId) === Number(l.zoneId));
+    const subzone = subzones.find(s => String(s.subzoneId) === String(l.subzoneId));
+    const zoneText = zone ? adminZoneOptionLabel(zone) : (l.zoneName || "");
+    const subzoneText = subzone ? adminSubzoneOptionLabel(subzone) : (l.subzoneName || "");
+
+    return `
     <tr>
       <td><code>${l.locationId || l.id}</code></td>
-      <td>${l.areaCode ? `<span class="badge text-bg-light border me-1">${l.areaCode}</span>` : ""}${l.name || ""}</td>
+      <td>
+        ${ld.code ? `<span class="badge text-bg-light border me-1">${ld.code}</span>` : ""}
+        ${ld.name || ""}
+        ${(l.areaCode && String(l.areaCode) !== String(ld.code)) ? `<div class="small text-muted">código técnico: ${l.areaCode}</div>` : ""}
+      </td>
       <td>${typeLabel(l.type)}</td>
-      <td><span class="small">${l.zoneName || ""} / ${l.subzoneName || ""}</span></td>
+      <td><span class="small">${zoneText} / ${subzoneText}</span></td>
       <td><span class="small text-muted">${l.parentLocationName || l.parentLocationId || ""}</span></td>
       <td class="text-nowrap">
         <button class="btn btn-sm btn-outline-primary edit-location" data-id="${l.id}">Editar</button>
         <button class="btn btn-sm btn-outline-warning deactivate-location" data-id="${l.id}">Desactivar</button>
         <button class="btn btn-sm btn-outline-danger delete-location" data-id="${l.id}">Eliminar</button>
       </td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
+
   document.querySelectorAll(".edit-location").forEach(btn => btn.addEventListener("click", () => {
     const data = rows.find(x => x.id === btn.dataset.id);
     fillLocationForm(data);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
+
   document.querySelectorAll(".deactivate-location").forEach(btn => btn.addEventListener("click", async () => {
     if (!confirm("¿Desactivar esta ubicación? Los items existentes conservarán su referencia, pero ya no aparecerá para nuevas capturas.")) return;
     await updateDoc(doc(db, "locations", btn.dataset.id), { active: false, updatedAt: serverTimestamp() });
