@@ -1,204 +1,496 @@
-<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Administración · FabLab</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="css/styles.css"></head><body>
-
-<nav class="navbar navbar-expand-lg bg-white border-bottom sticky-top">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="./"><strong>FabLab</strong> Inventario</a>
-    <div id="userNav" class="ms-auto d-flex align-items-center"></div>
-  </div>
-</nav>
-
-<main class="container-fluid py-4">
-  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-    <div>
-      <h1 class="h3 mb-1">Administración de inventario</h1>
-      <p class="text-muted mb-0">V2: Zona → Subzona → Ubicación específica → Item.</p>
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Administración · FabLab</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/admin.css">
+</head>
+<body class="admin-page">
+  <nav class="navbar navbar-expand-lg bg-white border-bottom sticky-top admin-navbar">
+    <div class="container-fluid px-3 px-lg-4">
+      <a class="navbar-brand" href="./"><strong>FabLab</strong> Inventario</a>
+      <div id="userNav" class="ms-auto d-flex align-items-center"></div>
     </div>
-    <a class="btn btn-outline-primary btn-sm" href="./">Ver catálogo</a>
-  </div>
+  </nav>
 
-  <div class="alert alert-info small">
-    <strong>Versión con backend:</strong> edición de inventario y áreas activa con Firebase. La carga de imagen/documentación ya está disponible desde la edición rápida de cada tarjeta en el catálogo principal.
-  </div>
-
-  <div class="row g-4">
-    <div class="col-xxl-4 col-xl-5">
-      <div class="form-section shadow-sm mb-4">
-        <h2 class="h5">Crear / editar ubicación</h2>
-        <p class="small text-muted">Usa ubicaciones para máquinas, estaciones, gabinetes, vitrinas, gavetas, almacenes o mesas dentro de una subzona.</p>
-        <form id="locationForm">
-          <input type="hidden" id="locationEditingId">
-          <div class="row g-2 mb-2">
-            <div class="col-md-6"><select id="locationZone" class="form-select" required></select></div>
-            <div class="col-md-6"><select id="locationSubzone" class="form-select" required></select></div>
-          </div>
-          <label class="form-label small mb-1">ID único de ubicación</label>
-          <input id="locationId" class="form-control mb-2" placeholder="ID único. Ej: 6.1-MAQ-CNC-1325-01">
-          <label class="form-label small mb-1">Código visible del área</label>
-          <input id="locationAreaCode" class="form-control mb-2" placeholder="Ej: 6.1.1">
-          <label class="form-label small mb-1">Nombre de ubicación</label>
-          <input id="locationName" class="form-control mb-2" placeholder="Nombre. Ej: Router CNC 1325" required>
-          <div class="row g-2 mb-2">
-            <div class="col-md-6"><select id="locationType" class="form-select" required></select></div>
-            <div class="col-md-6"><input id="locationOrder" type="number" class="form-control" placeholder="Orden" value="1"></div>
-          </div>
-          <select id="locationParent" class="form-select mb-2"><option value="">Sin ubicación padre</option></select>
-          <textarea id="locationDescription" class="form-control mb-3" rows="2" placeholder="Descripción"></textarea>
-          <div class="d-flex gap-2">
-            <button class="btn btn-primary flex-fill">Guardar ubicación</button>
-            <button id="clearLocationForm" type="button" class="btn btn-outline-secondary">Limpiar</button>
-          </div>
-        </form>
+  <main class="container-fluid admin-shell px-3 px-lg-4 py-4">
+    <header class="admin-hero">
+      <div>
+        <div class="admin-eyebrow">Administración</div>
+        <h1>Inventario y estructura física</h1>
+        <p>Gestiona zonas, subzonas, áreas y elementos desde un solo lugar.</p>
       </div>
+      <a class="btn btn-outline-primary" href="./">Ver catálogo</a>
+    </header>
 
-      <div class="form-section shadow-sm">
-        <h2 class="h5">Crear / editar elemento</h2>
-        <form id="itemForm"><input type="hidden" id="itemId">
-          <input id="itemSku" class="form-control mb-2" placeholder="SKU" required>
-          <input id="itemNombre" class="form-control mb-2" placeholder="Nombre" required>
-          <textarea id="itemDescripcion" class="form-control mb-2" rows="3" placeholder="Descripción"></textarea>
-          <div class="row g-2 mb-2"><div class="col"><select id="itemTipo" class="form-select"></select></div><div class="col"><select id="itemZone" class="form-select"></select></div></div>
-          <select id="itemSubzone" class="form-select mb-2"></select>
-          <label class="form-label small">Ubicación específica</label><select id="itemLocation" class="form-select mb-2"><option value="">Sin ubicación específica</option></select>
-          <label class="form-label small">Máquina relacionada / estación principal</label><select id="itemRelatedMachine" class="form-select mb-2"><option value="">Ninguna</option></select>
-          <label class="form-label small">Semanas FabAcademy</label><select id="itemWeeks" class="form-select mb-2" multiple size="6"></select>
-          
-          
-          <div class="border rounded p-3 mb-3 bg-light">
-            <div class="fw-semibold mb-2">Visibilidad y acciones</div>
+    <section class="admin-stats" aria-label="Resumen">
+      <div class="admin-stat-card">
+        <span class="admin-stat-label">Zonas</span>
+        <strong id="statZones">—</strong>
+      </div>
+      <div class="admin-stat-card">
+        <span class="admin-stat-label">Subzonas</span>
+        <strong id="statSubzones">—</strong>
+      </div>
+      <div class="admin-stat-card">
+        <span class="admin-stat-label">Áreas</span>
+        <strong id="statLocations">—</strong>
+      </div>
+      <div class="admin-stat-card">
+        <span class="admin-stat-label">Elementos activos</span>
+        <strong id="statItems">—</strong>
+      </div>
+    </section>
 
-            <div class="form-check form-switch mb-2">
-              <input class="form-check-input" type="checkbox" id="itemVisibleAlumno">
-              <label class="form-check-label" for="itemVisibleAlumno">
-                Visible para alumnos
-              </label>
-              <div class="form-text">
-                Si está desactivado, solo admin y técnicos podrán verlo.
-              </div>
-            </div>
+    <div class="admin-view-switch" role="tablist" aria-label="Secciones de administración">
+      <button class="admin-view-btn active" type="button" data-admin-view="structure" role="tab" aria-selected="true">
+        Estructura
+      </button>
+      <button class="admin-view-btn" type="button" data-admin-view="items" role="tab" aria-selected="false">
+        Elementos
+      </button>
+    </div>
 
-            <div class="form-check form-switch mb-2">
-              <input class="form-check-input" type="checkbox" id="itemPrestable">
-              <label class="form-check-label" for="itemPrestable">
-                Se puede solicitar en préstamo
-              </label>
-              <div class="form-text">
-                Activa el botón “Agregar al carrito” para alumnos.
-              </div>
-            </div>
-
-            <div class="form-check form-switch mb-2">
-              <input class="form-check-input" type="checkbox" id="itemReservable">
-              <label class="form-check-label" for="itemReservable">
-                Se puede reservar / pedir asistencia
-              </label>
-              <div class="form-text">
-                Útil para máquinas grandes que no se prestan, pero sí requieren reserva o apoyo técnico.
-              </div>
-            </div>
-
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="itemAsistencia">
-              <label class="form-check-label" for="itemAsistencia">
-                Requiere asistencia técnica
-              </label>
-            </div>
+    <section id="structureView" class="admin-view active">
+      <div class="admin-panel">
+        <div class="admin-panel-heading">
+          <div>
+            <div class="admin-section-kicker">Estructura del laboratorio</div>
+            <h2>Zonas, subzonas y áreas</h2>
+            <p>Busca, crea, edita o elimina nodos de la estructura. Las eliminaciones se bloquean si todavía existen referencias.</p>
           </div>
+          <div class="admin-actions">
+            <button id="newZoneBtn" class="btn btn-primary" type="button">+ Zona</button>
+            <button id="newSubzoneBtn" class="btn btn-outline-primary" type="button">+ Subzona</button>
+            <button id="newLocationBtn" class="btn btn-outline-dark" type="button">+ Área</button>
+          </div>
+        </div>
 
-          
-          <input id="itemInfoUrl" class="form-control mb-2" placeholder="Más info URL">
-          <input id="itemPurchaseUrl" class="form-control mb-2" placeholder="Liga de compra">
+        <div class="admin-toolbar">
+          <div class="admin-search">
+            <label for="structureSearch">Buscar en estructura</label>
+            <input id="structureSearch" class="form-control" type="search" placeholder="Nombre, número, ID técnico, tipo...">
+          </div>
+          <div>
+            <label for="structureZoneFilter">Zona</label>
+            <select id="structureZoneFilter" class="form-select">
+              <option value="">Todas las zonas</option>
+            </select>
+          </div>
+          <div class="admin-toolbar-action">
+            <button id="clearStructureFilters" class="btn btn-outline-secondary w-100" type="button">Limpiar</button>
+          </div>
+        </div>
 
-          <div class="border rounded p-3 mb-3 bg-light">
-            <div class="fw-semibold mb-2">Información de compra</div>
-            <div class="row g-2">
+        <div id="structureSummary" class="admin-inline-summary"></div>
+        <div id="structureTree" class="structure-tree"></div>
+      </div>
+    </section>
+
+    <section id="itemsView" class="admin-view">
+      <div class="admin-panel">
+        <div class="admin-panel-heading">
+          <div>
+            <div class="admin-section-kicker">Inventario</div>
+            <h2>Elementos</h2>
+            <p>Filtra el inventario, crea elementos nuevos y recategoriza los existentes.</p>
+          </div>
+          <button id="newItemBtn" class="btn btn-primary" type="button">+ Nuevo elemento</button>
+        </div>
+
+        <div class="admin-toolbar admin-toolbar-items">
+          <div class="admin-search">
+            <label for="itemSearch">Buscar elemento</label>
+            <input id="itemSearch" class="form-control" type="search" placeholder="SKU, nombre, descripción...">
+          </div>
+          <div>
+            <label for="itemFilterZone">Zona</label>
+            <select id="itemFilterZone" class="form-select"><option value="">Todas</option></select>
+          </div>
+          <div>
+            <label for="itemFilterSubzone">Subzona</label>
+            <select id="itemFilterSubzone" class="form-select"><option value="">Todas</option></select>
+          </div>
+          <div>
+            <label for="itemFilterLocation">Área</label>
+            <select id="itemFilterLocation" class="form-select"><option value="">Todas</option></select>
+          </div>
+          <div>
+            <label for="itemFilterType">Tipo</label>
+            <select id="itemFilterType" class="form-select"><option value="">Todos</option></select>
+          </div>
+          <div class="admin-toolbar-action">
+            <button id="clearItemFilters" class="btn btn-outline-secondary w-100" type="button">Limpiar</button>
+          </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center gap-2 mb-3">
+          <span id="itemCount" class="admin-inline-summary"></span>
+        </div>
+
+        <div class="table-responsive admin-table-wrap">
+          <table class="table align-middle admin-table">
+            <thead>
+              <tr>
+                <th>Img</th>
+                <th>SKU</th>
+                <th>Elemento</th>
+                <th>Tipo</th>
+                <th>Ruta física</th>
+                <th>Stock</th>
+                <th>Deseado</th>
+                <th class="text-end">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="adminItems"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal Zona -->
+  <div class="modal fade" id="zoneModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content admin-modal">
+        <form id="zoneForm">
+          <input type="hidden" id="zoneEditingDocId">
+          <div class="modal-header">
+            <div>
+              <div class="admin-section-kicker">Estructura</div>
+              <h2 id="zoneModalTitle" class="modal-title fs-5">Nueva zona</h2>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label" for="zoneId">ID de zona</label>
+                <input id="zoneId" type="number" min="1" class="form-control" required>
+              </div>
               <div class="col-md-8">
-                <label class="form-label small mb-1" for="itemPrecioUnitario">Precio unitario</label>
-                <input id="itemPrecioUnitario" type="number" step="0.01" min="0" class="form-control" value="0" placeholder="Ej. 1250.50">
-                <div class="form-text">No se muestra en el dashboard público. Se usa para el reporte de compra.</div>
+                <label class="form-label" for="zoneName">Nombre</label>
+                <input id="zoneName" class="form-control" required>
               </div>
               <div class="col-md-4">
-                <label class="form-label small mb-1" for="itemMoneda">Moneda</label>
-                <select id="itemMoneda" class="form-select">
-                  <option value="MXN">MXN</option>
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
-                </select>
+                <label class="form-label" for="zoneOrder">Orden</label>
+                <input id="zoneOrder" type="number" class="form-control" value="1">
+              </div>
+              <div class="col-md-8 d-flex align-items-end">
+                <div class="form-check form-switch mb-2">
+                  <input class="form-check-input" type="checkbox" id="zoneActive" checked>
+                  <label class="form-check-label" for="zoneActive">Zona activa</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="zoneDescription">Descripción</label>
+                <textarea id="zoneDescription" class="form-control" rows="3"></textarea>
               </div>
             </div>
+            <div class="form-text mt-3">Al editar, el ID técnico no se puede cambiar. Para renumerar una zona crea una nueva y migra sus elementos.</div>
           </div>
-
-          <div class="row g-2 mb-2"><div class="col"><input id="itemStock" type="number" class="form-control" placeholder="Stock almacén" value="0"></div><div class="col"><input id="itemDeseado" type="number" class="form-control" placeholder="Inventario deseado" value="0"></div></div>
-          <div class="row g-2 mb-2"><div class="col"><input id="itemPrestado" type="number" class="form-control" placeholder="Prestado" value="0"></div><div class="col"><input id="itemLargo" type="number" class="form-control" placeholder="Largo plazo" value="0"></div></div>
-          <div class="row g-2 mb-2"><div class="col"><input id="itemDanado" type="number" class="form-control" placeholder="Dañado" value="0"></div><div class="col"><input id="itemPerdido" type="number" class="form-control" placeholder="Perdido" value="0"></div></div>
-          <div class="d-none">
-            <label class="form-label small">Imagen</label><input id="itemImage" type="file" accept="image/*" class="form-control mb-2">
-            <label class="form-label small">PDF / Manual</label><input id="itemPdf" type="file" accept="application/pdf" class="form-control mb-2">
-            <label class="form-label small">Ficha técnica</label><input id="itemDatasheet" type="file" accept="application/pdf" class="form-control mb-3">
-          </div>
-          <div class="d-flex gap-2">
-            <button class="btn btn-primary flex-fill">Guardar elemento</button>
-            <button id="clearItemForm" type="button" class="btn btn-outline-secondary">Limpiar</button>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Guardar zona</button>
           </div>
         </form>
       </div>
     </div>
+  </div>
 
-    <div class="col-xxl-8 col-xl-7">
-      <div class="form-section shadow-sm mb-4 d-none"><h2 class="h5">Importación masiva</h2><p class="small text-muted mb-2">El CSV V2 acepta locationId y relatedMachineId. Puedes dejar esos campos vacíos si todavía no existen ubicaciones.</p><form id="importForm" class="row g-2"><div class="col-md-5"><input id="csvFile" type="file" accept=".csv" class="form-control" required></div><div class="col-md-5"><input id="assetsZip" type="file" accept=".zip" class="form-control"></div><div class="col-md-2"><button class="btn btn-outline-primary w-100">Importar</button></div></form><pre id="importResult" class="mt-3 small bg-light p-2 rounded"></pre></div>
-      <div class="form-section shadow-sm mb-4 d-none"><h2 class="h5">Crear técnico</h2><form id="technicianForm" class="row g-2"><div class="col-md-4"><input id="tecNombre" class="form-control" placeholder="Nombre" required></div><div class="col-md-4"><input id="tecCorreo" type="email" class="form-control" placeholder="Correo" required></div><div class="col-md-3"><input id="tecPassword" type="password" class="form-control" placeholder="Contraseña" required minlength="6"></div><div class="col-md-1"><button class="btn btn-dark w-100">Crear</button></div></form></div>
-
-      <div class="form-section shadow-sm mb-4">
-        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
-          <div>
-            <h2 class="h5 mb-1">Reportes de inventario y compra</h2>
-            <p class="small text-muted mb-0">
-              Filtra por zona, subzona y área. Puedes exportar solo faltantes para compra o todo el inventario filtrado.
-            </p>
+  <!-- Modal Subzona -->
+  <div class="modal fade" id="subzoneModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content admin-modal">
+        <form id="subzoneForm">
+          <input type="hidden" id="subzoneEditingDocId">
+          <div class="modal-header">
+            <div>
+              <div class="admin-section-kicker">Estructura</div>
+              <h2 id="subzoneModalTitle" class="modal-title fs-5">Nueva subzona</h2>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
           </div>
-        </div>
-
-        <div class="report-filter-box mt-3">
-          <div class="row g-2 align-items-end">
-            <div class="col-lg-3 col-md-6">
-              <label class="form-label small mb-1" for="reportZone">Zona</label>
-              <select id="reportZone" class="form-select form-select-sm">
-                <option value="">Todas las zonas</option>
-              </select>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label" for="subzoneZone">Zona</label>
+                <select id="subzoneZone" class="form-select" required></select>
+              </div>
+              <div class="col-md-5">
+                <label class="form-label" for="subzoneId">ID de subzona</label>
+                <input id="subzoneId" class="form-control" placeholder="Ej. 6.4" required>
+              </div>
+              <div class="col-md-7">
+                <label class="form-label" for="subzoneName">Nombre</label>
+                <input id="subzoneName" class="form-control" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label" for="subzoneOrder">Orden</label>
+                <input id="subzoneOrder" type="number" class="form-control" value="1">
+              </div>
+              <div class="col-md-8 d-flex align-items-end">
+                <div class="form-check form-switch mb-2">
+                  <input class="form-check-input" type="checkbox" id="subzoneActive" checked>
+                  <label class="form-check-label" for="subzoneActive">Subzona activa</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="subzoneDescription">Descripción</label>
+                <textarea id="subzoneDescription" class="form-control" rows="3"></textarea>
+              </div>
             </div>
-            <div class="col-lg-3 col-md-6">
-              <label class="form-label small mb-1" for="reportSubzone">Subzona</label>
-              <select id="reportSubzone" class="form-select form-select-sm">
-                <option value="">Todas las subzonas</option>
-              </select>
-            </div>
-            <div class="col-lg-3 col-md-6">
-              <label class="form-label small mb-1" for="reportLocation">Área / ubicación</label>
-              <select id="reportLocation" class="form-select form-select-sm">
-                <option value="">Todas las áreas</option>
-              </select>
-            </div>
-            <div class="col-lg-3 col-md-6">
-              <button id="clearReportFilters" type="button" class="btn btn-sm btn-outline-secondary w-100">
-                Limpiar filtros de reporte
-              </button>
-            </div>
+            <div class="form-text mt-3">Al editar, la zona padre y el ID técnico no se cambian. Para mover o renumerar crea una nueva subzona y migra sus elementos.</div>
           </div>
-        </div>
-
-        <div class="d-flex flex-wrap gap-2 mt-3">
-          <button id="exportPurchaseReport" type="button" class="btn btn-outline-success">
-            Exportar compra faltante XLSX
-          </button>
-          <button id="exportInventoryReport" type="button" class="btn btn-outline-primary">
-            Exportar inventario filtrado XLSX
-          </button>
-        </div>
-
-        <div id="purchaseReportSummary" class="small text-muted mt-2"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Guardar subzona</button>
+          </div>
+        </form>
       </div>
-
-      <div class="form-section shadow-sm mb-4"><div class="d-flex justify-content-between align-items-center"><h2 class="h5 mb-0">Ubicaciones activas</h2><span id="locationCount" class="small text-muted"></span></div><div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>ID</th><th>Nombre</th><th>Tipo</th><th>Ruta</th><th>Padre</th><th></th></tr></thead><tbody id="adminLocations"></tbody></table></div></div>
-      <div class="form-section shadow-sm"><div class="d-flex justify-content-between align-items-center"><h2 class="h5 mb-0">Inventario activo</h2><span id="itemCount" class="small text-muted"></span></div><div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>Img</th><th>SKU</th><th>Nombre</th><th>Tipo</th><th>Ruta física</th><th>Stock</th><th>Deseado</th><th></th></tr></thead><tbody id="adminItems"></tbody></table></div></div>
     </div>
   </div>
-</main><script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script><script type="module" src="js/admin.js"></script></body></html>
+
+  <!-- Modal Área -->
+  <div class="modal fade" id="locationModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content admin-modal">
+        <form id="locationForm">
+          <input type="hidden" id="locationEditingId">
+          <div class="modal-header">
+            <div>
+              <div class="admin-section-kicker">Estructura</div>
+              <h2 id="locationModalTitle" class="modal-title fs-5">Nueva área</h2>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label" for="locationZone">Zona</label>
+                <select id="locationZone" class="form-select" required></select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label" for="locationSubzone">Subzona</label>
+                <select id="locationSubzone" class="form-select" required></select>
+              </div>
+              <div class="col-md-7">
+                <label class="form-label" for="locationId">ID único de ubicación</label>
+                <input id="locationId" class="form-control" placeholder="Ej. 6.1-MAQ-CNC-1325-01">
+              </div>
+              <div class="col-md-5">
+                <label class="form-label" for="locationAreaCode">Código visible</label>
+                <input id="locationAreaCode" class="form-control" placeholder="Ej. 6.1.1">
+              </div>
+              <div class="col-md-8">
+                <label class="form-label" for="locationName">Nombre del área</label>
+                <input id="locationName" class="form-control" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label" for="locationType">Tipo</label>
+                <select id="locationType" class="form-select" required></select>
+              </div>
+              <div class="col-md-8">
+                <label class="form-label" for="locationParent">Ubicación padre</label>
+                <select id="locationParent" class="form-select"><option value="">Sin ubicación padre</option></select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label" for="locationOrder">Orden</label>
+                <input id="locationOrder" type="number" class="form-control" value="1">
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="locationDescription">Descripción</label>
+                <textarea id="locationDescription" class="form-control" rows="3"></textarea>
+              </div>
+            </div>
+            <div class="form-text mt-3">Al editar, el ID, la zona y la subzona se bloquean para evitar referencias inconsistentes. Para mover un área crea otra y migra sus elementos.</div>
+          </div>
+          <div class="modal-footer">
+            <button id="clearLocationForm" type="button" class="btn btn-outline-secondary">Limpiar</button>
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Guardar área</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Elemento -->
+  <div class="modal fade" id="itemModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content admin-modal">
+        <form id="itemForm">
+          <input type="hidden" id="itemId">
+          <div class="modal-header">
+            <div>
+              <div class="admin-section-kicker">Inventario</div>
+              <h2 id="itemModalTitle" class="modal-title fs-5">Nuevo elemento</h2>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+          </div>
+
+          <div class="modal-body">
+            <div class="admin-form-group">
+              <h3>Información básica</h3>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label" for="itemSku">SKU</label>
+                  <input id="itemSku" class="form-control" required>
+                </div>
+                <div class="col-md-5">
+                  <label class="form-label" for="itemNombre">Nombre</label>
+                  <input id="itemNombre" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label" for="itemTipo">Tipo</label>
+                  <select id="itemTipo" class="form-select"></select>
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="itemDescripcion">Descripción</label>
+                  <textarea id="itemDescripcion" class="form-control" rows="3"></textarea>
+                </div>
+              </div>
+            </div>
+
+            <div class="admin-form-group">
+              <h3>Clasificación y ubicación</h3>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label" for="itemZone">Zona</label>
+                  <select id="itemZone" class="form-select"></select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label" for="itemSubzone">Subzona</label>
+                  <select id="itemSubzone" class="form-select"></select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label" for="itemLocation">Área</label>
+                  <select id="itemLocation" class="form-select"><option value="">Sin ubicación específica</option></select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemRelatedMachine">Máquina relacionada</label>
+                  <select id="itemRelatedMachine" class="form-select"><option value="">Ninguna</option></select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemWeeks">Semanas Fab Academy</label>
+                  <select id="itemWeeks" class="form-select" multiple size="5"></select>
+                </div>
+              </div>
+            </div>
+
+            <div class="admin-form-group">
+              <h3>Inventario</h3>
+              <div class="row g-3">
+                <div class="col-6 col-md-2">
+                  <label class="form-label" for="itemStock">Almacén</label>
+                  <input id="itemStock" type="number" class="form-control" value="0">
+                </div>
+                <div class="col-6 col-md-2">
+                  <label class="form-label" for="itemPrestado">Prestado</label>
+                  <input id="itemPrestado" type="number" class="form-control" value="0">
+                </div>
+                <div class="col-6 col-md-2">
+                  <label class="form-label" for="itemLargo">Largo plazo</label>
+                  <input id="itemLargo" type="number" class="form-control" value="0">
+                </div>
+                <div class="col-6 col-md-2">
+                  <label class="form-label" for="itemDanado">Dañado</label>
+                  <input id="itemDanado" type="number" class="form-control" value="0">
+                </div>
+                <div class="col-6 col-md-2">
+                  <label class="form-label" for="itemPerdido">Perdido</label>
+                  <input id="itemPerdido" type="number" class="form-control" value="0">
+                </div>
+                <div class="col-6 col-md-2">
+                  <label class="form-label" for="itemDeseado">Deseado</label>
+                  <input id="itemDeseado" type="number" class="form-control" value="0">
+                </div>
+              </div>
+            </div>
+
+            <div class="admin-form-group">
+              <h3>Disponibilidad</h3>
+              <div class="row g-3">
+                <div class="col-md-3">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="itemVisibleAlumno">
+                    <label class="form-check-label" for="itemVisibleAlumno">Visible para alumno</label>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="itemPrestable">
+                    <label class="form-check-label" for="itemPrestable">Préstamo</label>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="itemReservable">
+                    <label class="form-check-label" for="itemReservable">Reservable</label>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="itemAsistencia">
+                    <label class="form-check-label" for="itemAsistencia">Requiere asistencia</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="admin-form-group">
+              <h3>Compra y documentación</h3>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label" for="itemPrecioUnitario">Precio unitario</label>
+                  <input id="itemPrecioUnitario" type="number" step="0.01" min="0" class="form-control" value="0">
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label" for="itemMoneda">Moneda</label>
+                  <select id="itemMoneda" class="form-select">
+                    <option value="MXN">MXN</option>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemPurchaseUrl">Liga de compra</label>
+                  <input id="itemPurchaseUrl" class="form-control" type="url">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemInfoUrl">Más información</label>
+                  <input id="itemInfoUrl" class="form-control" type="url">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemImage">Imagen</label>
+                  <input id="itemImage" type="file" accept="image/*" class="form-control">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemPdf">PDF / Manual</label>
+                  <input id="itemPdf" type="file" accept="application/pdf" class="form-control">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="itemDatasheet">Ficha técnica</label>
+                  <input id="itemDatasheet" type="file" accept="application/pdf" class="form-control">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button id="clearItemForm" type="button" class="btn btn-outline-secondary">Limpiar</button>
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Guardar elemento</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>

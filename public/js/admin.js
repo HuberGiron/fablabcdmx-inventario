@@ -5,89 +5,12 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 setupNav();
-let zones = [], subzones = [], weeks = [], locations = [];
+
+let zones = [];
+let subzones = [];
+let weeks = [];
+let locations = [];
 let adminItemsCache = [];
-// ===== Presentación temporal de la estructura objetivo =====
-// En Admin NO se ocultan registros antiguos: se necesitan para migrar ítems.
-// Sólo se corrigen las etiquetas visuales y se muestra el ID técnico cuando difiere.
-
-function displayMeta(rawCode, rawName) {
-  const code = String(rawCode ?? "").trim();
-  const name = String(rawName ?? "").trim();
-  const match = name.match(/^(\d+(?:\.\d+)*)(?:\.)?\s+(.+)$/);
-  if (match) {
-    return {
-      code: match[1],
-      name: match[2].trim(),
-      aliased: match[1] !== code,
-    };
-  }
-  return { code, name, aliased: false };
-}
-
-function zoneDisplay(z) {
-  return displayMeta(z?.zoneId, z?.name);
-}
-
-function subzoneDisplay(s) {
-  return displayMeta(s?.subzoneId, s?.name);
-}
-
-function subzoneDisplayById(subzoneId, fallbackName = "") {
-  const live = subzones.find(s => String(s.subzoneId) === String(subzoneId));
-  return subzoneDisplay(live || { subzoneId, name: fallbackName });
-}
-
-function locationDisplay(l) {
-  if (!l) return { code: "", name: "", aliased: false };
-  const rawCode = String(l.areaCode || l.locationCode || l.subzoneId || "").trim();
-  const parsed = displayMeta(rawCode, l.name || "");
-  if (parsed.aliased) return parsed;
-
-  const sd = subzoneDisplayById(l.subzoneId, l.subzoneName || "");
-  const rawSubzoneId = String(l.subzoneId || "");
-  if (sd.code && rawSubzoneId && sd.code !== rawSubzoneId) {
-    if (rawCode.startsWith(`${rawSubzoneId}.`)) {
-      return {
-        code: `${sd.code}${rawCode.slice(rawSubzoneId.length)}`,
-        name: parsed.name || l.name || "",
-        aliased: true,
-      };
-    }
-    if (l.type === "general") {
-      return {
-        code: `${sd.code}.0`,
-        name: parsed.name || l.name || "",
-        aliased: true,
-      };
-    }
-  }
-  return parsed;
-}
-
-function adminZoneOptionLabel(z) {
-  const d = zoneDisplay(z);
-  const technical = String(z?.zoneId ?? "");
-  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
-  return `${d.code} · ${d.name}${suffix}`;
-}
-
-function adminSubzoneOptionLabel(s) {
-  const d = subzoneDisplay(s);
-  const technical = String(s?.subzoneId ?? "");
-  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
-  return `${d.code} · ${d.name}${suffix}`;
-}
-
-function adminLocationOptionLabel(l, includeType = true) {
-  const d = locationDisplay(l);
-  const rawCode = String(l?.areaCode || l?.locationCode || l?.subzoneId || "").trim();
-  const typeText = includeType ? ` (${typeLabel(l?.type)})` : "";
-  const suffix = rawCode && rawCode !== d.code ? ` [código técnico ${rawCode}]` : "";
-  return `${d.code ? `${d.code} · ` : ""}${d.name || "Sin nombre"}${suffix}${typeText}`;
-}
-// ===== Fin presentación temporal =====
-
 
 const LOCATION_TYPES = [
   ["machine", "Máquina"],
@@ -125,7 +48,7 @@ const ITEM_DEFAULTS = {
   "Máquina": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: true },
   "Herramienta": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Consumible": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
-  "Cómputo": {visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: false},
+  "Cómputo": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: true, requiereAsistencia: false },
   "Material": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Refacción": { visibleParaAlumno: false, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
   "Accesorio": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
@@ -135,6 +58,20 @@ const ITEM_DEFAULTS = {
   "Kit": { visibleParaAlumno: true, prestamoHabilitado: true, reservaHabilitada: false, requiereAsistencia: false },
   "Otro": { visibleParaAlumno: true, prestamoHabilitado: false, reservaHabilitada: false, requiereAsistencia: false },
 };
+
+const zoneModal = () => bootstrap.Modal.getOrCreateInstance(document.getElementById("zoneModal"));
+const subzoneModal = () => bootstrap.Modal.getOrCreateInstance(document.getElementById("subzoneModal"));
+const locationModal = () => bootstrap.Modal.getOrCreateInstance(document.getElementById("locationModal"));
+const itemModal = () => bootstrap.Modal.getOrCreateInstance(document.getElementById("itemModal"));
+
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
 function normalizeForCompare(value) {
   return String(value || "")
@@ -166,29 +103,129 @@ function applyDefaultsForSelectedType(force = false) {
   $("#itemAsistencia").checked = d.requiereAsistencia;
 }
 
-function boolBadge(value, label, onClass="text-bg-success", offClass="text-bg-secondary") {
-  return `<span class="badge ${value ? onClass : offClass}">${label}: ${value ? "Sí" : "No"}</span>`;
-}
-
 function normalizeId(text) {
   return String(text || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
 }
 
-function sortLocations(arr) {
-  return [...arr].sort((a,b)=>
-    String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), undefined, {numeric:true}) ||
-    Number(a.order || 999) - Number(b.order || 999) ||
-    String(a.name || "").localeCompare(String(b.name || ""), "es")
-  );
+function displayMeta(rawCode, rawName) {
+  const code = String(rawCode ?? "").trim();
+  const name = String(rawName ?? "").trim();
+  const match = name.match(/^(\d+(?:\.\d+)*)(?:\.)?\s+(.+)$/);
+  if (match) {
+    return {
+      code: match[1],
+      name: match[2].trim(),
+      aliased: match[1] !== code,
+    };
+  }
+  return { code, name, aliased: false };
+}
+
+function zoneDisplay(z) {
+  return displayMeta(z?.zoneId, z?.name);
+}
+
+function subzoneDisplay(s) {
+  return displayMeta(s?.subzoneId, s?.name);
+}
+
+function subzoneDisplayById(subzoneId, fallbackName = "") {
+  const live = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  return subzoneDisplay(live || { subzoneId, name: fallbackName });
+}
+
+function locationDisplay(l) {
+  if (!l) return { code: "", name: "", aliased: false };
+  const rawCode = String(l.areaCode || l.locationCode || l.subzoneId || "").trim();
+  const parsed = displayMeta(rawCode, l.name || "");
+  if (parsed.aliased) return parsed;
+
+  const sd = subzoneDisplayById(l.subzoneId, l.subzoneName || "");
+  const rawSubzoneId = String(l.subzoneId || "");
+
+  if (sd.code && rawSubzoneId && sd.code !== rawSubzoneId) {
+    if (rawCode.startsWith(`${rawSubzoneId}.`)) {
+      return {
+        code: `${sd.code}${rawCode.slice(rawSubzoneId.length)}`,
+        name: parsed.name || l.name || "",
+        aliased: true,
+      };
+    }
+    if (l.type === "general") {
+      return {
+        code: `${sd.code}.0`,
+        name: parsed.name || l.name || "",
+        aliased: true,
+      };
+    }
+  }
+  return parsed;
+}
+
+function technicalBadge(technical, display) {
+  if (!technical || String(technical) === String(display)) return "";
+  return `<span class="badge-technical">ID ${esc(technical)}</span>`;
+}
+
+function inactiveBadge(active) {
+  return active === false ? '<span class="badge-inactive">Inactiva</span>' : "";
+}
+
+function adminZoneOptionLabel(z) {
+  const d = zoneDisplay(z);
+  const technical = String(z?.zoneId ?? "");
+  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
+  return `${d.code} · ${d.name}${suffix}`;
+}
+
+function adminSubzoneOptionLabel(s) {
+  const d = subzoneDisplay(s);
+  const technical = String(s?.subzoneId ?? "");
+  const suffix = technical && technical !== d.code ? ` [ID técnico ${technical}]` : "";
+  return `${d.code} · ${d.name}${suffix}`;
 }
 
 function typeLabel(type) {
   return LOCATION_TYPES.find(x => x[0] === type)?.[1] || type || "";
+}
+
+function adminLocationOptionLabel(l, includeType = true) {
+  const d = locationDisplay(l);
+  const rawCode = String(l?.areaCode || l?.locationCode || l?.subzoneId || "").trim();
+  const typeText = includeType ? ` (${typeLabel(l?.type)})` : "";
+  const suffix = rawCode && rawCode !== d.code ? ` [código técnico ${rawCode}]` : "";
+  return `${d.code ? `${d.code} · ` : ""}${d.name || "Sin nombre"}${suffix}${typeText}`;
+}
+
+function sortZones(arr) {
+  return [...arr].sort((a, b) => {
+    const da = zoneDisplay(a), db = zoneDisplay(b);
+    return Number(da.code || 999) - Number(db.code || 999) ||
+      Number(a.zoneId || 999) - Number(b.zoneId || 999);
+  });
+}
+
+function sortSubzones(arr) {
+  return [...arr].sort((a, b) => {
+    const da = subzoneDisplay(a), db = subzoneDisplay(b);
+    return String(da.code).localeCompare(String(db.code), "es", { numeric: true }) ||
+      String(a.subzoneId || "").localeCompare(String(b.subzoneId || ""), "es", { numeric: true });
+  });
+}
+
+function sortLocations(arr) {
+  return [...arr].sort((a, b) => {
+    const da = locationDisplay(a), db = locationDisplay(b);
+    return String(da.code || "").localeCompare(String(db.code || ""), "es", { numeric: true }) ||
+      Number(a.order || 999) - Number(b.order || 999) ||
+      String(da.name || "").localeCompare(String(db.name || ""), "es");
+  });
 }
 
 function locationById(id) {
@@ -200,145 +237,611 @@ function locationDisplayCode(l) {
 }
 
 function optionLocation(l) {
-  return `<option value="${l.locationId}">${adminLocationOptionLabel(l, true)}</option>`;
+  return `<option value="${esc(l.locationId)}">${esc(adminLocationOptionLabel(l, true))}</option>`;
 }
 
-function filterSubzones(zoneId) {
-  return subzones.filter(s => !zoneId || Number(s.zoneId) === Number(zoneId));
-}
-
-function filterLocations(zoneId, subzoneId) {
-  return sortLocations(locations.filter(l =>
-    (!zoneId || Number(l.zoneId) === Number(zoneId)) &&
-    (!subzoneId || String(l.subzoneId) === String(subzoneId)) &&
-    l.active !== false
+function filterSubzones(zoneId, activeOnly = false) {
+  return sortSubzones(subzones.filter(s =>
+    (!zoneId || Number(s.zoneId) === Number(zoneId)) &&
+    (!activeOnly || s.active !== false)
   ));
 }
 
-function fillZoneSelects() {
-  // Mantiene estructura anterior + nueva para que puedas migrar sin perder destinos.
-  const zoneOptions = zones.map(x =>
-    `<option value="${x.zoneId}">${adminZoneOptionLabel(x)}</option>`
-  ).join("");
-  $("#itemZone").innerHTML = zoneOptions;
-  $("#locationZone").innerHTML = zoneOptions;
+function filterLocations(zoneId, subzoneId, activeOnly = true) {
+  return sortLocations(locations.filter(l =>
+    (!zoneId || Number(l.zoneId) === Number(zoneId)) &&
+    (!subzoneId || String(l.subzoneId) === String(subzoneId)) &&
+    (!activeOnly || l.active !== false)
+  ));
 }
 
-function refreshSubzoneSelect(selectId, zoneId, selected="") {
-  const opts = filterSubzones(zoneId).map(x =>
-    `<option value="${x.subzoneId}">${adminSubzoneOptionLabel(x)}</option>`
-  ).join("");
-  $(selectId).innerHTML = opts;
-  if (selected) $(selectId).value = selected;
+function selectedOptions(selectId) {
+  return [...$(selectId).selectedOptions].map(o => Number(o.value));
 }
 
-function refreshLocationSelects() {
-  const itemZone = $("#itemZone")?.value || "";
-  const itemSubzone = $("#itemSubzone")?.value || "";
-  const locs = filterLocations(itemZone, itemSubzone);
-  $("#itemLocation").innerHTML = '<option value="">Sin ubicación específica</option>' + locs.map(optionLocation).join("");
-  const machines = locs.filter(l => l.type === "machine");
-  $("#itemRelatedMachine").innerHTML = '<option value="">Ninguna</option>' + machines.map(optionLocation).join("");
-
-  const locZone = $("#locationZone")?.value || "";
-  const locSubzone = $("#locationSubzone")?.value || "";
-  const parentLocs = filterLocations(locZone, locSubzone).filter(l => l.locationId !== $("#locationId").value);
-  $("#locationParent").innerHTML = '<option value="">Sin ubicación padre</option>' + parentLocs.map(optionLocation).join("");
+function namesForWeeks(ids) {
+  return ids.map(id => weeks.find(w => Number(w.weekId) === Number(id))?.name || String(id));
 }
 
-function fillReportFilterSelects() {
-  const zone = $("#reportZone");
-  const subzone = $("#reportSubzone");
-  const location = $("#reportLocation");
+function normalizeSku(value) {
+  return String(value || "").trim().toUpperCase();
+}
 
-  if (zone) {
-    const current = zone.value || "";
-    zone.innerHTML = '<option value="">Todas las zonas</option>' +
-      zones.map(z => `<option value="${z.zoneId}">${adminZoneOptionLabel(z)}</option>`).join("");
-    if ([...zone.options].some(o => o.value === current)) zone.value = current;
+function currentItemMatchesText(it, search) {
+  if (!search) return true;
+  const loc = locationById(it.locationId);
+  const zd = zoneDisplay(zones.find(z => Number(z.zoneId) === Number(it.zoneId)) || { zoneId: it.zoneId, name: it.zoneName });
+  const sd = subzoneDisplay(subzones.find(s => String(s.subzoneId) === String(it.subzoneId)) || { subzoneId: it.subzoneId, name: it.subzoneName });
+  const ld = locationDisplay(loc || { areaCode: it.locationCode, name: it.locationName, subzoneId: it.subzoneId, subzoneName: it.subzoneName });
+  const haystack = [
+    it.sku, it.nombre, it.descripcion, normalizeTipo(it.tipo),
+    it.zoneId, it.zoneName, zd.code, zd.name,
+    it.subzoneId, it.subzoneName, sd.code, sd.name,
+    it.locationId, it.locationCode, it.locationName, ld.code, ld.name,
+    it.relatedMachineName
+  ].filter(Boolean).join(" ");
+  return normalizeForCompare(haystack).includes(search);
+}
+
+function updateStats() {
+  $("#statZones").textContent = zones.filter(z => z.active !== false).length;
+  $("#statSubzones").textContent = subzones.filter(s => s.active !== false).length;
+  $("#statLocations").textContent = locations.filter(l => l.active !== false).length;
+  $("#statItems").textContent = adminItemsCache.length;
+}
+
+function fillZoneSelect(selectId, includeEmpty = false, activeOnly = false, selected = "") {
+  const el = $(selectId);
+  if (!el) return;
+  const list = sortZones(zones.filter(z => !activeOnly || z.active !== false));
+  el.innerHTML =
+    (includeEmpty ? '<option value="">Todas las zonas</option>' : "") +
+    list.map(z => `<option value="${esc(z.zoneId)}">${esc(adminZoneOptionLabel(z))}</option>`).join("");
+  if (selected !== "" && [...el.options].some(o => o.value === String(selected))) el.value = String(selected);
+}
+
+function fillSubzoneSelect(selectId, zoneId, includeEmpty = false, activeOnly = false, selected = "") {
+  const el = $(selectId);
+  if (!el) return;
+  el.innerHTML =
+    (includeEmpty ? '<option value="">Todas las subzonas</option>' : "") +
+    filterSubzones(zoneId, activeOnly)
+      .map(s => `<option value="${esc(s.subzoneId)}">${esc(adminSubzoneOptionLabel(s))}</option>`)
+      .join("");
+  if (selected !== "" && [...el.options].some(o => o.value === String(selected))) el.value = String(selected);
+}
+
+function fillLocationSelect(selectId, zoneId, subzoneId, includeEmpty = true, selected = "", machineOnly = false) {
+  const el = $(selectId);
+  if (!el) return;
+  let list = filterLocations(zoneId, subzoneId, true);
+  if (machineOnly) list = list.filter(l => l.type === "machine");
+  el.innerHTML =
+    (includeEmpty ? `<option value="">${machineOnly ? "Ninguna" : "Sin ubicación específica"}</option>` : "") +
+    list.map(optionLocation).join("");
+  if (selected !== "" && [...el.options].some(o => o.value === String(selected))) el.value = String(selected);
+}
+
+function refreshAllSelectors() {
+  const itemZoneCurrent = $("#itemZone")?.value || "";
+  const locationZoneCurrent = $("#locationZone")?.value || "";
+  const subzoneZoneCurrent = $("#subzoneZone")?.value || "";
+  const structureZoneCurrent = $("#structureZoneFilter")?.value || "";
+  const itemFilterZoneCurrent = $("#itemFilterZone")?.value || "";
+
+  fillZoneSelect("#itemZone", false, true, itemZoneCurrent);
+  fillZoneSelect("#locationZone", false, true, locationZoneCurrent);
+  fillZoneSelect("#subzoneZone", false, true, subzoneZoneCurrent);
+  fillZoneSelect("#structureZoneFilter", true, false, structureZoneCurrent);
+  fillZoneSelect("#itemFilterZone", true, false, itemFilterZoneCurrent);
+
+  refreshItemFormSubzonesAndLocations();
+  refreshLocationFormSubzonesAndParents();
+  refreshItemFilterDependents();
+}
+
+function refreshItemFormSubzonesAndLocations(selectedSubzone = "", selectedLocation = "", selectedMachine = "") {
+  const zoneId = $("#itemZone")?.value || "";
+  const currentSub = selectedSubzone || $("#itemSubzone")?.value || "";
+  fillSubzoneSelect("#itemSubzone", zoneId, false, true, currentSub);
+  const subzoneId = $("#itemSubzone")?.value || "";
+  fillLocationSelect("#itemLocation", zoneId, subzoneId, true, selectedLocation || $("#itemLocation")?.value || "");
+  fillLocationSelect("#itemRelatedMachine", zoneId, subzoneId, true, selectedMachine || $("#itemRelatedMachine")?.value || "", true);
+}
+
+function refreshLocationFormSubzonesAndParents(selectedSubzone = "", selectedParent = "") {
+  const zoneId = $("#locationZone")?.value || "";
+  const currentSub = selectedSubzone || $("#locationSubzone")?.value || "";
+  fillSubzoneSelect("#locationSubzone", zoneId, false, true, currentSub);
+  const subzoneId = $("#locationSubzone")?.value || "";
+  const currentLocationId = $("#locationId")?.value || "";
+  const parent = $("#locationParent");
+  if (!parent) return;
+  const parents = filterLocations(zoneId, subzoneId, true).filter(l => String(l.locationId) !== String(currentLocationId));
+  parent.innerHTML = '<option value="">Sin ubicación padre</option>' + parents.map(optionLocation).join("");
+  const wanted = selectedParent || parent.value || "";
+  if (wanted && [...parent.options].some(o => o.value === String(wanted))) parent.value = String(wanted);
+}
+
+function refreshItemFilterDependents() {
+  const zoneId = $("#itemFilterZone")?.value || "";
+  const subCurrent = $("#itemFilterSubzone")?.value || "";
+  fillSubzoneSelect("#itemFilterSubzone", zoneId, true, false, subCurrent);
+  const subzoneId = $("#itemFilterSubzone")?.value || "";
+  const loc = $("#itemFilterLocation");
+  if (loc) {
+    const current = loc.value || "";
+    const list = filterLocations(zoneId, subzoneId, false);
+    loc.innerHTML = '<option value="">Todas las áreas</option>' +
+      list.map(l => `<option value="${esc(l.locationId)}">${esc(adminLocationOptionLabel(l, false))}</option>`).join("");
+    if (current && [...loc.options].some(o => o.value === current)) loc.value = current;
   }
-
-  refreshReportFilterOptions();
 }
-
-function refreshReportFilterOptions() {
-  const zoneId = $("#reportZone")?.value || "";
-  const subzoneId = $("#reportSubzone")?.value || "";
-  const subzone = $("#reportSubzone");
-  const location = $("#reportLocation");
-
-  if (subzone) {
-    const current = subzone.value || "";
-    subzone.innerHTML = '<option value="">Todas las subzonas</option>' +
-      subzones
-        .filter(s => !zoneId || Number(s.zoneId) === Number(zoneId))
-        .map(s => `<option value="${s.subzoneId}">${adminSubzoneOptionLabel(s)}</option>`)
-        .join("");
-    if ([...subzone.options].some(o => o.value === current)) {
-      subzone.value = current;
-    }
-  }
-
-  const effectiveSubzoneId = $("#reportSubzone")?.value || "";
-  if (location) {
-    const current = location.value || "";
-    const locs = filterLocations(zoneId, effectiveSubzoneId);
-    location.innerHTML = '<option value="">Todas las áreas</option>' + locs.map(optionLocation).join("");
-    if ([...location.options].some(o => o.value === current)) {
-      location.value = current;
-    }
-  }
-
-  updatePurchaseReportSummary(adminItemsCache);
-}
-
-function getReportFilters() {
-  return {
-    zoneId: $("#reportZone")?.value || "",
-    subzoneId: $("#reportSubzone")?.value || "",
-    locationId: $("#reportLocation")?.value || "",
-  };
-}
-
-function applyReportFilters(rows) {
-  const { zoneId, subzoneId, locationId } = getReportFilters();
-
-  return rows.filter(it => {
-    if (zoneId && String(it.zoneId) !== String(zoneId)) return false;
-    if (subzoneId && String(it.subzoneId) !== String(subzoneId)) return false;
-    if (locationId && String(it.locationId || "") !== String(locationId)) return false;
-    return true;
-  });
-}
-
-function clearReportFilters() {
-  if ($("#reportZone")) $("#reportZone").value = "";
-  if ($("#reportSubzone")) $("#reportSubzone").value = "";
-  if ($("#reportLocation")) $("#reportLocation").value = "";
-  refreshReportFilterOptions();
-}
-
 
 async function loadBase() {
   const [z, s, w, l] = await Promise.all([
     getDocs(collection(db, "zones")),
     getDocs(collection(db, "subzones")),
     getDocs(collection(db, "fabacademyWeeks")),
-    getDocs(query(collection(db, "locations"), where("active", "==", true))),
+    getDocs(collection(db, "locations")),
   ]);
-  zones = z.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>a.zoneId-b.zoneId);
-  subzones = s.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>String(a.subzoneId).localeCompare(String(b.subzoneId), undefined, {numeric:true}));
-  weeks = w.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>a.weekId-b.weekId);
-  locations = sortLocations(l.docs.map(d => ({id: d.id, ...d.data()})));
 
-  fillZoneSelects();
-  $("#itemTipo").innerHTML = ITEM_TYPES.map(x => `<option>${x}</option>`).join("");
+  zones = sortZones(z.docs.map(d => ({ id: d.id, ...d.data() })));
+  subzones = sortSubzones(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  weeks = w.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => Number(a.weekId) - Number(b.weekId));
+  locations = sortLocations(l.docs.map(d => ({ id: d.id, ...d.data() })));
+
+  $("#itemTipo").innerHTML = ITEM_TYPES.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+  $("#itemFilterType").innerHTML = '<option value="">Todos</option>' + ITEM_TYPES.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+  $("#locationType").innerHTML = LOCATION_TYPES.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+  $("#itemWeeks").innerHTML = weeks.map(x => `<option value="${esc(x.weekId)}">${esc(x.weekId)} · ${esc(x.name)}</option>`).join("");
+
+  refreshAllSelectors();
+}
+
+async function loadItems() {
+  const snap = await getDocs(query(collection(db, "items"), where("activo", "==", true)));
+  adminItemsCache = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }));
+  updateStats();
+}
+
+function structureItemCounts() {
+  const byZone = new Map();
+  const bySubzone = new Map();
+  const byLocation = new Map();
+
+  for (const it of adminItemsCache) {
+    const zoneKey = String(it.zoneId ?? "");
+    const subKey = String(it.subzoneId ?? "");
+    const locKey = String(it.locationId ?? "");
+    byZone.set(zoneKey, (byZone.get(zoneKey) || 0) + 1);
+    bySubzone.set(subKey, (bySubzone.get(subKey) || 0) + 1);
+    if (locKey) byLocation.set(locKey, (byLocation.get(locKey) || 0) + 1);
+  }
+  return { byZone, bySubzone, byLocation };
+}
+
+function structureNodeText(z, subzoneRows, locationRows) {
+  const zd = zoneDisplay(z);
+  return normalizeForCompare([
+    z.zoneId, z.name, zd.code, zd.name, z.description,
+    ...subzoneRows.flatMap(s => {
+      const sd = subzoneDisplay(s);
+      return [s.subzoneId, s.name, sd.code, sd.name, s.description];
+    }),
+    ...locationRows.flatMap(l => {
+      const ld = locationDisplay(l);
+      return [l.locationId, l.areaCode, l.name, ld.code, ld.name, l.type, typeLabel(l.type), l.description];
+    })
+  ].filter(Boolean).join(" "));
+}
+
+function renderStructure() {
+  const search = normalizeForCompare($("#structureSearch")?.value || "");
+  const filterZone = $("#structureZoneFilter")?.value || "";
+  const counts = structureItemCounts();
+  const cards = [];
+
+  for (const z of sortZones(zones)) {
+    if (filterZone && String(z.zoneId) !== String(filterZone)) continue;
+
+    const zoneSubs = sortSubzones(subzones.filter(s => Number(s.zoneId) === Number(z.zoneId)));
+    const zoneLocs = sortLocations(locations.filter(l => Number(l.zoneId) === Number(z.zoneId)));
+
+    if (search && !structureNodeText(z, zoneSubs, zoneLocs).includes(search)) continue;
+
+    const zd = zoneDisplay(z);
+    const subHtml = zoneSubs.map(s => {
+      const sd = subzoneDisplay(s);
+      const subLocs = sortLocations(zoneLocs.filter(l => String(l.subzoneId) === String(s.subzoneId)));
+      const locHtml = subLocs.length ? subLocs.map(l => {
+        const ld = locationDisplay(l);
+        const rawCode = l.areaCode || l.locationCode || "";
+        return `
+          <div class="structure-location ${l.active === false ? "is-inactive" : ""}">
+            <div>
+              <div class="structure-location-code">${esc(ld.code || rawCode || "s/c")}</div>
+              ${rawCode && String(rawCode) !== String(ld.code) ? `<div class="structure-technical">téc. ${esc(rawCode)}</div>` : ""}
+            </div>
+            <div>
+              <div class="structure-location-name">${esc(ld.name || l.name || "Sin nombre")}</div>
+              <div class="structure-count">${counts.byLocation.get(String(l.locationId)) || 0} elemento(s) ${inactiveBadge(l.active)}</div>
+            </div>
+            <div class="structure-location-type">${esc(typeLabel(l.type))}</div>
+            <div class="structure-node-actions">
+              <button class="btn btn-sm btn-outline-primary" type="button" data-action="edit-location" data-id="${esc(l.id)}">Editar</button>
+              <button class="btn btn-sm btn-outline-danger" type="button" data-action="delete-location" data-id="${esc(l.id)}">Eliminar</button>
+            </div>
+          </div>`;
+      }).join("") : '<div class="structure-empty">Sin áreas registradas.</div>';
+
+      return `
+        <div class="structure-subzone ${s.active === false ? "is-inactive" : ""}">
+          <div class="structure-subzone-header">
+            <div class="structure-subzone-main">
+              <div class="structure-subzone-title">
+                <span>${esc(sd.code)} · ${esc(sd.name || "Sin nombre")}</span>
+                ${technicalBadge(s.subzoneId, sd.code)}
+                ${inactiveBadge(s.active)}
+              </div>
+              <div class="structure-count">
+                ${subLocs.length} área(s) · ${counts.bySubzone.get(String(s.subzoneId)) || 0} elemento(s)
+              </div>
+            </div>
+            <div class="structure-node-actions">
+              <button class="btn btn-sm btn-outline-primary" type="button" data-action="edit-subzone" data-id="${esc(s.id)}">Editar</button>
+              <button class="btn btn-sm btn-outline-dark" type="button" data-action="new-location" data-zone="${esc(z.zoneId)}" data-subzone="${esc(s.subzoneId)}">+ Área</button>
+              <button class="btn btn-sm btn-outline-danger" type="button" data-action="delete-subzone" data-id="${esc(s.id)}">Eliminar</button>
+            </div>
+          </div>
+          <div class="structure-locations">${locHtml}</div>
+        </div>`;
+    }).join("");
+
+    cards.push(`
+      <article class="structure-zone ${z.active === false ? "is-inactive" : ""}">
+        <div class="structure-zone-header">
+          <div class="structure-zone-title">
+            <span class="structure-code">${esc(zd.code)}</span>
+            <div>
+              <div class="structure-zone-name">${esc(zd.name || "Sin nombre")} ${technicalBadge(z.zoneId, zd.code)} ${inactiveBadge(z.active)}</div>
+              <div class="structure-count">${zoneSubs.length} subzona(s) · ${zoneLocs.length} área(s) · ${counts.byZone.get(String(z.zoneId)) || 0} elemento(s)</div>
+            </div>
+          </div>
+          <div class="structure-node-actions">
+            <button class="btn btn-sm btn-outline-primary" type="button" data-action="edit-zone" data-id="${esc(z.id)}">Editar</button>
+            <button class="btn btn-sm btn-outline-dark" type="button" data-action="new-subzone" data-zone="${esc(z.zoneId)}">+ Subzona</button>
+            <button class="btn btn-sm btn-outline-danger" type="button" data-action="delete-zone" data-id="${esc(z.id)}">Eliminar</button>
+          </div>
+        </div>
+        <div class="structure-zone-body">
+          ${subHtml || '<div class="structure-empty">Sin subzonas registradas.</div>'}
+        </div>
+      </article>`);
+  }
+
+  $("#structureTree").innerHTML = cards.length
+    ? cards.join("")
+    : '<div class="structure-no-results">No se encontraron nodos con esos filtros.</div>';
+
+  $("#structureSummary").textContent = `${cards.length} zona(s) mostrada(s) de ${zones.length}.`;
+}
+
+function renderItems() {
+  const search = normalizeForCompare($("#itemSearch")?.value || "");
+  const zoneId = $("#itemFilterZone")?.value || "";
+  const subzoneId = $("#itemFilterSubzone")?.value || "";
+  const locationId = $("#itemFilterLocation")?.value || "";
+  const tipo = $("#itemFilterType")?.value || "";
+
+  const rows = adminItemsCache.filter(it => {
+    if (zoneId && String(it.zoneId) !== String(zoneId)) return false;
+    if (subzoneId && String(it.subzoneId) !== String(subzoneId)) return false;
+    if (locationId && String(it.locationId || "") !== String(locationId)) return false;
+    if (tipo && normalizeTipo(it.tipo) !== tipo) return false;
+    return currentItemMatchesText(it, search);
+  });
+
+  $("#itemCount").textContent = `${rows.length} de ${adminItemsCache.length} elemento(s) activos.`;
+
+  $("#adminItems").innerHTML = rows.length ? rows.map(it => {
+    const z = zones.find(x => Number(x.zoneId) === Number(it.zoneId));
+    const s = subzones.find(x => String(x.subzoneId) === String(it.subzoneId));
+    const l = locationById(it.locationId);
+    const zd = zoneDisplay(z || { zoneId: it.zoneId, name: it.zoneName });
+    const sd = subzoneDisplay(s || { subzoneId: it.subzoneId, name: it.subzoneName });
+    const ld = locationDisplay(l || { areaCode: it.locationCode, name: it.locationName, subzoneId: it.subzoneId, subzoneName: it.subzoneName });
+    const img = it.imageFileId
+      ? `<img src="${esc(fileViewUrl(it.imageFileId))}" class="admin-thumb" alt="">`
+      : '<div class="admin-thumb-placeholder">—</div>';
+
+    return `
+      <tr>
+        <td>${img}</td>
+        <td><code>${esc(it.sku || "")}</code></td>
+        <td><div class="admin-item-name">${esc(it.nombre || "Sin nombre")}</div></td>
+        <td>${esc(normalizeTipo(it.tipo))}</td>
+        <td>
+          <div class="admin-route">
+            <strong>${esc(zd.code)} · ${esc(zd.name || it.zoneName || "")}</strong><br>
+            ${esc(sd.code)} · ${esc(sd.name || it.subzoneName || "")}<br>
+            ${ld.code ? `<span>${esc(ld.code)} · ${esc(ld.name || it.locationName || "")}</span>` : '<span>Sin área específica</span>'}
+          </div>
+        </td>
+        <td>${Number(it.stockAlmacen || 0)}</td>
+        <td>${Number(it.inventarioDeseado || 0)}</td>
+        <td>
+          <div class="admin-item-actions">
+            <button class="btn btn-sm btn-outline-primary" type="button" data-item-action="edit" data-id="${esc(it.id)}">Editar</button>
+            <button class="btn btn-sm btn-outline-warning" type="button" data-item-action="deactivate" data-id="${esc(it.id)}">Desactivar</button>
+            <button class="btn btn-sm btn-outline-danger" type="button" data-item-action="delete" data-id="${esc(it.id)}">Eliminar</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join("") : `
+    <tr>
+      <td colspan="8" class="text-center text-muted py-5">No se encontraron elementos con esos filtros.</td>
+    </tr>`;
+}
+
+function openZoneForm(z = null) {
+  $("#zoneForm").reset();
+  $("#zoneEditingDocId").value = z?.id || "";
+  $("#zoneId").disabled = Boolean(z);
+  $("#zoneId").value = z?.zoneId ?? "";
+  $("#zoneName").value = z?.name || "";
+  $("#zoneOrder").value = z?.order ?? z?.zoneId ?? 1;
+  $("#zoneDescription").value = z?.description || "";
+  $("#zoneActive").checked = z?.active !== false;
+  $("#zoneModalTitle").textContent = z ? "Editar zona" : "Nueva zona";
+  zoneModal().show();
+}
+
+function openSubzoneForm(s = null, presetZoneId = "") {
+  $("#subzoneForm").reset();
+  $("#subzoneEditingDocId").value = s?.id || "";
+  fillZoneSelect("#subzoneZone", false, true, s?.zoneId || presetZoneId || "");
+  $("#subzoneZone").disabled = Boolean(s);
+  $("#subzoneId").disabled = Boolean(s);
+  $("#subzoneId").value = s?.subzoneId || "";
+  $("#subzoneName").value = s?.name || "";
+  $("#subzoneOrder").value = s?.order ?? 1;
+  $("#subzoneDescription").value = s?.description || "";
+  $("#subzoneActive").checked = s?.active !== false;
+  $("#subzoneModalTitle").textContent = s ? "Editar subzona" : "Nueva subzona";
+  subzoneModal().show();
+}
+
+function clearLocationForm() {
+  $("#locationForm").reset();
+  $("#locationEditingId").value = "";
+  $("#locationId").disabled = false;
+  $("#locationZone").disabled = false;
+  $("#locationSubzone").disabled = false;
+  fillZoneSelect("#locationZone", false, true);
+  refreshLocationFormSubzonesAndParents();
+  $("#locationOrder").value = 1;
+}
+
+function openLocationForm(l = null, presetZoneId = "", presetSubzoneId = "") {
+  clearLocationForm();
+  $("#locationEditingId").value = l?.id || "";
+
+  if (l) {
+    $("#locationId").value = l.locationId || l.id;
+    $("#locationId").disabled = true;
+    fillZoneSelect("#locationZone", false, true, l.zoneId || "");
+    $("#locationZone").disabled = true;
+    fillSubzoneSelect("#locationSubzone", l.zoneId, false, true, l.subzoneId || "");
+    $("#locationSubzone").disabled = true;
+    $("#locationAreaCode").value = l.areaCode || l.locationCode || "";
+    $("#locationName").value = l.name || "";
+    $("#locationType").value = l.type || "general";
+    $("#locationOrder").value = l.order || 1;
+    $("#locationDescription").value = l.description || "";
+    refreshLocationFormSubzonesAndParents(l.subzoneId || "", l.parentLocationId || "");
+    $("#locationModalTitle").textContent = "Editar área";
+  } else {
+    fillZoneSelect("#locationZone", false, true, presetZoneId || "");
+    refreshLocationFormSubzonesAndParents(presetSubzoneId || "");
+    if (presetSubzoneId) $("#locationSubzone").value = presetSubzoneId;
+    refreshLocationFormSubzonesAndParents(presetSubzoneId || "");
+    $("#locationModalTitle").textContent = "Nueva área";
+  }
+
+  locationModal().show();
+}
+
+function clearItemForm() {
+  $("#itemForm").reset();
+  $("#itemId").value = "";
+  fillZoneSelect("#itemZone", false, true);
+  refreshItemFormSubzonesAndLocations();
+  $("#itemTipo").value = "Otro";
+  $("#itemMoneda").value = "MXN";
+  $("#itemPrecioUnitario").value = 0;
   applyDefaultsForSelectedType(true);
-  $("#locationType").innerHTML = LOCATION_TYPES.map(([v,t]) => `<option value="${v}">${t}</option>`).join("");
-  $("#itemWeeks").innerHTML = weeks.map(x => `<option value="${x.weekId}">${x.weekId} · ${x.name}</option>`).join("");
-  refreshSubzoneSelect("#itemSubzone", $("#itemZone").value);
-  refreshSubzoneSelect("#locationSubzone", $("#locationZone").value);
-  refreshLocationSelects();
+}
+
+function openItemForm(it = null) {
+  clearItemForm();
+  if (!it) {
+    $("#itemModalTitle").textContent = "Nuevo elemento";
+    itemModal().show();
+    return;
+  }
+
+  $("#itemId").value = it.id;
+  $("#itemSku").value = it.sku || "";
+  $("#itemNombre").value = it.nombre || "";
+  $("#itemDescripcion").value = it.descripcion || "";
+  $("#itemTipo").value = normalizeTipo(it.tipo || "Otro");
+
+  fillZoneSelect("#itemZone", false, true, it.zoneId || "");
+  refreshItemFormSubzonesAndLocations(it.subzoneId || "", it.locationId || "", it.relatedMachineId || "");
+  $("#itemSubzone").value = it.subzoneId || "";
+  refreshItemFormSubzonesAndLocations(it.subzoneId || "", it.locationId || "", it.relatedMachineId || "");
+
+  [...$("#itemWeeks").options].forEach(o => {
+    o.selected = (it.fabacademyWeeks || []).map(String).includes(o.value);
+  });
+
+  $("#itemInfoUrl").value = it.infoUrl || "";
+  $("#itemPurchaseUrl").value = it.purchaseUrl || "";
+  $("#itemStock").value = it.stockAlmacen || 0;
+  $("#itemPrestado").value = it.stockPrestadoTemporal || 0;
+  $("#itemLargo").value = it.stockLargoPlazo || 0;
+  $("#itemDanado").value = it.stockDanado || 0;
+  $("#itemPerdido").value = it.stockPerdido || 0;
+  $("#itemDeseado").value = it.inventarioDeseado || 0;
+  $("#itemPrecioUnitario").value = it.precioUnitario ?? it.precio ?? 0;
+  $("#itemMoneda").value = it.moneda || "MXN";
+
+  const defaults = defaultsForType(normalizeTipo(it.tipo || "Otro"));
+  $("#itemVisibleAlumno").checked = it.visibleParaAlumno ?? defaults.visibleParaAlumno;
+  $("#itemPrestable").checked = it.prestamoHabilitado ?? defaults.prestamoHabilitado;
+  $("#itemReservable").checked = it.reservaHabilitada ?? defaults.reservaHabilitada;
+  $("#itemAsistencia").checked = it.requiereAsistencia ?? defaults.requiereAsistencia;
+
+  $("#itemModalTitle").textContent = "Editar elemento";
+  itemModal().show();
+}
+
+async function saveZone(e) {
+  e.preventDefault();
+  const editingDocId = $("#zoneEditingDocId").value || "";
+  const zoneId = Number($("#zoneId").value);
+  const name = $("#zoneName").value.trim();
+
+  if (!Number.isInteger(zoneId) || zoneId <= 0) return alert("El ID de zona debe ser un número entero positivo.");
+  if (!name) return alert("Escribe el nombre de la zona.");
+
+  if (!editingDocId && zones.some(z => Number(z.zoneId) === zoneId)) {
+    return alert(`Ya existe una zona con zoneId ${zoneId}.`);
+  }
+
+  if (editingDocId) {
+    const current = zones.find(z => String(z.id) === String(editingDocId));
+    await updateDoc(doc(db, "zones", editingDocId), {
+      name,
+      active: $("#zoneActive").checked,
+      order: Number($("#zoneOrder").value || zoneId),
+      description: $("#zoneDescription").value.trim(),
+      updatedAt: serverTimestamp(),
+    });
+
+    if (current && current.name !== name) {
+      await propagateZoneName(zoneId, name);
+    }
+  } else {
+    const docId = String(zoneId);
+    await setDoc(doc(db, "zones", docId), {
+      zoneId,
+      name,
+      active: $("#zoneActive").checked,
+      order: Number($("#zoneOrder").value || zoneId),
+      description: $("#zoneDescription").value.trim(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  zoneModal().hide();
+  await refreshEverything();
+}
+
+async function saveSubzone(e) {
+  e.preventDefault();
+  const editingDocId = $("#subzoneEditingDocId").value || "";
+  const zoneId = Number($("#subzoneZone").value);
+  const subzoneId = $("#subzoneId").value.trim();
+  const name = $("#subzoneName").value.trim();
+
+  if (!zoneId || !subzoneId || !name) return alert("Completa zona, ID de subzona y nombre.");
+
+  if (!editingDocId && subzones.some(s => String(s.subzoneId) === subzoneId)) {
+    return alert(`Ya existe una subzona con subzoneId "${subzoneId}".`);
+  }
+
+  if (editingDocId) {
+    const current = subzones.find(s => String(s.id) === String(editingDocId));
+    await updateDoc(doc(db, "subzones", editingDocId), {
+      name,
+      active: $("#subzoneActive").checked,
+      order: Number($("#subzoneOrder").value || 1),
+      description: $("#subzoneDescription").value.trim(),
+      updatedAt: serverTimestamp(),
+    });
+
+    if (current && current.name !== name) {
+      await propagateSubzoneName(current.subzoneId, name);
+    }
+  } else {
+    await setDoc(doc(db, "subzones", subzoneId), {
+      subzoneId,
+      zoneId,
+      name,
+      active: $("#subzoneActive").checked,
+      order: Number($("#subzoneOrder").value || 1),
+      description: $("#subzoneDescription").value.trim(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  subzoneModal().hide();
+  await refreshEverything();
+}
+
+async function saveLocation(e) {
+  e.preventDefault();
+  const editingId = $("#locationEditingId").value || "";
+  const zoneId = Number($("#locationZone").value);
+  const subzoneId = $("#locationSubzone").value;
+  const name = $("#locationName").value.trim();
+
+  if (!zoneId || !subzoneId || !name) return alert("Completa zona, subzona y nombre del área.");
+
+  let locationId = $("#locationId").value.trim();
+  if (!locationId) locationId = `${subzoneId}-${normalizeId(name)}`;
+
+  if (!editingId && locations.some(l => String(l.locationId || l.id) === locationId)) {
+    return alert(`Ya existe una ubicación con ID "${locationId}".`);
+  }
+
+  const zone = zones.find(z => Number(z.zoneId) === zoneId);
+  const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
+  const parentId = $("#locationParent").value || "";
+  const parent = parentId ? locationById(parentId) : null;
+
+  const data = {
+    locationId,
+    areaCode: $("#locationAreaCode").value.trim(),
+    name,
+    type: $("#locationType").value,
+    zoneId,
+    zoneName: zone?.name || "",
+    subzoneId,
+    subzoneName: subzone?.name || "",
+    parentLocationId: parentId || null,
+    parentLocationName: parent?.name || "",
+    description: $("#locationDescription").value.trim(),
+    active: true,
+    order: Number($("#locationOrder").value || 1),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (!editingId) data.createdAt = serverTimestamp();
+
+  const docId = editingId || locationId;
+  await setDoc(doc(db, "locations", docId), data, { merge: true });
+
+  if (editingId) await propagateLocationMetadata(locationId, data);
+
+  locationModal().hide();
+  await refreshEverything();
 }
 
 async function uploadFile(inputId, fileType, itemId) {
@@ -353,221 +856,36 @@ async function uploadFile(inputId, fileType, itemId) {
   return data.fileId;
 }
 
-function selectedOptions(selectId) {
-  return [...$(selectId).selectedOptions].map(o => Number(o.value));
-}
-
-function normalizeSku(value) {
-  return String(value || "").trim().toUpperCase();
-}
-
 async function findDuplicateSku(sku, currentItemId = "") {
   const normalizedSku = normalizeSku(sku);
   if (!normalizedSku) return null;
 
-  const exactSnap = await getDocs(query(collection(db, "items"), where("sku", "==", String(sku || "").trim())));
-  const exactDuplicate = exactSnap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .find(it => String(it.id) !== String(currentItemId));
-
-  if (exactDuplicate) return exactDuplicate;
-
-  // Respaldo ligero con los items activos ya cargados en el panel, por si hubiera
-  // diferencias de mayúsculas/minúsculas o espacios en datos existentes.
-  return adminItemsCache.find(it =>
+  const localDuplicate = adminItemsCache.find(it =>
     normalizeSku(it.sku) === normalizedSku &&
     String(it.id) !== String(currentItemId)
-  ) || null;
-}
-
-async function validateSkuBeforeSave(sku, currentItemId = "") {
-  const cleanSku = String(sku || "").trim();
-
-  if (!cleanSku) {
-    alert("El SKU es obligatorio.");
-    $("#itemSku")?.focus();
-    return false;
-  }
-
-  const duplicate = await findDuplicateSku(cleanSku, currentItemId);
-  if (!duplicate) return true;
-
-  alert(
-    `No se puede guardar el elemento porque el SKU "${cleanSku}" ya existe.\n\n` +
-    `Elemento existente:\n` +
-    `${duplicate.sku || "Sin SKU"} · ${duplicate.nombre || "Sin nombre"}\n` +
-    `${duplicate.locationCode ? `Área: ${duplicate.locationCode} · ` : ""}${duplicate.locationName || ""}\n\n` +
-    `Cambia el SKU antes de guardar.`
   );
+  if (localDuplicate) return localDuplicate;
 
-  const skuInput = $("#itemSku");
-  skuInput?.focus();
-  skuInput?.select?.();
-  return false;
-}
-
-function namesForWeeks(ids) {
-  return ids.map(id => weeks.find(w => Number(w.weekId) === Number(id))?.name || String(id));
-}
-
-async function saveLocation(e) {
-  e.preventDefault();
-  const zoneId = Number($("#locationZone").value);
-  const subzoneId = $("#locationSubzone").value;
-  const name = $("#locationName").value.trim();
-  if (!name) return alert("Escribe el nombre de la ubicación.");
-
-  const editingId = $("#locationEditingId").value;
-  let locationId = $("#locationId").value.trim();
-  if (!locationId) locationId = `${subzoneId}-${normalizeId(name)}`;
-  const zone = zones.find(z => Number(z.zoneId) === zoneId);
-  const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
-  const parentId = $("#locationParent").value || "";
-  const parent = parentId ? locationById(parentId) : null;
-
-  const data = {
-    locationId,
-    areaCode: $("#locationAreaCode")?.value?.trim() || "",
-    name,
-    type: $("#locationType").value,
-    zoneId,
-    zoneName: zone?.name || "",
-    subzoneId,
-    subzoneName: subzone?.name || "",
-    parentLocationId: parentId || null,
-    parentLocationName: parent?.name || "",
-    description: $("#locationDescription").value.trim(),
-    active: true,
-    order: Number($("#locationOrder").value || 1),
-    updatedAt: serverTimestamp(),
-  };
-  if (!editingId) data.createdAt = serverTimestamp();
-  const docId = editingId || locationId;
-  await setDoc(doc(db, "locations", docId), data, { merge: true });
-  alert("Ubicación guardada.");
-  clearLocationForm();
-  await reloadLocationsAndRender();
-}
-
-function clearLocationForm() {
-  $("#locationForm").reset();
-  $("#locationEditingId").value = "";
-  $("#locationId").disabled = false;
-  refreshSubzoneSelect("#locationSubzone", $("#locationZone").value);
-  refreshLocationSelects();
-}
-
-async function reloadLocationsAndRender() {
-  const l = await getDocs(query(collection(db, "locations"), where("active", "==", true)));
-  locations = sortLocations(l.docs.map(d => ({id: d.id, ...d.data()})));
-  refreshLocationSelects();
-  await renderLocations();
-  await renderItems();
-}
-
-async function renderLocations() {
-  const rows = sortLocations(locations);
-  $("#locationCount").textContent = `${rows.length} ubicación(es)`;
-  $("#adminLocations").innerHTML = rows.map(l => {
-    const ld = locationDisplay(l);
-    const zone = zones.find(z => Number(z.zoneId) === Number(l.zoneId));
-    const subzone = subzones.find(s => String(s.subzoneId) === String(l.subzoneId));
-    const zoneText = zone ? adminZoneOptionLabel(zone) : (l.zoneName || "");
-    const subzoneText = subzone ? adminSubzoneOptionLabel(subzone) : (l.subzoneName || "");
-
-    return `
-    <tr>
-      <td><code>${l.locationId || l.id}</code></td>
-      <td>
-        ${ld.code ? `<span class="badge text-bg-light border me-1">${ld.code}</span>` : ""}
-        ${ld.name || ""}
-        ${(l.areaCode && String(l.areaCode) !== String(ld.code)) ? `<div class="small text-muted">código técnico: ${l.areaCode}</div>` : ""}
-      </td>
-      <td>${typeLabel(l.type)}</td>
-      <td><span class="small">${zoneText} / ${subzoneText}</span></td>
-      <td><span class="small text-muted">${l.parentLocationName || l.parentLocationId || ""}</span></td>
-      <td class="text-nowrap">
-        <button class="btn btn-sm btn-outline-primary edit-location" data-id="${l.id}">Editar</button>
-        <button class="btn btn-sm btn-outline-warning deactivate-location" data-id="${l.id}">Desactivar</button>
-        <button class="btn btn-sm btn-outline-danger delete-location" data-id="${l.id}">Eliminar</button>
-      </td>
-    </tr>`;
-  }).join("");
-
-  document.querySelectorAll(".edit-location").forEach(btn => btn.addEventListener("click", () => {
-    const data = rows.find(x => x.id === btn.dataset.id);
-    fillLocationForm(data);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }));
-
-  document.querySelectorAll(".deactivate-location").forEach(btn => btn.addEventListener("click", async () => {
-    if (!confirm("¿Desactivar esta ubicación? Los items existentes conservarán su referencia, pero ya no aparecerá para nuevas capturas.")) return;
-    await updateDoc(doc(db, "locations", btn.dataset.id), { active: false, updatedAt: serverTimestamp() });
-    await reloadLocationsAndRender();
-  }));
-
-  document.querySelectorAll(".delete-location").forEach(btn => btn.addEventListener("click", async () => {
-    await deleteLocationFromAdmin(btn.dataset.id);
-  }));
-}
-
-async function deleteLocationFromAdmin(locationDocId) {
-  const location = locations.find(l => String(l.id) === String(locationDocId));
-  if (!location) return alert("No se encontró la ubicación.");
-
-  const locationId = location.locationId || location.id;
-  const itemsSnap = await getDocs(collection(db, "items"));
-  const linkedItems = itemsSnap.docs
+  const exactSnap = await getDocs(query(collection(db, "items"), where("sku", "==", String(sku || "").trim())));
+  return exactSnap.docs
     .map(d => ({ id: d.id, ...d.data() }))
-    .filter(it => String(it.locationId || "") === String(locationId) || String(it.relatedMachineId || "") === String(locationId));
-
-  const locationsSnap = await getDocs(collection(db, "locations"));
-  const childLocations = locationsSnap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter(l => String(l.parentLocationId || "") === String(locationId));
-
-  if (linkedItems.length || childLocations.length) {
-    alert(
-      `No se puede eliminar esta área porque todavía tiene referencias.\n\n` +
-      `Items asociados o relacionados: ${linkedItems.length}\n` +
-      `Sububicaciones hijas: ${childLocations.length}\n\n` +
-      `Primero reasigna, elimina o desactiva esos elementos.`
-    );
-    return;
-  }
-
-  if (!confirm(`¿Eliminar definitivamente el área "${location.areaCode ? location.areaCode + " · " : ""}${location.name || locationId}"?\n\nEsta acción no se puede deshacer.`)) return;
-
-  await deleteDoc(doc(db, "locations", locationDocId));
-  await reloadLocationsAndRender();
-}
-
-function fillLocationForm(l) {
-  $("#locationEditingId").value = l.id;
-  $("#locationId").value = l.locationId || l.id;
-  $("#locationId").disabled = true;
-  if ($("#locationAreaCode")) $("#locationAreaCode").value = l.areaCode || l.locationCode || "";
-  $("#locationZone").value = l.zoneId || "";
-  refreshSubzoneSelect("#locationSubzone", $("#locationZone").value, l.subzoneId || "");
-  $("#locationName").value = l.name || "";
-  $("#locationType").value = l.type || "general";
-  $("#locationOrder").value = l.order || 1;
-  $("#locationDescription").value = l.description || "";
-  refreshLocationSelects();
-  $("#locationParent").value = l.parentLocationId || "";
+    .find(it => String(it.id) !== String(currentItemId)) || null;
 }
 
 async function saveItem(e) {
   e.preventDefault();
-
-  const submitBtn = e.submitter || e.currentTarget.querySelector('button[type="submit"], button:not([type])');
+  const submitBtn = e.submitter || e.currentTarget.querySelector('button[type="submit"]');
   if (submitBtn) submitBtn.disabled = true;
 
   try {
     const currentItemId = $("#itemId").value || "";
     const sku = $("#itemSku").value.trim();
+    if (!sku) return alert("El SKU es obligatorio.");
 
-    if (!(await validateSkuBeforeSave(sku, currentItemId))) return;
+    const duplicate = await findDuplicateSku(sku, currentItemId);
+    if (duplicate) {
+      return alert(`No se puede guardar: el SKU "${sku}" ya existe en ${duplicate.sku || ""} · ${duplicate.nombre || "otro elemento"}.`);
+    }
 
     const itemId = currentItemId || doc(collection(db, "items")).id;
     const zoneId = Number($("#itemZone").value);
@@ -577,6 +895,8 @@ async function saveItem(e) {
     const location = locationId ? locationById(locationId) : null;
     const relatedMachine = relatedMachineId ? locationById(relatedMachineId) : null;
     const fabIds = selectedOptions("#itemWeeks");
+    const zone = zones.find(z => Number(z.zoneId) === zoneId);
+    const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
 
     const [imageFileId, pdfFileId, datasheetFileId] = await Promise.all([
       uploadFile("#itemImage", "image", itemId),
@@ -584,411 +904,363 @@ async function saveItem(e) {
       uploadFile("#itemDatasheet", "datasheet", itemId),
     ]);
 
-    const zone = zones.find(z => Number(z.zoneId) === zoneId);
-    const subzone = subzones.find(s => String(s.subzoneId) === String(subzoneId));
     const base = {
-    sku,
-    nombre: $("#itemNombre").value.trim(),
-    descripcion: $("#itemDescripcion").value.trim(),
-    tipo: $("#itemTipo").value,
-    zoneId,
-    zoneName: zone?.name || "",
-    subzoneId,
-    subzoneName: subzone?.name || "",
-    locationId,
-    locationName: location?.name || "",
-    locationCode: locationDisplayCode(location),
-    locationType: location?.type || "",
-    relatedMachineId,
-    relatedMachineName: relatedMachine?.name || "",
-    relatedMachineCode: locationDisplayCode(relatedMachine),
-    fabacademyWeeks: fabIds,
-    fabacademyWeekNames: namesForWeeks(fabIds),
-    infoUrl: $("#itemInfoUrl").value.trim(),
-    purchaseUrl: $("#itemPurchaseUrl").value.trim(),
-    stockAlmacen: Number($("#itemStock").value || 0),
-    stockPrestadoTemporal: Number($("#itemPrestado").value || 0),
-    stockLargoPlazo: Number($("#itemLargo").value || 0),
-    stockDanado: Number($("#itemDanado").value || 0),
-    stockPerdido: Number($("#itemPerdido").value || 0),
-    inventarioDeseado: Number($("#itemDeseado").value || 0),
-    precioUnitario: Number($("#itemPrecioUnitario")?.value || 0),
-    moneda: $("#itemMoneda")?.value || "MXN",
-    visibleParaAlumno: $("#itemVisibleAlumno").checked,
-    prestamoHabilitado: $("#itemPrestable").checked,
-    reservaHabilitada: $("#itemReservable").checked,
-    requiereAsistencia: $("#itemAsistencia").checked,
-    activo: true,
-    updatedAt: serverTimestamp(),
-  };
+      sku,
+      nombre: $("#itemNombre").value.trim(),
+      descripcion: $("#itemDescripcion").value.trim(),
+      tipo: $("#itemTipo").value,
+      zoneId,
+      zoneName: zone?.name || "",
+      subzoneId,
+      subzoneName: subzone?.name || "",
+      locationId,
+      locationName: location?.name || "",
+      locationCode: locationDisplayCode(location),
+      locationType: location?.type || "",
+      relatedMachineId,
+      relatedMachineName: relatedMachine?.name || "",
+      relatedMachineCode: locationDisplayCode(relatedMachine),
+      fabacademyWeeks: fabIds,
+      fabacademyWeekNames: namesForWeeks(fabIds),
+      infoUrl: $("#itemInfoUrl").value.trim(),
+      purchaseUrl: $("#itemPurchaseUrl").value.trim(),
+      stockAlmacen: Number($("#itemStock").value || 0),
+      stockPrestadoTemporal: Number($("#itemPrestado").value || 0),
+      stockLargoPlazo: Number($("#itemLargo").value || 0),
+      stockDanado: Number($("#itemDanado").value || 0),
+      stockPerdido: Number($("#itemPerdido").value || 0),
+      inventarioDeseado: Number($("#itemDeseado").value || 0),
+      precioUnitario: Number($("#itemPrecioUnitario").value || 0),
+      moneda: $("#itemMoneda").value || "MXN",
+      visibleParaAlumno: $("#itemVisibleAlumno").checked,
+      prestamoHabilitado: $("#itemPrestable").checked,
+      reservaHabilitada: $("#itemReservable").checked,
+      requiereAsistencia: $("#itemAsistencia").checked,
+      activo: true,
+      updatedAt: serverTimestamp(),
+    };
+
     if (!currentItemId) base.createdAt = serverTimestamp();
     if (imageFileId) base.imageFileId = imageFileId;
     if (pdfFileId) base.pdfFileId = pdfFileId;
     if (datasheetFileId) base.datasheetFileId = datasheetFileId;
 
     await setDoc(doc(db, "items", itemId), base, { merge: true });
-    alert("Elemento guardado.");
-    clearItemForm();
-    await renderItems();
+    itemModal().hide();
+    await loadItems();
+    renderItems();
+    renderStructure();
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }
 }
 
-function clearItemForm() {
-  $("#itemForm").reset();
-  $("#itemId").value = "";
-  refreshSubzoneSelect("#itemSubzone", $("#itemZone").value);
-  refreshLocationSelects();
-  applyDefaultsForSelectedType(true);
+async function propagateZoneName(zoneId, newName) {
+  const [locSnap, itemSnap] = await Promise.all([
+    getDocs(collection(db, "locations")),
+    getDocs(collection(db, "items")),
+  ]);
+
+  const updates = [];
+  locSnap.docs.forEach(d => {
+    const data = d.data();
+    if (Number(data.zoneId) === Number(zoneId)) {
+      updates.push(updateDoc(d.ref, { zoneName: newName, updatedAt: serverTimestamp() }));
+    }
+  });
+  itemSnap.docs.forEach(d => {
+    const data = d.data();
+    if (Number(data.zoneId) === Number(zoneId)) {
+      updates.push(updateDoc(d.ref, { zoneName: newName, updatedAt: serverTimestamp() }));
+    }
+  });
+  await Promise.all(updates);
 }
 
-async function renderItems() {
-  const snap = await getDocs(query(collection(db, "items"), where("activo", "==", true)));
-  const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>String(a.sku||"").localeCompare(String(b.sku||"")));
-  adminItemsCache = rows;
-  updatePurchaseReportSummary(rows);
-  $("#itemCount").textContent = `${rows.length} elemento(s)`;
-  $("#adminItems").innerHTML = rows.map(it => `
-    <tr>
-      <td><img src="${fileViewUrl(it.imageFileId)}" class="thumb"></td>
-      <td>${it.sku || ""}</td>
-      <td>${it.nombre || ""}</td>
-      <td>${normalizeTipo(it.tipo)}</td>
-      <td><span class="small">${it.zoneName || ""}<br>${it.subzoneName || ""}<br><strong>${it.locationCode ? `${it.locationCode} · ` : ""}${it.locationName || "Sin ubicación"}</strong>${it.relatedMachineName ? `<br><span class="text-muted">Rel.: ${it.relatedMachineName}</span>` : ""}</span></td>
-      <td><div class="d-flex flex-column gap-1 align-items-start">${boolBadge(it.visibleParaAlumno !== false, "Alumno")}${boolBadge(it.prestamoHabilitado === true, "Préstamo", "text-bg-primary")}${boolBadge(it.reservaHabilitada === true, "Reserva", "text-bg-warning", "text-bg-secondary")}</div></td>
-      <td>${it.stockAlmacen || 0}</td>
-      <td>${it.inventarioDeseado || 0}</td>
-      <td class="text-nowrap">
-        <button class="btn btn-sm btn-outline-primary edit-item" data-id="${it.id}">Editar</button>
-        <button class="btn btn-sm btn-outline-warning deactivate-item" data-id="${it.id}">Desactivar</button>
-        <button class="btn btn-sm btn-outline-danger delete-item" data-id="${it.id}">Eliminar</button>
-      </td>
-    </tr>`).join("");
-  document.querySelectorAll(".deactivate-item").forEach(btn => btn.addEventListener("click", async () => {
-    if (!confirm("¿Desactivar este elemento?")) return;
-    await updateDoc(doc(db, "items", btn.dataset.id), { activo: false, updatedAt: serverTimestamp() });
-    await renderItems();
-  }));
+async function propagateSubzoneName(subzoneId, newName) {
+  const [locSnap, itemSnap] = await Promise.all([
+    getDocs(collection(db, "locations")),
+    getDocs(collection(db, "items")),
+  ]);
 
-  document.querySelectorAll(".delete-item").forEach(btn => btn.addEventListener("click", async () => {
-    await deleteItemFromAdmin(btn.dataset.id);
-  }));
-
-  document.querySelectorAll(".edit-item").forEach(btn => btn.addEventListener("click", async () => {
-    const data = rows.find(x => x.id === btn.dataset.id);
-    fillItemForm(data);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }));
+  const updates = [];
+  locSnap.docs.forEach(d => {
+    const data = d.data();
+    if (String(data.subzoneId) === String(subzoneId)) {
+      updates.push(updateDoc(d.ref, { subzoneName: newName, updatedAt: serverTimestamp() }));
+    }
+  });
+  itemSnap.docs.forEach(d => {
+    const data = d.data();
+    if (String(data.subzoneId) === String(subzoneId)) {
+      updates.push(updateDoc(d.ref, { subzoneName: newName, updatedAt: serverTimestamp() }));
+    }
+  });
+  await Promise.all(updates);
 }
 
-async function deleteItemFromAdmin(itemId) {
+async function propagateLocationMetadata(locationId, data) {
+  const itemSnap = await getDocs(collection(db, "items"));
+  const updates = [];
+
+  itemSnap.docs.forEach(d => {
+    const it = d.data();
+    const patch = {};
+
+    if (String(it.locationId || "") === String(locationId)) {
+      patch.locationName = data.name || "";
+      patch.locationCode = data.areaCode || "";
+      patch.locationType = data.type || "";
+    }
+
+    if (String(it.relatedMachineId || "") === String(locationId)) {
+      patch.relatedMachineName = data.name || "";
+      patch.relatedMachineCode = data.areaCode || "";
+    }
+
+    if (Object.keys(patch).length) {
+      patch.updatedAt = serverTimestamp();
+      updates.push(updateDoc(d.ref, patch));
+    }
+  });
+
+  await Promise.all(updates);
+}
+
+async function deleteZone(zoneDocId) {
+  const zone = zones.find(z => String(z.id) === String(zoneDocId));
+  if (!zone) return alert("No se encontró la zona.");
+
+  const [subsSnap, locSnap, itemSnap] = await Promise.all([
+    getDocs(collection(db, "subzones")),
+    getDocs(collection(db, "locations")),
+    getDocs(collection(db, "items")),
+  ]);
+
+  const subCount = subsSnap.docs.filter(d => Number(d.data().zoneId) === Number(zone.zoneId)).length;
+  const locCount = locSnap.docs.filter(d => Number(d.data().zoneId) === Number(zone.zoneId)).length;
+  const itemCount = itemSnap.docs.filter(d => Number(d.data().zoneId) === Number(zone.zoneId)).length;
+
+  if (subCount || locCount || itemCount) {
+    return alert(
+      `No se puede eliminar esta zona.\n\n` +
+      `Subzonas: ${subCount}\nÁreas: ${locCount}\nElementos: ${itemCount}\n\n` +
+      `Primero elimina o migra todas sus referencias.`
+    );
+  }
+
+  if (!confirm(`¿Eliminar definitivamente la zona "${adminZoneOptionLabel(zone)}"?\n\nEsta acción no se puede deshacer.`)) return;
+  await deleteDoc(doc(db, "zones", zoneDocId));
+  await refreshEverything();
+}
+
+async function deleteSubzone(subzoneDocId) {
+  const subzone = subzones.find(s => String(s.id) === String(subzoneDocId));
+  if (!subzone) return alert("No se encontró la subzona.");
+
+  const [locSnap, itemSnap] = await Promise.all([
+    getDocs(collection(db, "locations")),
+    getDocs(collection(db, "items")),
+  ]);
+
+  const locCount = locSnap.docs.filter(d => String(d.data().subzoneId) === String(subzone.subzoneId)).length;
+  const itemCount = itemSnap.docs.filter(d => String(d.data().subzoneId) === String(subzone.subzoneId)).length;
+
+  if (locCount || itemCount) {
+    return alert(
+      `No se puede eliminar esta subzona.\n\n` +
+      `Áreas: ${locCount}\nElementos: ${itemCount}\n\n` +
+      `Primero elimina o migra todas sus referencias.`
+    );
+  }
+
+  if (!confirm(`¿Eliminar definitivamente la subzona "${adminSubzoneOptionLabel(subzone)}"?\n\nEsta acción no se puede deshacer.`)) return;
+  await deleteDoc(doc(db, "subzones", subzoneDocId));
+  await refreshEverything();
+}
+
+async function deleteLocation(locationDocId) {
+  const location = locations.find(l => String(l.id) === String(locationDocId));
+  if (!location) return alert("No se encontró el área.");
+
+  const locationId = location.locationId || location.id;
+  const [itemsSnap, locationsSnap] = await Promise.all([
+    getDocs(collection(db, "items")),
+    getDocs(collection(db, "locations")),
+  ]);
+
+  const linkedItems = itemsSnap.docs.filter(d => {
+    const it = d.data();
+    return String(it.locationId || "") === String(locationId) ||
+      String(it.relatedMachineId || "") === String(locationId);
+  });
+
+  const childLocations = locationsSnap.docs.filter(d =>
+    String(d.data().parentLocationId || "") === String(locationId)
+  );
+
+  if (linkedItems.length || childLocations.length) {
+    return alert(
+      `No se puede eliminar esta área.\n\n` +
+      `Elementos asociados o relacionados: ${linkedItems.length}\n` +
+      `Sububicaciones hijas: ${childLocations.length}\n\n` +
+      `Primero reasigna o elimina esas referencias.`
+    );
+  }
+
+  const d = locationDisplay(location);
+  if (!confirm(`¿Eliminar definitivamente el área "${d.code ? d.code + " · " : ""}${d.name || locationId}"?\n\nEsta acción no se puede deshacer.`)) return;
+
+  await deleteDoc(doc(db, "locations", locationDocId));
+  await refreshEverything();
+}
+
+async function deactivateItem(itemId) {
+  const item = adminItemsCache.find(x => String(x.id) === String(itemId));
+  if (!item) return;
+  if (!confirm(`¿Desactivar "${item.sku || ""} · ${item.nombre || ""}"?`)) return;
+  await updateDoc(doc(db, "items", itemId), { activo: false, updatedAt: serverTimestamp() });
+  await loadItems();
+  renderItems();
+  renderStructure();
+}
+
+async function deleteItem(itemId) {
   const item = adminItemsCache.find(x => String(x.id) === String(itemId));
   const label = item ? `${item.sku || item.id} · ${item.nombre || ""}` : itemId;
-
-  if (!confirm(`¿Eliminar definitivamente el item "${label}"?\n\nEsta acción no se puede deshacer.`)) return;
+  if (!confirm(`¿Eliminar definitivamente el elemento "${label}"?\n\nEsta acción no se puede deshacer.`)) return;
 
   await deleteDoc(doc(db, "items", itemId));
-  await renderItems();
+  await loadItems();
+  renderItems();
+  renderStructure();
 }
 
-function fillItemForm(it) {
-  $("#itemId").value = it.id;
-  $("#itemSku").value = it.sku || "";
-  $("#itemNombre").value = it.nombre || "";
-  $("#itemDescripcion").value = it.descripcion || "";
-  $("#itemTipo").value = normalizeTipo(it.tipo || "Herramienta");
-  $("#itemZone").value = it.zoneId || "";
-  refreshSubzoneSelect("#itemSubzone", $("#itemZone").value, it.subzoneId || "");
-  refreshLocationSelects();
-  $("#itemLocation").value = it.locationId || "";
-  $("#itemRelatedMachine").value = it.relatedMachineId || "";
-  [...$("#itemWeeks").options].forEach(o => o.selected = (it.fabacademyWeeks || []).map(String).includes(o.value));
-  $("#itemInfoUrl").value = it.infoUrl || "";
-  $("#itemPurchaseUrl").value = it.purchaseUrl || "";
-  $("#itemStock").value = it.stockAlmacen || 0;
-  $("#itemPrestado").value = it.stockPrestadoTemporal || 0;
-  $("#itemLargo").value = it.stockLargoPlazo || 0;
-  $("#itemDanado").value = it.stockDanado || 0;
-  $("#itemPerdido").value = it.stockPerdido || 0;
-  $("#itemDeseado").value = it.inventarioDeseado || 0;
-  if ($("#itemPrecioUnitario")) $("#itemPrecioUnitario").value = it.precioUnitario ?? it.precio ?? 0;
-  if ($("#itemMoneda")) $("#itemMoneda").value = it.moneda || "MXN";
-  const defaults = defaultsForType(normalizeTipo(it.tipo || "Otro"));
-  $("#itemVisibleAlumno").checked = it.visibleParaAlumno ?? defaults.visibleParaAlumno;
-  $("#itemPrestable").checked = it.prestamoHabilitado ?? defaults.prestamoHabilitado;
-  $("#itemReservable").checked = it.reservaHabilitada ?? defaults.reservaHabilitada;
-  $("#itemAsistencia").checked = it.requiereAsistencia ?? defaults.requiereAsistencia;
+async function refreshEverything() {
+  await loadBase();
+  await loadItems();
+  renderStructure();
+  renderItems();
+  updateStats();
 }
 
-
-function num(value) {
-  return Number(value || 0);
+function switchView(view) {
+  document.querySelectorAll("[data-admin-view]").forEach(btn => {
+    const active = btn.dataset.adminView === view;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $("#structureView").classList.toggle("active", view === "structure");
+  $("#itemsView").classList.toggle("active", view === "items");
 }
 
-function inventarioActualOperativo(it) {
-  // Inventario actual operativo: lo que está en almacén + lo prestado temporalmente.
-  // No incluye largo plazo porque ya no se considera disponible para resurtido operativo.
-  return num(it.stockAlmacen) + num(it.stockPrestadoTemporal);
-}
-
-function cantidadAComprar(it) {
-  return Math.max(num(it.inventarioDeseado) - inventarioActualOperativo(it), 0);
-}
-
-function csvCell(value) {
-  const text = String(value ?? "");
-  return `"${text.replaceAll('"', '""')}"`;
-}
-
-function formatMoney(value) {
-  return Number(value || 0).toFixed(2);
-}
-
-function buildPurchaseReportRows(rows, onlyShortage = true) {
-  const reportRows = rows.map(it => {
-    const cantidad = cantidadAComprar(it);
-    const precio = num(it.precioUnitario);
-    const subtotal = cantidad * precio;
-    const location = locationById(it.locationId || "");
-
-    return {
-      zona: it.zoneName || "",
-      subzona: it.subzoneName || "",
-      area_codigo: it.locationCode || locationDisplayCode(location),
-      area: it.locationName || "",
-      sku: it.sku || "",
-      nombre: it.nombre || "",
-      tipo: normalizeTipo(it.tipo),
-      inventario_actual: inventarioActualOperativo(it),
-      inventario_deseado: num(it.inventarioDeseado),
-      cantidad_a_comprar: cantidad,
-      precio_unitario: precio,
-      moneda: it.moneda || "MXN",
-      subtotal: subtotal,
-      descripcion: it.descripcion || "",
-      liga_compra: it.purchaseUrl || "",
-    };
+function bindEvents() {
+  document.querySelectorAll("[data-admin-view]").forEach(btn => {
+    btn.addEventListener("click", () => switchView(btn.dataset.adminView));
   });
 
-  return onlyShortage
-    ? reportRows.filter(row => row.cantidad_a_comprar > 0)
-    : reportRows;
-}
+  $("#newZoneBtn").addEventListener("click", () => openZoneForm());
+  $("#newSubzoneBtn").addEventListener("click", () => openSubzoneForm());
+  $("#newLocationBtn").addEventListener("click", () => openLocationForm());
+  $("#newItemBtn").addEventListener("click", () => openItemForm());
 
-function updatePurchaseReportSummary(rows) {
-  const el = $("#purchaseReportSummary");
-  if (!el) return;
+  $("#zoneForm").addEventListener("submit", saveZone);
+  $("#subzoneForm").addEventListener("submit", saveSubzone);
+  $("#locationForm").addEventListener("submit", saveLocation);
+  $("#itemForm").addEventListener("submit", saveItem);
 
-  const filteredItems = applyReportFilters(rows);
-  const purchaseRows = buildPurchaseReportRows(filteredItems, true);
+  $("#clearLocationForm").addEventListener("click", clearLocationForm);
+  $("#clearItemForm").addEventListener("click", clearItemForm);
 
-  const totalsByCurrency = purchaseRows.reduce((acc, row) => {
-    const currency = row.moneda || "MXN";
-    acc[currency] = (acc[currency] || 0) + Number(row.subtotal || 0);
-    return acc;
-  }, {});
+  $("#itemTipo").addEventListener("change", () => applyDefaultsForSelectedType(false));
+  $("#itemZone").addEventListener("change", () => refreshItemFormSubzonesAndLocations());
+  $("#itemSubzone").addEventListener("change", () => refreshItemFormSubzonesAndLocations());
+  $("#locationZone").addEventListener("change", () => refreshLocationFormSubzonesAndParents());
+  $("#locationSubzone").addEventListener("change", () => refreshLocationFormSubzonesAndParents());
 
-  const totalsText = Object.entries(totalsByCurrency)
-    .map(([currency, total]) => `${currency} ${formatMoney(total)}`)
-    .join(" · ");
+  $("#structureSearch").addEventListener("input", renderStructure);
+  $("#structureZoneFilter").addEventListener("change", renderStructure);
+  $("#clearStructureFilters").addEventListener("click", () => {
+    $("#structureSearch").value = "";
+    $("#structureZoneFilter").value = "";
+    renderStructure();
+  });
 
-  el.textContent = purchaseRows.length
-    ? `${filteredItems.length} elemento(s) en el filtro. ${purchaseRows.length} requieren compra. Total estimado: ${totalsText}`
-    : `${filteredItems.length} elemento(s) en el filtro. No hay elementos con faltante para compra.`;
-}
+  $("#itemSearch").addEventListener("input", renderItems);
+  $("#itemFilterZone").addEventListener("change", () => {
+    $("#itemFilterSubzone").value = "";
+    $("#itemFilterLocation").value = "";
+    refreshItemFilterDependents();
+    renderItems();
+  });
+  $("#itemFilterSubzone").addEventListener("change", () => {
+    $("#itemFilterLocation").value = "";
+    refreshItemFilterDependents();
+    renderItems();
+  });
+  $("#itemFilterLocation").addEventListener("change", renderItems);
+  $("#itemFilterType").addEventListener("change", renderItems);
+  $("#clearItemFilters").addEventListener("click", () => {
+    $("#itemSearch").value = "";
+    $("#itemFilterZone").value = "";
+    refreshItemFilterDependents();
+    $("#itemFilterSubzone").value = "";
+    $("#itemFilterLocation").value = "";
+    $("#itemFilterType").value = "";
+    renderItems();
+  });
 
+  $("#structureTree").addEventListener("click", async e => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id || "";
 
-function cleanXlsxText(value) {
-  if (value === null || value === undefined) return "";
-
-  return String(value)
-    .normalize("NFC")
-    // Caracteres de control inválidos en XML 1.0, excepto tab, salto de línea y retorno.
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
-    // Evita pares sustitutos sueltos que pueden romper el XML interno del XLSX.
-    .replace(/[\uD800-\uDFFF]/g, "")
-    .trim();
-}
-
-function cleanXlsxNumber(value) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function exportReportXlsx({ onlyShortage, sheetName, filePrefix }) {
-  const filteredItems = applyReportFilters(adminItemsCache);
-  const rows = buildPurchaseReportRows(filteredItems, onlyShortage);
-
-  if (!rows.length) {
-    alert(onlyShortage
-      ? "No hay elementos con faltante para compra en el filtro seleccionado."
-      : "No hay elementos para exportar con el filtro seleccionado."
-    );
-    return;
-  }
-
-  if (!window.XLSX) {
-    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
-    return;
-  }
-
-  const headers = [
-    "Zona",
-    "Subzona",
-    "Código de área",
-    "Área",
-    "SKU",
-    "Tipo",
-    "Nombre",
-    "Descripción",
-    "Inventario actual",
-    "Inventario deseado",
-    "Cantidad a comprar",
-    "Precio unitario",
-    "Moneda",
-    "Subtotal",
-    "Liga de compra",
-  ];
-
-  const aoa = [
-    headers,
-    ...rows.map(row => [
-      cleanXlsxText(row.zona),
-      cleanXlsxText(row.subzona),
-      cleanXlsxText(row.area_codigo),
-      cleanXlsxText(row.area),
-      cleanXlsxText(row.sku),
-      cleanXlsxText(row.tipo),
-      cleanXlsxText(row.nombre),
-      cleanXlsxText(row.descripcion),
-      cleanXlsxNumber(row.inventario_actual),
-      cleanXlsxNumber(row.inventario_deseado),
-      cleanXlsxNumber(row.cantidad_a_comprar),
-      cleanXlsxNumber(row.precio_unitario),
-      cleanXlsxText(row.moneda),
-      cleanXlsxNumber(row.subtotal),
-      cleanXlsxText(row.liga_compra),
-    ]),
-  ];
-
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-
-  ws["!cols"] = [
-    { wch: 16 }, // A · Zona
-    { wch: 24 }, // B · Subzona
-    { wch: 16 }, // C · Código de área
-    { wch: 30 }, // D · Área
-    { wch: 12 }, // E · SKU
-    { wch: 16 }, // F · Tipo
-    { wch: 36 }, // G · Nombre
-    { wch: 36 }, // H · Descripción
-    { wch: 8 }, // I · Inventario actual
-    { wch: 8 }, // J · Inventario deseado
-    { wch: 8 }, // K · Cantidad a comprar
-    { wch: 8 }, // L · Precio unitario
-    { wch: 8 }, // M · Moneda
-    { wch: 12 }, // N · Subtotal
-    { wch: 40 }, // O · Liga de compra
-  ];
-
-  const numericColumns = ["I", "J", "K", "L", "N"];
-  for (let r = 2; r <= rows.length + 1; r++) {
-    for (const col of numericColumns) {
-      const cell = ws[`${col}${r}`];
-      if (cell) cell.t = "n";
+    if (action === "edit-zone") {
+      const z = zones.find(x => String(x.id) === String(id));
+      if (z) openZoneForm(z);
+    } else if (action === "delete-zone") {
+      await deleteZone(id);
+    } else if (action === "new-subzone") {
+      openSubzoneForm(null, btn.dataset.zone || "");
+    } else if (action === "edit-subzone") {
+      const s = subzones.find(x => String(x.id) === String(id));
+      if (s) openSubzoneForm(s);
+    } else if (action === "delete-subzone") {
+      await deleteSubzone(id);
+    } else if (action === "new-location") {
+      openLocationForm(null, btn.dataset.zone || "", btn.dataset.subzone || "");
+    } else if (action === "edit-location") {
+      const l = locations.find(x => String(x.id) === String(id));
+      if (l) openLocationForm(l);
+    } else if (action === "delete-location") {
+      await deleteLocation(id);
     }
-    if (ws[`L${r}`]) ws[`L${r}`].z = "#,##0.00";
-    if (ws[`N${r}`]) ws[`N${r}`].z = "#,##0.00";
-  }
-
-  ws["!autofilter"] = { ref: `A1:O${rows.length + 1}` };
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, sheetName);
-
-  const date = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `${filePrefix}_${date}.xlsx`, { bookType: "xlsx", compression: true });
-}
-
-function exportPurchaseReportXlsx() {
-  exportReportXlsx({
-    onlyShortage: true,
-    sheetName: "Reporte de compra",
-    filePrefix: "reporte_compra_fablab",
   });
-}
 
-function exportInventoryReportXlsx() {
-  exportReportXlsx({
-    onlyShortage: false,
-    sheetName: "Inventario filtrado",
-    filePrefix: "inventario_filtrado_fablab",
+  $("#adminItems").addEventListener("click", async e => {
+    const btn = e.target.closest("[data-item-action]");
+    if (!btn) return;
+    const item = adminItemsCache.find(x => String(x.id) === String(btn.dataset.id));
+    if (!item) return;
+
+    if (btn.dataset.itemAction === "edit") openItemForm(item);
+    if (btn.dataset.itemAction === "deactivate") await deactivateItem(item.id);
+    if (btn.dataset.itemAction === "delete") await deleteItem(item.id);
   });
-}
-
-
-async function createTechnician(e) {
-  e.preventDefault();
-  const body = {
-    nombre: $("#tecNombre").value.trim(),
-    correo: $("#tecCorreo").value.trim(),
-    password: $("#tecPassword").value,
-  };
-  const res = await apiFetch("/api/users/technicians", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  await res.json();
-  alert("Técnico creado.");
-  $("#technicianForm").reset();
-}
-
-async function importCsv(e) {
-  e.preventDefault();
-  const form = new FormData();
-  if (!$("#csvFile").files.length) return alert("Selecciona un CSV.");
-  form.append("csv_file", $("#csvFile").files[0]);
-  if ($("#assetsZip").files.length) form.append("assets_zip", $("#assetsZip").files[0]);
-  const res = await apiFetch("/api/import/inventory-csv", { method: "POST", body: form });
-  const data = await res.json();
-  $("#importResult").textContent = JSON.stringify(data, null, 2);
-  await renderItems();
 }
 
 async function init() {
   await requireRole(["admin"]);
   await loadBase();
-  fillReportFilterSelects();
-  await renderLocations();
-  await renderItems();
-
-  $("#itemZone").addEventListener("change", () => { refreshSubzoneSelect("#itemSubzone", $("#itemZone").value); refreshLocationSelects(); });
-  $("#itemSubzone").addEventListener("change", refreshLocationSelects);
-  $("#itemTipo").addEventListener("change", () => applyDefaultsForSelectedType(false));
-  $("#locationZone").addEventListener("change", () => { refreshSubzoneSelect("#locationSubzone", $("#locationZone").value); refreshLocationSelects(); });
-  $("#locationSubzone").addEventListener("change", refreshLocationSelects);
-
-  $("#locationForm").addEventListener("submit", saveLocation);
-  $("#clearLocationForm").addEventListener("click", clearLocationForm);
-  $("#itemForm").addEventListener("submit", saveItem);
-  $("#clearItemForm").addEventListener("click", clearItemForm);
-  $("#technicianForm").addEventListener("submit", createTechnician);
-  $("#importForm").addEventListener("submit", importCsv);
-  $("#reportZone")?.addEventListener("change", () => {
-    if ($("#reportSubzone")) $("#reportSubzone").value = "";
-    if ($("#reportLocation")) $("#reportLocation").value = "";
-    refreshReportFilterOptions();
-  });
-  $("#reportSubzone")?.addEventListener("change", () => {
-    if ($("#reportLocation")) $("#reportLocation").value = "";
-    refreshReportFilterOptions();
-  });
-  $("#reportLocation")?.addEventListener("change", () => updatePurchaseReportSummary(adminItemsCache));
-  $("#clearReportFilters")?.addEventListener("click", clearReportFilters);
-  $("#exportPurchaseReport")?.addEventListener("click", exportPurchaseReportXlsx);
-  $("#exportInventoryReport")?.addEventListener("click", exportInventoryReportXlsx);
+  await loadItems();
+  renderStructure();
+  renderItems();
+  updateStats();
+  bindEvents();
 }
 
-init().catch(err => alert(err.message));
+init().catch(err => {
+  console.error(err);
+  alert(err?.message || "No se pudo cargar la administración.");
+});
