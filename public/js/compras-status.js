@@ -16,6 +16,7 @@ const PURCHASE_STATUS_RECEIVED = "received";
 
 const itemsById = new Map();
 let decorationQueued = false;
+let purchaseStatusFilter = "all";
 
 function num(value) {
   const parsed = Number(value);
@@ -142,7 +143,68 @@ function queueDecorations() {
   queueMicrotask(() => {
     decorationQueued = false;
     decorateVisibleCards();
+    applyPurchaseStatusFilter();
   });
+}
+
+function addStatusFilter() {
+  if (document.querySelector("#filterPurchaseStatus")) return;
+
+  const filterCardBody = document.querySelector(".filter-card .card-body");
+  if (!filterCardBody) return;
+
+  const toolbar = filterCardBody.querySelector(".filter-toolbar");
+  if (!toolbar) return;
+
+  const row = document.createElement("div");
+  row.id = "purchaseStatusFilterRow";
+  row.className = "row g-3 align-items-end mt-1";
+  row.innerHTML = `
+    <div class="col-lg-4 col-md-6 ms-lg-auto">
+      <label class="form-label small mb-1" for="filterPurchaseStatus">Estado de compra</label>
+      <select id="filterPurchaseStatus" class="form-select filter-input">
+        <option value="all" selected>Todos los estados</option>
+        <option value="missing">Falta comprar</option>
+        <option value="ordered">En compras</option>
+        <option value="complete">Inventario completo</option>
+      </select>
+    </div>`;
+
+  toolbar.parentNode.insertBefore(row, toolbar);
+
+  const select = row.querySelector("#filterPurchaseStatus");
+  select.addEventListener("change", () => {
+    purchaseStatusFilter = select.value || "all";
+    applyPurchaseStatusFilter();
+  });
+
+  document.querySelector("#clearFilters")?.addEventListener("click", () => {
+    purchaseStatusFilter = "all";
+    select.value = "all";
+    queueMicrotask(() => applyPurchaseStatusFilter());
+  });
+}
+
+function matchesPurchaseStatusFilter(item) {
+  if (purchaseStatusFilter === "all") return true;
+  return purchaseVisualState(item).key === purchaseStatusFilter;
+}
+
+function applyPurchaseStatusFilter() {
+  const cards = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")];
+  let visible = 0;
+
+  cards.forEach(card => {
+    const item = itemsById.get(card.dataset.itemId);
+    const show = Boolean(item) && matchesPurchaseStatusFilter(item);
+    card.classList.toggle("d-none", !show);
+    if (show) visible += 1;
+  });
+
+  const resultCount = document.querySelector("#resultCount");
+  if (resultCount) {
+    resultCount.textContent = `${visible} resultado${visible === 1 ? "" : "s"}`;
+  }
 }
 
 function addLegend() {
@@ -218,6 +280,7 @@ async function sendToPurchases(itemId, button) {
       delete card.dataset.purchaseStatusSignature;
       decorateCard(card);
     }
+    applyPurchaseStatusFilter();
   } catch (error) {
     console.error(error);
     alert(`No se pudo mandar el item a Compras: ${error.message}`);
@@ -324,10 +387,12 @@ async function initPurchaseStatusFlow() {
   if (profile?.role !== "admin") return;
 
   await loadAdminItems();
+  addStatusFilter();
   addLegend();
   bindPurchaseActions();
   observePurchaseCards();
   decorateVisibleCards();
+  applyPurchaseStatusFilter();
 }
 
 initPurchaseStatusFlow().catch(error => {
