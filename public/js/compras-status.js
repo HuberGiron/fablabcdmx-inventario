@@ -13,51 +13,86 @@ import {
 
 const PURCHASE_STATUS_ORDERED = "ordered";
 const PURCHASE_STATUS_RECEIVED = "received";
-
-const PURCHASE_CATEGORIES = [
-  "Mobiliario",
-  "Cómputo",
-  "Máquinas",
-  "Consumibles, accesorios, equipo auxiliar, otros",
-];
-
-const PURCHASE_CATEGORY_ORDER = Object.fromEntries(
-  PURCHASE_CATEGORIES.map((category, index) => [category, index + 1])
-);
+const ALLOWED_ROLES = new Set(["admin", "supervisor"]);
 
 const itemsById = new Map();
-let decorationQueued = false;
-let purchaseStatusFilter = "all";
-let effectiveFilteredItems = [];
+let currentAccessRole = "";
+let enhancementQueued = false;
+let observer = null;
+
+// Evita que una vista no autorizada alcance a mostrar el contenido de Compras
+// mientras Firebase resuelve la sesión y el perfil.
+document.documentElement.classList.add("purchase-access-pending");
+
+function injectStyles() {
+  if (document.querySelector("#purchaseWorkflowStyles")) return;
+  const style = document.createElement("style");
+  style.id = "purchaseWorkflowStyles";
+  style.textContent = `
+    html.purchase-access-pending body { visibility: hidden; }
+
+    .purchase-status-controls {
+      margin-top: 1rem;
+      padding: .9rem 1rem;
+      border: 1px solid transparent;
+      border-left-width: 6px;
+      border-radius: .7rem;
+    }
+    .purchase-state-missing {
+      background: #f8d7da;
+      border-color: #dc3545;
+    }
+    .purchase-state-ordered {
+      background: #fff3cd;
+      border-color: #f0ad00;
+    }
+    .purchase-state-complete {
+      background: #d1e7dd;
+      border-color: #198754;
+    }
+    .purchase-status-controls .purchase-status-text {
+      color: #343a40;
+    }
+
+    .purchase-priority-box {
+      min-width: 150px;
+      padding: .55rem .7rem;
+      border: 1px solid #dee2e6;
+      border-radius: .65rem;
+      background: #fff;
+      text-align: right;
+    }
+    .purchase-priority-box .form-select {
+      min-width: 125px;
+    }
+    .purchase-priority-label {
+      display: block;
+      margin-bottom: .25rem;
+      color: #6c757d;
+      font-size: .75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .02em;
+    }
+    .priority-badge {
+      font-size: .78rem;
+      padding: .45rem .65rem;
+    }
+
+    #purchaseStatusFilterRow .form-select {
+      min-height: 42px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function revealPage() {
+  document.documentElement.classList.remove("purchase-access-pending");
+}
 
 function num(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function esc(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function normalizeForCompare(value) {
-  return String(value || "")
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
-
-function normalizeTipo(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "Otro";
-  const comparable = normalizeForCompare(raw);
-  if (comparable === "maquina") return "Máquina";
-  return raw;
 }
 
 function currentInventory(item) {
@@ -68,13 +103,33 @@ function quantityToBuy(item) {
   return Math.max(num(item.inventarioDeseado) - currentInventory(item), 0);
 }
 
+function itemPriority(item) {
+  const value = Number(item?.purchasePriority);
+  return [1, 2, 3].includes(value) ? value : 3;
+}
+
+function priorityLabel(priority) {
+  const p = Number(priority);
+  if (p === 1) return "Prioridad 1 · Alta";
+  if (p === 2) return "Prioridad 2 · Media";
+  return "Prioridad 3 · Normal";
+}
+
+function priorityBadgeClass(priority) {
+  const p = Number(priority);
+  if (p === 1) return "text-bg-danger";
+  if (p === 2) return "text-bg-warning";
+  return "text-bg-secondary";
+}
+
 function purchaseVisualState(item) {
   const missing = quantityToBuy(item);
 
   if (missing <= 0) {
     return {
       key: "complete",
-      borderClass: "border-success",
+      cardBorderClass: "border-success",
+      bandClass: "purchase-state-complete",
       badgeClass: "text-bg-success",
       label: "Inventario completo",
       missing: 0,
@@ -84,7 +139,8 @@ function purchaseVisualState(item) {
   if (item.purchaseStatus === PURCHASE_STATUS_ORDERED) {
     return {
       key: "ordered",
-      borderClass: "border-warning",
+      cardBorderClass: "border-warning",
+      bandClass: "purchase-state-ordered",
       badgeClass: "text-bg-warning",
       label: "En compras",
       missing,
@@ -93,27 +149,284 @@ function purchaseVisualState(item) {
 
   return {
     key: "missing",
-    borderClass: "border-danger",
+    cardBorderClass: "border-danger",
+    bandClass: "purchase-state-missing",
     badgeClass: "text-bg-danger",
-    label: "Faltante",
+    label: "Falta comprar",
     missing,
   };
 }
 
-function purchaseCategory(tipo) {
-  const normalized = normalizeTipo(tipo);
-  if (normalized === "Mobiliario") return "Mobiliario";
-  if (normalized === "Cómputo") return "Cómputo";
-  if (normalized === "Máquina" || normalized === "Herramienta") return "Máquinas";
-  return "Consumibles, accesorios, equipo auxiliar, otros";
+function purchaseStatusLabel(item) {
+  return purchaseVisualState(item).label;
 }
 
 function pluralPieces(value) {
   return `${value} pieza${Number(value) === 1 ? "" : "s"}`;
 }
 
+function statusControlsHtml(item, state) {
+  const current = currentInventory(item);
+  const desired = num(item.inventarioDeseado);
+
+  if (state.key === "complete") {
+    return `
+      <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <span class="badge ${state.badgeClass}">${state.label}</span>
+          <span class="purchase-status-text">Inventario actual: <strong>${current}</strong> / deseado: <strong>${desired}</strong></span>
+        </div>
+      </div>`;
+  }
+
+  if (state.key === "ordered") {
+    const requested = num(item.purchaseRequestedQty) || state.missing;
+    return `
+      <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <span class="badge ${state.badgeClass}">${state.label}</span>
+          <span class="purchase-status-text">Faltan ${pluralPieces(state.missing)} · Solicitud enviada: ${pluralPieces(requested)}</span>
+        </div>
+        <button type="button" class="btn btn-warning purchase-received-btn" data-id="${item.id}">Ya llegó</button>
+      </div>`;
+  }
+
+  return `
+    <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <span class="badge ${state.badgeClass}">${state.label}</span>
+        <span class="purchase-status-text">Faltan ${pluralPieces(state.missing)} para completar el inventario deseado</span>
+      </div>
+      <button type="button" class="btn btn-danger purchase-send-btn" data-id="${item.id}">Mandar a comprar</button>
+    </div>`;
+}
+
+function priorityControlHtml(item) {
+  const priority = itemPriority(item);
+
+  if (currentAccessRole === "admin") {
+    return `
+      <div class="purchase-priority-box">
+        <label class="purchase-priority-label" for="priority-${item.id}">Prioridad de compra</label>
+        <select id="priority-${item.id}" class="form-select form-select-sm purchase-priority-select" data-id="${item.id}" aria-label="Prioridad de compra">
+          <option value="1" ${priority === 1 ? "selected" : ""}>1 · Alta</option>
+          <option value="2" ${priority === 2 ? "selected" : ""}>2 · Media</option>
+          <option value="3" ${priority === 3 ? "selected" : ""}>3 · Normal</option>
+        </select>
+      </div>`;
+  }
+
+  return `
+    <div class="purchase-priority-box">
+      <span class="purchase-priority-label">Prioridad de compra</span>
+      <span class="badge priority-badge ${priorityBadgeClass(priority)}">${priorityLabel(priority)}</span>
+    </div>`;
+}
+
+function decoratePriority(card, item) {
+  const body = card.querySelector(".card-body");
+  if (!body) return;
+
+  const header = body.querySelector(":scope > .d-flex.justify-content-between");
+  if (!header) return;
+
+  let box = header.querySelector(".purchase-priority-wrapper");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "purchase-priority-wrapper ms-auto";
+    header.appendChild(box);
+  }
+
+  const signature = `${currentAccessRole}|${itemPriority(item)}`;
+  if (box.dataset.signature === signature) return;
+  box.dataset.signature = signature;
+  box.innerHTML = priorityControlHtml(item);
+}
+
+function decorateCard(card) {
+  const itemId = card?.dataset?.itemId;
+  const item = itemsById.get(itemId);
+  if (!item) return;
+
+  if (currentAccessRole === "supervisor") {
+    card.querySelector(".admin-card-actions")?.remove();
+  }
+
+  decoratePriority(card, item);
+
+  const state = purchaseVisualState(item);
+  const signature = [
+    state.key,
+    state.missing,
+    currentInventory(item),
+    num(item.inventarioDeseado),
+    item.purchaseStatus || "",
+    num(item.purchaseRequestedQty),
+  ].join("|");
+
+  card.classList.remove("border-success", "border-warning", "border-danger", "border-2");
+  card.classList.add("border-2", state.cardBorderClass);
+
+  const body = card.querySelector(".card-body");
+  if (!body) return;
+
+  let controls = body.querySelector(".purchase-status-controls");
+  if (!controls) {
+    controls = document.createElement("div");
+    controls.className = "purchase-status-controls";
+    const adminActions = body.querySelector(".admin-card-actions");
+    if (adminActions) body.insertBefore(controls, adminActions);
+    else body.appendChild(controls);
+  }
+
+  controls.classList.remove("purchase-state-missing", "purchase-state-ordered", "purchase-state-complete");
+  controls.classList.add(state.bandClass);
+
+  if (controls.dataset.signature !== signature) {
+    controls.dataset.signature = signature;
+    controls.innerHTML = statusControlsHtml(item, state);
+  }
+}
+
+function addFilters() {
+  if (document.querySelector("#filterPurchaseStatus")) return;
+
+  const filterCardBody = document.querySelector(".filter-card .card-body");
+  const toolbar = filterCardBody?.querySelector(".filter-toolbar");
+  if (!filterCardBody || !toolbar) return;
+
+  const row = document.createElement("div");
+  row.id = "purchaseStatusFilterRow";
+  row.className = "row g-3 align-items-end mt-1";
+  row.innerHTML = `
+    <div class="col-lg-4 col-md-6 ms-lg-auto">
+      <label class="form-label small mb-1" for="filterPurchaseStatus">Estado de compra</label>
+      <select id="filterPurchaseStatus" class="form-select">
+        <option value="all" selected>Todos los estados</option>
+        <option value="missing">Falta comprar</option>
+        <option value="ordered">En compras</option>
+        <option value="complete">Inventario completo / ya llegó</option>
+      </select>
+    </div>
+    <div class="col-lg-4 col-md-6">
+      <label class="form-label small mb-1" for="filterPurchasePriority">Prioridad</label>
+      <select id="filterPurchasePriority" class="form-select">
+        <option value="all" selected>Todas las prioridades</option>
+        <option value="1">Prioridad 1 · Alta</option>
+        <option value="2">Prioridad 2 · Media</option>
+        <option value="3">Prioridad 3 · Normal</option>
+      </select>
+    </div>`;
+
+  toolbar.parentNode.insertBefore(row, toolbar);
+
+  row.querySelectorAll("select").forEach(select => {
+    select.addEventListener("input", () => queueEnhancements());
+    select.addEventListener("change", () => queueEnhancements());
+  });
+
+  document.querySelector("#clearFilters")?.addEventListener("click", () => {
+    setTimeout(() => {
+      const status = document.querySelector("#filterPurchaseStatus");
+      const priority = document.querySelector("#filterPurchasePriority");
+      if (status) status.value = "all";
+      if (priority) priority.value = "all";
+      queueEnhancements();
+    }, 0);
+  });
+}
+
+function addPrioritySortOption() {
+  const sort = document.querySelector("#sortMode");
+  if (!sort || sort.querySelector('option[value="priority"]')) return;
+  const option = document.createElement("option");
+  option.value = "priority";
+  option.textContent = "Prioridad (1 → 3)";
+  sort.appendChild(option);
+  sort.addEventListener("input", () => queueMicrotask(() => queueEnhancements()));
+  sort.addEventListener("change", () => queueMicrotask(() => queueEnhancements()));
+}
+
+function addLegend() {
+  if (document.querySelector("#purchaseStatusLegend")) return;
+  const itemsList = document.querySelector("#itemsList");
+  if (!itemsList?.parentNode) return;
+
+  const legend = document.createElement("div");
+  legend.id = "purchaseStatusLegend";
+  legend.className = "d-flex flex-wrap gap-2 align-items-center mb-3 small";
+  legend.innerHTML = `
+    <span class="fw-semibold me-1">Estado de compra:</span>
+    <span class="badge text-bg-danger">Falta comprar</span>
+    <span class="badge text-bg-warning">En compras</span>
+    <span class="badge text-bg-success">Inventario completo / ya llegó</span>
+    <span class="text-muted ms-md-2">Prioridad: 1 alta · 2 media · 3 normal</span>`;
+  itemsList.parentNode.insertBefore(legend, itemsList);
+}
+
+function currentStatusFilter() {
+  return document.querySelector("#filterPurchaseStatus")?.value || "all";
+}
+
+function currentPriorityFilter() {
+  return document.querySelector("#filterPurchasePriority")?.value || "all";
+}
+
+function matchesExtraFilters(item) {
+  const statusFilter = currentStatusFilter();
+  const priorityFilter = currentPriorityFilter();
+
+  if (statusFilter !== "all" && purchaseVisualState(item).key !== statusFilter) return false;
+  if (priorityFilter !== "all" && String(itemPriority(item)) !== String(priorityFilter)) return false;
+  return true;
+}
+
+function nativeCards() {
+  return [...document.querySelectorAll("#itemsList .item-card[data-item-id]")];
+}
+
+function effectiveRows() {
+  return nativeCards()
+    .map(card => itemsById.get(card.dataset.itemId))
+    .filter(Boolean)
+    .filter(matchesExtraFilters);
+}
+
+function applyCardFiltersAndOrdering() {
+  const cards = nativeCards();
+  let visible = 0;
+
+  cards.forEach(card => {
+    const item = itemsById.get(card.dataset.itemId);
+    const show = Boolean(item) && matchesExtraFilters(item);
+    card.classList.toggle("d-none", !show);
+    if (show) visible += 1;
+  });
+
+  const sort = document.querySelector("#sortMode")?.value || "zone";
+  if (sort === "priority") {
+    const container = document.querySelector("#itemsList");
+    const sorted = [...cards].sort((a, b) => {
+      const ia = itemsById.get(a.dataset.itemId);
+      const ib = itemsById.get(b.dataset.itemId);
+      return itemPriority(ia) - itemPriority(ib);
+    });
+
+    const currentIds = cards.map(c => c.dataset.itemId).join("|");
+    const sortedIds = sorted.map(c => c.dataset.itemId).join("|");
+    if (container && currentIds !== sortedIds) {
+      sorted.forEach(card => container.appendChild(card));
+    }
+  }
+
+  const resultCount = document.querySelector("#resultCount");
+  if (resultCount) {
+    resultCount.textContent = `${visible} resultado${visible === 1 ? "" : "s"}`;
+  }
+}
+
 function formatCurrency(value, currency = "MXN") {
-  const n = Number(value || 0);
+  const n = num(value);
   const code = String(currency || "MXN").toUpperCase();
   try {
     return new Intl.NumberFormat("es-MX", {
@@ -132,107 +445,106 @@ function formatCurrencyWithCode(value, currency = "MXN") {
   return `${formatCurrency(value, code)} ${code}`;
 }
 
-function emptyMoneyTotals() {
-  return {};
+function purchaseCategory(tipo) {
+  const raw = String(tipo || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (raw === "mobiliario") return "Mobiliario";
+  if (raw === "computo") return "Cómputo";
+  if (raw === "maquina" || raw === "herramienta") return "Máquinas";
+  return "Consumibles, accesorios, equipo auxiliar, otros";
 }
 
+const PURCHASE_CATEGORIES = [
+  "Mobiliario",
+  "Cómputo",
+  "Máquinas",
+  "Consumibles, accesorios, equipo auxiliar, otros",
+];
+
 function addMoneyTotal(totals, currency, amount) {
-  const code = String(currency || "MXN").toUpperCase();
-  totals[code] = Number(totals[code] || 0) + Number(amount || 0);
+  const code = currency || "MXN";
+  totals[code] = num(totals[code]) + num(amount);
 }
 
 function formatMoneyTotals(totals) {
-  const entries = Object.entries(totals || {})
-    .filter(([, value]) => Number(value || 0) !== 0)
-    .sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
-
+  const entries = Object.entries(totals || {}).sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
   return entries.length
-    ? entries.map(([currency, total]) => esc(formatCurrencyWithCode(total, currency))).join(" · ")
-    : esc(formatCurrencyWithCode(0, "MXN"));
+    ? entries.map(([currency, total]) => formatCurrencyWithCode(total, currency)).join(" · ")
+    : formatCurrencyWithCode(0, "MXN");
 }
 
-function ensureReportGroup(map, key, factory) {
-  if (!map.has(key)) map.set(key, factory());
-  return map.get(key);
-}
-
-function buildPurchaseCategorySummary(rows) {
-  const categories = new Map();
+function buildCategorySummary(rows) {
+  const groups = new Map();
+  PURCHASE_CATEGORIES.forEach((category, index) => groups.set(category, {
+    category,
+    sort: index,
+    totals: {},
+    qty: 0,
+    items: 0,
+  }));
 
   rows.forEach(item => {
-    const qty = quantityToBuy(item);
-    if (qty <= 0) return;
-
     const category = purchaseCategory(item.tipo);
+    const group = groups.get(category);
+    const qty = quantityToBuy(item);
     const currency = item.moneda || "MXN";
     const subtotal = qty * num(item.precioUnitario);
-    const group = ensureReportGroup(categories, category, () => ({
-      category,
-      sort: PURCHASE_CATEGORY_ORDER[category] || 99,
-      totals: emptyMoneyTotals(),
-      qty: 0,
-      items: 0,
-    }));
-
-    addMoneyTotal(group.totals, currency, subtotal);
-    group.qty += qty;
     group.items += 1;
+    group.qty += qty;
+    addMoneyTotal(group.totals, currency, subtotal);
   });
 
-  return PURCHASE_CATEGORIES.map(category =>
-    categories.get(category) || {
-      category,
-      sort: PURCHASE_CATEGORY_ORDER[category] || 99,
-      totals: emptyMoneyTotals(),
-      qty: 0,
-      items: 0,
-    }
-  );
+  return [...groups.values()].sort((a, b) => a.sort - b.sort);
 }
 
-function buildPurchaseBreakdown(rows) {
+function buildBreakdown(rows) {
   const zoneMap = new Map();
 
   rows.forEach(item => {
-    const qty = quantityToBuy(item);
-    if (qty <= 0) return;
-
-    const currency = item.moneda || "MXN";
-    const subtotal = qty * num(item.precioUnitario);
     const zoneId = String(item.zoneId || "s/z");
     const subzoneId = String(item.subzoneId || "s/s");
     const category = purchaseCategory(item.tipo);
+    const qty = quantityToBuy(item);
+    const currency = item.moneda || "MXN";
+    const subtotal = qty * num(item.precioUnitario);
 
-    const zone = ensureReportGroup(zoneMap, zoneId, () => ({
-      zoneId,
-      zoneName: item.zoneName || "Sin zona",
-      totals: emptyMoneyTotals(),
-      qty: 0,
-      items: 0,
-      subzones: new Map(),
-    }));
+    if (!zoneMap.has(zoneId)) {
+      zoneMap.set(zoneId, {
+        zoneId,
+        zoneName: item.zoneName || "Sin zona",
+        totals: {},
+        qty: 0,
+        items: 0,
+        subzones: new Map(),
+      });
+    }
+    const zone = zoneMap.get(zoneId);
 
-    const subzone = ensureReportGroup(zone.subzones, subzoneId, () => ({
-      subzoneId,
-      subzoneName: item.subzoneName || "Sin subzona",
-      totals: emptyMoneyTotals(),
-      qty: 0,
-      items: 0,
-      categories: new Map(),
-    }));
+    if (!zone.subzones.has(subzoneId)) {
+      zone.subzones.set(subzoneId, {
+        subzoneId,
+        subzoneName: item.subzoneName || "Sin subzona",
+        totals: {},
+        qty: 0,
+        items: 0,
+        categories: new Map(),
+      });
+    }
+    const subzone = zone.subzones.get(subzoneId);
 
-    const cat = ensureReportGroup(subzone.categories, category, () => ({
-      category,
-      sort: PURCHASE_CATEGORY_ORDER[category] || 99,
-      totals: emptyMoneyTotals(),
-      qty: 0,
-      items: 0,
-    }));
+    if (!subzone.categories.has(category)) {
+      subzone.categories.set(category, {
+        category,
+        totals: {},
+        qty: 0,
+        items: 0,
+      });
+    }
+    const cat = subzone.categories.get(category);
 
     [zone, subzone, cat].forEach(group => {
-      addMoneyTotal(group.totals, currency, subtotal);
-      group.qty += qty;
       group.items += 1;
+      group.qty += qty;
+      addMoneyTotal(group.totals, currency, subtotal);
     });
   });
 
@@ -244,56 +556,70 @@ function buildPurchaseBreakdown(rows) {
         .sort((a, b) => String(a.subzoneId).localeCompare(String(b.subzoneId), "es", { numeric: true }))
         .map(subzone => ({
           ...subzone,
-          categories: [...subzone.categories.values()]
-            .sort((a, b) => a.sort - b.sort || String(a.category).localeCompare(String(b.category), "es")),
+          categories: [...subzone.categories.values()].sort((a, b) =>
+            PURCHASE_CATEGORIES.indexOf(a.category) - PURCHASE_CATEGORIES.indexOf(b.category)
+          ),
         })),
     }));
 }
 
-function renderPurchaseCategorySummary(rows) {
-  const summary = buildPurchaseCategorySummary(rows);
-  return `
-    <div class="purchase-category-summary" aria-label="Totales por categoría">
-      ${summary.map(cat => `
-        <div class="purchase-category-summary-card">
-          <div class="purchase-category-summary-label">${esc(cat.category)}</div>
-          <div class="purchase-category-summary-total">${formatMoneyTotals(cat.totals)}</div>
-          <div class="purchase-category-summary-meta">${cat.items} item${cat.items === 1 ? "" : "s"} · ${cat.qty} pieza${cat.qty === 1 ? "" : "s"}</div>
-        </div>`).join("")}
-    </div>`;
-}
+function recalculateSummaryAndReport() {
+  const rows = effectiveRows();
+  const totalsEl = document.querySelector("#purchaseSummaryTotals");
+  const metaEl = document.querySelector("#purchaseSummaryMeta");
 
-function renderEffectivePurchaseBreakdown(rows) {
-  const target = document.querySelector("#purchaseBreakdownReport");
-  if (!target) return;
+  const totals = {};
+  let totalQty = 0;
+  rows.forEach(item => {
+    const qty = quantityToBuy(item);
+    totalQty += qty;
+    addMoneyTotal(totals, item.moneda || "MXN", qty * num(item.precioUnitario));
+  });
 
-  const breakdown = buildPurchaseBreakdown(rows);
-  if (!breakdown.length) {
-    target.innerHTML = '<p class="purchase-report-empty">No hay elementos con cantidad sugerida a comprar dentro del filtro actual.</p>';
+  if (totalsEl) totalsEl.textContent = formatMoneyTotals(totals);
+  if (metaEl) {
+    metaEl.textContent = `${rows.length} elemento${rows.length === 1 ? "" : "s"} en el filtro · ${totalQty} pieza${totalQty === 1 ? "" : "s"} sugerida${totalQty === 1 ? "" : "s"} a comprar`;
+  }
+
+  const report = document.querySelector("#purchaseBreakdownReport");
+  if (!report) return;
+
+  if (!rows.length) {
+    report.innerHTML = '<p class="purchase-report-empty">No hay elementos dentro del filtro actual.</p>';
     return;
   }
 
-  target.innerHTML = `
-    ${renderPurchaseCategorySummary(rows)}
+  const categories = buildCategorySummary(rows);
+  const breakdown = buildBreakdown(rows);
+
+  report.innerHTML = `
+    <div class="purchase-category-summary" aria-label="Totales por categoría">
+      ${categories.map(cat => `
+        <div class="purchase-category-summary-card">
+          <div class="purchase-category-summary-label">${cat.category}</div>
+          <div class="purchase-category-summary-total">${formatMoneyTotals(cat.totals)}</div>
+          <div class="purchase-category-summary-meta">${cat.items} item${cat.items === 1 ? "" : "s"} · ${cat.qty} pieza${cat.qty === 1 ? "" : "s"} sugerida${cat.qty === 1 ? "" : "s"}</div>
+        </div>`).join("")}
+    </div>
     <div class="purchase-report-grid">
       ${breakdown.map(zone => `
         <section class="purchase-zone-report">
           <div class="purchase-zone-header">
-            <h3 class="purchase-zone-title">Zona ${esc(zone.zoneId)} · ${esc(zone.zoneName)}</h3>
+            <h3 class="purchase-zone-title">Zona ${zone.zoneId} · ${zone.zoneName}</h3>
             <div class="purchase-zone-total">${formatMoneyTotals(zone.totals)}</div>
           </div>
           <div class="purchase-subzone-list">
             ${zone.subzones.map(subzone => `
               <div class="purchase-subzone-report">
                 <div class="purchase-subzone-header">
-                  <div class="purchase-subzone-title">Subzona ${esc(subzone.subzoneId)} · ${esc(subzone.subzoneName)}</div>
+                  <div class="purchase-subzone-title">Subzona ${subzone.subzoneId} · ${subzone.subzoneName}</div>
                   <div class="purchase-subzone-total">${formatMoneyTotals(subzone.totals)}</div>
                 </div>
                 <div class="purchase-category-table">
                   ${subzone.categories.map(cat => `
                     <div class="purchase-category-row">
                       <div>
-                        <div class="purchase-category-name">${esc(cat.category)}</div>
+                        <div class="purchase-category-name">${cat.category}</div>
                         <div class="purchase-category-meta">${cat.items} item${cat.items === 1 ? "" : "s"} · ${cat.qty} pieza${cat.qty === 1 ? "" : "s"} sugerida${cat.qty === 1 ? "" : "s"}</div>
                       </div>
                       <div class="purchase-category-total">${formatMoneyTotals(cat.totals)}</div>
@@ -305,210 +631,15 @@ function renderEffectivePurchaseBreakdown(rows) {
     </div>`;
 }
 
-function updateEffectivePurchaseSummary(rows) {
-  const totalsEl = document.querySelector("#purchaseSummaryTotals");
-  const metaEl = document.querySelector("#purchaseSummaryMeta");
-  if (!totalsEl || !metaEl) return;
-
-  const groups = {};
-  rows.forEach(item => {
-    const qty = quantityToBuy(item);
-    const currency = String(item.moneda || "MXN").toUpperCase();
-    if (!groups[currency]) groups[currency] = { total: 0, quantity: 0 };
-    groups[currency].total += qty * num(item.precioUnitario);
-    groups[currency].quantity += qty;
-  });
-
-  const entries = Object.entries(groups).sort(([a], [b]) => a.localeCompare(b, "es"));
-  totalsEl.innerHTML = entries.length
-    ? entries.map(([currency, data]) => esc(formatCurrencyWithCode(data.total, currency))).join(" · ")
-    : esc(formatCurrencyWithCode(0, "MXN"));
-
-  const totalQty = entries.reduce((sum, [, data]) => sum + data.quantity, 0);
-  metaEl.textContent = `${rows.length} elemento${rows.length === 1 ? "" : "s"} seleccionado${rows.length === 1 ? "" : "s"} por el filtro · ${totalQty} pieza${totalQty === 1 ? "" : "s"} sugerida${totalQty === 1 ? "" : "s"} a comprar`;
-
-  renderEffectivePurchaseBreakdown(rows);
-}
-
-function statusControlsHtml(item, state) {
-  const current = currentInventory(item);
-  const desired = num(item.inventarioDeseado);
-
-  if (state.key === "complete") {
-    return `
-      <div class="d-flex flex-wrap gap-2 align-items-center">
-        <span class="badge ${state.badgeClass}">${state.label}</span>
-        <span class="small text-muted">Inventario actual: <strong>${current}</strong> / deseado: <strong>${desired}</strong></span>
-      </div>`;
-  }
-
-  if (state.key === "ordered") {
-    const requested = num(item.purchaseRequestedQty) || state.missing;
-    return `
-      <div class="d-flex flex-wrap gap-2 align-items-center">
-        <span class="badge ${state.badgeClass}">${state.label}</span>
-        <span class="small text-muted">Faltan ${pluralPieces(state.missing)} · Solicitud enviada: ${pluralPieces(requested)}</span>
-        <button type="button" class="btn btn-sm btn-warning purchase-received-btn" data-id="${esc(item.id)}">Ya llegó</button>
-      </div>`;
-  }
-
-  return `
-    <div class="d-flex flex-wrap gap-2 align-items-center">
-      <span class="badge ${state.badgeClass}">${state.label}</span>
-      <span class="small text-muted">Faltan ${pluralPieces(state.missing)} para completar el inventario deseado</span>
-      <button type="button" class="btn btn-sm btn-danger purchase-send-btn" data-id="${esc(item.id)}">Mandar a comprar</button>
-    </div>`;
-}
-
-function decorateCard(card) {
-  const itemId = card?.dataset?.itemId;
-  const item = itemsById.get(itemId);
-  if (!item) return;
-
-  const state = purchaseVisualState(item);
-  const signature = [
-    state.key,
-    state.missing,
-    currentInventory(item),
-    num(item.inventarioDeseado),
-    item.purchaseStatus || "",
-    num(item.purchaseRequestedQty),
-  ].join("|");
-
-  if (card.dataset.purchaseStatusSignature === signature) return;
-  card.dataset.purchaseStatusSignature = signature;
-
-  card.classList.remove("border-success", "border-warning", "border-danger", "border-2");
-  card.classList.add("border-2", state.borderClass);
-
-  const body = card.querySelector(".card-body");
-  if (!body) return;
-
-  let controls = body.querySelector(".purchase-status-controls");
-  if (!controls) {
-    controls = document.createElement("div");
-    controls.className = "purchase-status-controls mt-3 pt-3 border-top";
-    const adminActions = body.querySelector(".admin-card-actions");
-    if (adminActions) body.insertBefore(controls, adminActions);
-    else body.appendChild(controls);
-  }
-
-  controls.innerHTML = statusControlsHtml(item, state);
-}
-
-function decorateVisibleCards() {
-  document.querySelectorAll("#itemsList .item-card[data-item-id]").forEach(decorateCard);
-}
-
-function queueDecorations() {
-  if (decorationQueued) return;
-  decorationQueued = true;
+function queueEnhancements() {
+  if (enhancementQueued) return;
+  enhancementQueued = true;
   queueMicrotask(() => {
-    decorationQueued = false;
-    decorateVisibleCards();
-    applyPurchaseStatusFilter();
+    enhancementQueued = false;
+    nativeCards().forEach(decorateCard);
+    applyCardFiltersAndOrdering();
+    recalculateSummaryAndReport();
   });
-}
-
-function addStatusFilter() {
-  const existing = document.querySelector("#filterPurchaseStatus");
-  if (existing) {
-    purchaseStatusFilter = existing.value || "all";
-    existing.addEventListener("change", () => {
-      purchaseStatusFilter = existing.value || "all";
-      applyPurchaseStatusFilter();
-    });
-    return;
-  }
-
-  const filterCardBody = document.querySelector(".filter-card .card-body");
-  if (!filterCardBody) return;
-
-  const toolbar = filterCardBody.querySelector(".filter-toolbar");
-  if (!toolbar) return;
-
-  const row = document.createElement("div");
-  row.id = "purchaseStatusFilterRow";
-  row.className = "row g-3 align-items-end mt-1";
-  row.innerHTML = `
-    <div class="col-lg-4 col-md-6 ms-lg-auto">
-      <label class="form-label small mb-1" for="filterPurchaseStatus">Estado de compra</label>
-      <select id="filterPurchaseStatus" class="form-select filter-input">
-        <option value="all" selected>Todos los estados</option>
-        <option value="missing">Falta comprar</option>
-        <option value="ordered">En compras</option>
-        <option value="complete">Inventario completo</option>
-      </select>
-    </div>`;
-
-  toolbar.parentNode.insertBefore(row, toolbar);
-
-  const select = row.querySelector("#filterPurchaseStatus");
-  select.addEventListener("change", () => {
-    purchaseStatusFilter = select.value || "all";
-    applyPurchaseStatusFilter();
-  });
-
-  document.querySelector("#clearFilters")?.addEventListener("click", () => {
-    queueMicrotask(() => {
-      purchaseStatusFilter = "all";
-      select.value = "all";
-      applyPurchaseStatusFilter();
-    });
-  });
-}
-
-function matchesPurchaseStatusFilter(item) {
-  if (purchaseStatusFilter === "all") return true;
-  return purchaseVisualState(item).key === purchaseStatusFilter;
-}
-
-function collectEffectiveItems() {
-  const cards = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")];
-  return cards
-    .map(card => itemsById.get(card.dataset.itemId))
-    .filter(item => Boolean(item) && matchesPurchaseStatusFilter(item));
-}
-
-function applyPurchaseStatusFilter() {
-  const cards = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")];
-  let visible = 0;
-  const effective = [];
-
-  cards.forEach(card => {
-    const item = itemsById.get(card.dataset.itemId);
-    const show = Boolean(item) && matchesPurchaseStatusFilter(item);
-    card.classList.toggle("d-none", !show);
-    if (show) {
-      visible += 1;
-      effective.push(item);
-    }
-  });
-
-  effectiveFilteredItems = effective;
-
-  const resultCount = document.querySelector("#resultCount");
-  if (resultCount) {
-    resultCount.textContent = `${visible} resultado${visible === 1 ? "" : "s"}`;
-  }
-
-  updateEffectivePurchaseSummary(effectiveFilteredItems);
-}
-
-function addLegend() {
-  if (document.querySelector("#purchaseStatusLegend")) return;
-  const itemsList = document.querySelector("#itemsList");
-  if (!itemsList?.parentNode) return;
-
-  const legend = document.createElement("div");
-  legend.id = "purchaseStatusLegend";
-  legend.className = "d-flex flex-wrap gap-2 align-items-center mb-3 small";
-  legend.innerHTML = `
-    <span class="fw-semibold me-1">Estado:</span>
-    <span class="badge text-bg-danger">Falta comprar</span>
-    <span class="badge text-bg-warning">En compras</span>
-    <span class="badge text-bg-success">Inventario completo</span>`;
-  itemsList.parentNode.insertBefore(legend, itemsList);
 }
 
 async function fetchLiveItem(itemId) {
@@ -538,8 +669,7 @@ async function sendToPurchases(itemId, button) {
 
     if (missing <= 0) {
       itemsById.set(itemId, item);
-      decorateCard(document.querySelector(`.item-card[data-item-id="${CSS.escape(itemId)}"]`));
-      applyPurchaseStatusFilter();
+      queueEnhancements();
       alert("Este item ya tiene completo su inventario deseado.");
       return;
     }
@@ -563,13 +693,7 @@ async function sendToPurchases(itemId, button) {
       purchaseStatus: PURCHASE_STATUS_ORDERED,
       purchaseRequestedQty: missing,
     });
-
-    const card = document.querySelector(`.item-card[data-item-id="${CSS.escape(itemId)}"]`);
-    if (card) {
-      delete card.dataset.purchaseStatusSignature;
-      decorateCard(card);
-    }
-    applyPurchaseStatusFilter();
+    queueEnhancements();
   } catch (error) {
     console.error(error);
     alert(`No se pudo mandar el item a Compras: ${error.message}`);
@@ -586,12 +710,7 @@ async function markAsReceived(itemId, button) {
 
     if (item.purchaseStatus !== PURCHASE_STATUS_ORDERED) {
       itemsById.set(itemId, item);
-      const card = document.querySelector(`.item-card[data-item-id="${CSS.escape(itemId)}"]`);
-      if (card) {
-        delete card.dataset.purchaseStatusSignature;
-        decorateCard(card);
-      }
-      applyPurchaseStatusFilter();
+      queueEnhancements();
       alert("Este item ya no está marcado como 'En compras'. Se actualizó la tarjeta con el estado actual.");
       return;
     }
@@ -632,6 +751,32 @@ async function markAsReceived(itemId, button) {
   }
 }
 
+async function updatePriority(itemId, select) {
+  if (currentAccessRole !== "admin") return;
+
+  const priority = Number(select.value);
+  if (![1, 2, 3].includes(priority)) return;
+
+  select.disabled = true;
+  try {
+    await updateDoc(doc(db, "items", itemId), {
+      purchasePriority: priority,
+      updatedAt: serverTimestamp(),
+    });
+
+    const current = itemsById.get(itemId) || await fetchLiveItem(itemId);
+    itemsById.set(itemId, { ...current, purchasePriority: priority });
+    queueEnhancements();
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo cambiar la prioridad: ${error.message}`);
+    const item = itemsById.get(itemId);
+    if (item) select.value = String(itemPriority(item));
+  } finally {
+    select.disabled = false;
+  }
+}
+
 function bindPurchaseActions() {
   const itemsList = document.querySelector("#itemsList");
   if (!itemsList) return;
@@ -648,14 +793,11 @@ function bindPurchaseActions() {
       markAsReceived(receivedButton.dataset.id, receivedButton);
     }
   });
-}
 
-function observePurchaseCards() {
-  const itemsList = document.querySelector("#itemsList");
-  if (!itemsList) return;
-
-  const observer = new MutationObserver(() => queueDecorations());
-  observer.observe(itemsList, { childList: true, subtree: true });
+  itemsList.addEventListener("change", event => {
+    const select = event.target.closest(".purchase-priority-select");
+    if (select) updatePriority(select.dataset.id, select);
+  });
 }
 
 function cleanXlsxText(value) {
@@ -691,9 +833,7 @@ function applyXlsxMoneyFormat(ws, rowCount, moneyColumns, currencyColumn, startR
   for (let r = startRow; r < startRow + rowCount; r++) {
     const currency = ws?.[`${currencyColumn}${r}`]?.v || "MXN";
     const format = xlsxMoneyFormat(currency);
-    for (const col of moneyColumns) {
-      setXlsxNumericCell(ws, `${col}${r}`, format);
-    }
+    for (const col of moneyColumns) setXlsxNumericCell(ws, `${col}${r}`, format);
   }
 }
 
@@ -701,29 +841,71 @@ function itemAreaCode(item) {
   return item.locationCode || item.areaCode || item.subzoneId || "";
 }
 
-function buildInventoryReportRows(rows) {
+function inventoryReportRows(rows) {
   return rows.map(item => ({
     zona: item.zoneName || "",
     subzona: item.subzoneName || "",
     area_codigo: itemAreaCode(item),
     area: item.locationName || "",
     sku: item.sku || "",
+    tipo: item.tipo || "",
     nombre: item.nombre || "",
-    tipo: normalizeTipo(item.tipo),
+    descripcion: item.descripcion || "",
+    estado_compra: purchaseStatusLabel(item),
+    prioridad: itemPriority(item),
     inventario_actual: currentInventory(item),
     inventario_deseado: num(item.inventarioDeseado),
     cantidad_a_comprar: quantityToBuy(item),
     precio_unitario: num(item.precioUnitario),
     moneda: item.moneda || "MXN",
     subtotal: quantityToBuy(item) * num(item.precioUnitario),
-    descripcion: item.descripcion || "",
     liga_compra: item.purchaseUrl || "",
   }));
 }
 
+function exportVisibleXlsx(rows) {
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
+    return;
+  }
+  if (!rows.length) {
+    alert("No hay elementos para exportar con el filtro seleccionado.");
+    return;
+  }
+
+  const data = inventoryReportRows(rows);
+  const headers = [
+    "Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Descripción",
+    "Estado de compra", "Prioridad", "Inventario actual", "Inventario deseado", "Cantidad a comprar",
+    "Precio unitario", "Moneda", "Subtotal", "Liga de compra",
+  ];
+  const aoa = [headers, ...data.map(row => [
+    cleanXlsxText(row.zona), cleanXlsxText(row.subzona), cleanXlsxText(row.area_codigo), cleanXlsxText(row.area),
+    cleanXlsxText(row.sku), cleanXlsxText(row.tipo), cleanXlsxText(row.nombre), cleanXlsxText(row.descripcion),
+    cleanXlsxText(row.estado_compra), cleanXlsxNumber(row.prioridad), cleanXlsxNumber(row.inventario_actual),
+    cleanXlsxNumber(row.inventario_deseado), cleanXlsxNumber(row.cantidad_a_comprar), cleanXlsxNumber(row.precio_unitario),
+    cleanXlsxText(row.moneda), cleanXlsxNumber(row.subtotal), cleanXlsxText(row.liga_compra),
+  ])];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [
+    { wch: 18 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 36 },
+    { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 },
+  ];
+  for (let r = 2; r <= data.length + 1; r++) {
+    ["J", "K", "L", "M"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
+  }
+  applyXlsxMoneyFormat(ws, data.length, ["N", "P"], "O");
+  ws["!autofilter"] = { ref: `A1:Q${data.length + 1}` };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Inventario filtrado");
+  const date = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `inventario_compras_filtrado_${date}.xlsx`, { bookType: "xlsx", compression: true });
+}
+
 function flattenMoneyTotals(totals) {
-  const entries = Object.entries(totals || {})
-    .sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
+  const entries = Object.entries(totals || {}).sort(([a], [b]) => String(a).localeCompare(String(b), "es"));
   return entries.length ? entries : [["MXN", 0]];
 }
 
@@ -732,76 +914,56 @@ function exportPurchaseReportXlsx(rows) {
     alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
     return;
   }
-
-  const purchasableRows = rows.filter(item => quantityToBuy(item) > 0);
-  if (!purchasableRows.length) {
-    alert("No hay elementos con cantidad sugerida a comprar dentro del filtro actual.");
+  if (!rows.length) {
+    alert("No hay elementos dentro del filtro actual.");
     return;
   }
 
-  const categorySummary = buildPurchaseCategorySummary(purchasableRows);
+  const categorySummary = buildCategorySummary(rows);
   const categoryAoa = [
     ["Categoría", "Items", "Piezas sugeridas", "Moneda", "Total"],
     ...categorySummary.flatMap(cat => flattenMoneyTotals(cat.totals).map(([currency, total]) => [
-      cleanXlsxText(cat.category),
-      cleanXlsxNumber(cat.items),
-      cleanXlsxNumber(cat.qty),
-      cleanXlsxText(currency),
-      cleanXlsxNumber(total),
+      cleanXlsxText(cat.category), cleanXlsxNumber(cat.items), cleanXlsxNumber(cat.qty), cleanXlsxText(currency), cleanXlsxNumber(total),
     ])),
   ];
 
-  const breakdown = buildPurchaseBreakdown(purchasableRows);
+  const breakdown = buildBreakdown(rows);
   const breakdownAoa = [
     ["Zona", "Nombre zona", "Subzona", "Nombre subzona", "Categoría", "Items", "Piezas sugeridas", "Moneda", "Total"],
     ...breakdown.flatMap(zone => zone.subzones.flatMap(subzone => subzone.categories.flatMap(cat =>
       flattenMoneyTotals(cat.totals).map(([currency, total]) => [
-        cleanXlsxText(zone.zoneId),
-        cleanXlsxText(zone.zoneName),
-        cleanXlsxText(subzone.subzoneId),
-        cleanXlsxText(subzone.subzoneName),
-        cleanXlsxText(cat.category),
-        cleanXlsxNumber(cat.items),
-        cleanXlsxNumber(cat.qty),
-        cleanXlsxText(currency),
-        cleanXlsxNumber(total),
+        cleanXlsxText(zone.zoneId), cleanXlsxText(zone.zoneName), cleanXlsxText(subzone.subzoneId), cleanXlsxText(subzone.subzoneName),
+        cleanXlsxText(cat.category), cleanXlsxNumber(cat.items), cleanXlsxNumber(cat.qty), cleanXlsxText(currency), cleanXlsxNumber(total),
       ])
     ))),
   ];
 
-  const detailRows = buildInventoryReportRows(purchasableRows);
+  const detail = inventoryReportRows(rows);
   const detailAoa = [
-    ["Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Inventario actual", "Inventario deseado", "Cantidad a comprar", "Precio unitario", "Moneda", "Subtotal", "Liga de compra"],
-    ...detailRows.map(row => [
-      cleanXlsxText(row.zona),
-      cleanXlsxText(row.subzona),
-      cleanXlsxText(row.area_codigo),
-      cleanXlsxText(row.area),
-      cleanXlsxText(row.sku),
-      cleanXlsxText(row.tipo),
-      cleanXlsxText(row.nombre),
-      cleanXlsxNumber(row.inventario_actual),
-      cleanXlsxNumber(row.inventario_deseado),
-      cleanXlsxNumber(row.cantidad_a_comprar),
-      cleanXlsxNumber(row.precio_unitario),
-      cleanXlsxText(row.moneda),
-      cleanXlsxNumber(row.subtotal),
-      cleanXlsxText(row.liga_compra),
+    ["Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Estado de compra", "Prioridad", "Inventario actual", "Inventario deseado", "Cantidad a comprar", "Precio unitario", "Moneda", "Subtotal", "Liga de compra"],
+    ...detail.map(row => [
+      cleanXlsxText(row.zona), cleanXlsxText(row.subzona), cleanXlsxText(row.area_codigo), cleanXlsxText(row.area), cleanXlsxText(row.sku),
+      cleanXlsxText(row.tipo), cleanXlsxText(row.nombre), cleanXlsxText(row.estado_compra), cleanXlsxNumber(row.prioridad),
+      cleanXlsxNumber(row.inventario_actual), cleanXlsxNumber(row.inventario_deseado), cleanXlsxNumber(row.cantidad_a_comprar),
+      cleanXlsxNumber(row.precio_unitario), cleanXlsxText(row.moneda), cleanXlsxNumber(row.subtotal), cleanXlsxText(row.liga_compra),
     ]),
   ];
 
   const wb = XLSX.utils.book_new();
   const wsCategories = XLSX.utils.aoa_to_sheet(categoryAoa);
-  wsCategories["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
+  wsCategories["!cols"] = [{ wch: 44 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
   applyXlsxMoneyFormat(wsCategories, categoryAoa.length - 1, ["E"], "D");
 
   const wsBreakdown = XLSX.utils.aoa_to_sheet(breakdownAoa);
-  wsBreakdown["!cols"] = [{ wch: 10 }, { wch: 28 }, { wch: 12 }, { wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
+  wsBreakdown["!cols"] = [{ wch: 10 }, { wch: 28 }, { wch: 12 }, { wch: 30 }, { wch: 44 }, { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 16 }];
   applyXlsxMoneyFormat(wsBreakdown, breakdownAoa.length - 1, ["I"], "H");
 
   const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
-  wsDetail["!cols"] = [{ wch: 20 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 }];
-  applyXlsxMoneyFormat(wsDetail, detailAoa.length - 1, ["K", "M"], "L");
+  wsDetail["!cols"] = [
+    { wch: 20 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 24 },
+    { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 },
+  ];
+  applyXlsxMoneyFormat(wsDetail, detailAoa.length - 1, ["M", "O"], "N");
 
   XLSX.utils.book_append_sheet(wb, wsCategories, "Totales categoria");
   XLSX.utils.book_append_sheet(wb, wsBreakdown, "Zona subzona categoria");
@@ -811,128 +973,66 @@ function exportPurchaseReportXlsx(rows) {
   XLSX.writeFile(wb, `reporte_compras_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
 }
 
-function exportVisibleXlsx(rows) {
-  const reportRows = buildInventoryReportRows(rows);
+function bindExportOverrides() {
+  document.addEventListener("click", event => {
+    const exportInventory = event.target.closest("#exportXlsx");
+    const exportReport = event.target.closest("#exportPurchaseReport");
+    if (!exportInventory && !exportReport) return;
 
-  if (!reportRows.length) {
-    alert("No hay elementos para exportar con el filtro seleccionado.");
-    return;
-  }
-
-  if (!window.XLSX) {
-    alert("No se pudo cargar la librería XLSX. Revisa tu conexión a internet o la consola del navegador.");
-    return;
-  }
-
-  const headers = [
-    "Zona",
-    "Subzona",
-    "Código de área",
-    "Área",
-    "SKU",
-    "Tipo",
-    "Nombre",
-    "Descripción",
-    "Inventario actual",
-    "Inventario deseado",
-    "Cantidad a comprar",
-    "Precio unitario",
-    "Moneda",
-    "Subtotal",
-    "Liga de compra",
-  ];
-
-  const aoa = [
-    headers,
-    ...reportRows.map(row => [
-      cleanXlsxText(row.zona),
-      cleanXlsxText(row.subzona),
-      cleanXlsxText(row.area_codigo),
-      cleanXlsxText(row.area),
-      cleanXlsxText(row.sku),
-      cleanXlsxText(row.tipo),
-      cleanXlsxText(row.nombre),
-      cleanXlsxText(row.descripcion),
-      cleanXlsxNumber(row.inventario_actual),
-      cleanXlsxNumber(row.inventario_deseado),
-      cleanXlsxNumber(row.cantidad_a_comprar),
-      cleanXlsxNumber(row.precio_unitario),
-      cleanXlsxText(row.moneda),
-      cleanXlsxNumber(row.subtotal),
-      cleanXlsxText(row.liga_compra),
-    ]),
-  ];
-
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [
-    { wch: 16 }, { wch: 24 }, { wch: 16 }, { wch: 30 }, { wch: 12 },
-    { wch: 16 }, { wch: 36 }, { wch: 36 }, { wch: 8 }, { wch: 8 },
-    { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 40 },
-  ];
-
-  const numericColumns = ["I", "J", "K"];
-  for (let r = 2; r <= reportRows.length + 1; r++) {
-    for (const col of numericColumns) {
-      setXlsxNumericCell(ws, `${col}${r}`);
-    }
-  }
-  applyXlsxMoneyFormat(ws, reportRows.length, ["L", "N"], "M");
-
-  ws["!autofilter"] = { ref: `A1:O${reportRows.length + 1}` };
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Inventario filtrado");
-  const date = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `inventario_filtrado_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
-}
-
-function bindFilteredExports() {
-  const exportXlsxButton = document.querySelector("#exportXlsx");
-  const exportReportButton = document.querySelector("#exportPurchaseReport");
-
-  exportXlsxButton?.addEventListener("click", event => {
     event.preventDefault();
     event.stopImmediatePropagation();
-    const rows = collectEffectiveItems();
-    effectiveFilteredItems = rows;
-    exportVisibleXlsx(rows);
-  }, true);
-
-  exportReportButton?.addEventListener("click", event => {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    const rows = collectEffectiveItems();
-    effectiveFilteredItems = rows;
-    exportPurchaseReportXlsx(rows);
+    const rows = effectiveRows();
+    if (exportInventory) exportVisibleXlsx(rows);
+    else exportPurchaseReportXlsx(rows);
   }, true);
 }
 
-async function loadAdminItems() {
-  const snapshot = await getDocs(
-    query(collection(db, "items"), where("activo", "==", true))
-  );
+function observePurchaseCards() {
+  const itemsList = document.querySelector("#itemsList");
+  if (!itemsList) return;
+  observer = new MutationObserver(() => queueEnhancements());
+  observer.observe(itemsList, { childList: true, subtree: true });
+}
 
+async function loadPurchaseItems() {
+  const snapshot = await getDocs(query(collection(db, "items"), where("activo", "==", true)));
+  itemsById.clear();
   snapshot.docs.forEach(itemDoc => {
     itemsById.set(itemDoc.id, { id: itemDoc.id, ...itemDoc.data() });
   });
 }
 
-async function initPurchaseStatusFlow() {
+async function initPurchaseWorkflow() {
+  injectStyles();
+
   const user = await waitForUser();
-  if (!user) return;
+  if (!user) {
+    window.location.replace("login.html");
+    return;
+  }
 
   const profile = await getUserProfile(user.uid);
-  if (profile?.role !== "admin") return;
+  currentAccessRole = profile?.appRole || profile?.role || "";
 
-  await loadAdminItems();
-  addStatusFilter();
+  if (!ALLOWED_ROLES.has(currentAccessRole)) {
+    alert("La sección de Compras está disponible únicamente para Administrador y Supervisor.");
+    window.location.replace("index.html");
+    return;
+  }
+
+  await loadPurchaseItems();
+  addFilters();
+  addPrioritySortOption();
   addLegend();
   bindPurchaseActions();
-  bindFilteredExports();
+  bindExportOverrides();
   observePurchaseCards();
-  decorateVisibleCards();
-  applyPurchaseStatusFilter();
+  revealPage();
+  queueEnhancements();
 }
 
-initPurchaseStatusFlow().catch(error => {
-  console.error("No se pudo inicializar el flujo de estados de compra:", error);
+initPurchaseWorkflow().catch(error => {
+  console.error("No se pudo inicializar el flujo de Compras:", error);
+  alert(`No se pudo abrir Compras: ${error.message}`);
+  window.location.replace("index.html");
 });

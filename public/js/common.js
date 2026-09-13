@@ -27,7 +27,19 @@ export function waitForUser() {
 export async function getUserProfile(uid) {
   if (!uid) return null;
   const snap = await getDoc(doc(db, "users", uid));
-  return snap.exists() ? snap.data() : null;
+  if (!snap.exists()) return null;
+
+  const profile = snap.data();
+
+  // compras.js ya sabe tratar a "tecnico" como usuario de staff y, al mismo
+  // tiempo, oculta los controles exclusivos del administrador. En la página
+  // de Compras proyectamos el rol supervisor como tecnico sólo para esa lógica
+  // interna, conservando el rol real en appRole para navegación y permisos.
+  if (profile?.role === "supervisor" && currentPageName() === "compras.html") {
+    return { ...profile, role: "tecnico", appRole: "supervisor" };
+  }
+
+  return profile;
 }
 
 export async function requireLogin() {
@@ -43,7 +55,8 @@ export async function requireRole(allowedRoles) {
   const user = await requireLogin();
   if (!user) return null;
   const profile = await getUserProfile(user.uid);
-  if (!profile || !allowedRoles.includes(profile.role)) {
+  const effectiveRole = profile?.appRole || profile?.role;
+  if (!profile || !allowedRoles.includes(effectiveRole)) {
     alert("No tienes permisos para acceder a esta página.");
     window.location.href = "index.html";
     return null;
@@ -108,9 +121,21 @@ export async function logout() {
 }
 
 function roleBadge(role) {
-  const label = role === "admin" ? "Vista admin" : role === "tecnico" ? "Vista técnico" : role === "alumno" ? "Vista alumno" : "Vista pública";
-  const klass = role === "admin" ? "text-bg-dark" : role === "tecnico" ? "text-bg-info" : role === "alumno" ? "text-bg-primary" : "text-bg-secondary";
-  return `<span class="badge rounded-pill ${klass}">${label}</span>`;
+  const labels = {
+    admin: "Vista admin",
+    supervisor: "Vista supervisor",
+    tecnico: "Vista técnico",
+    alumno: "Vista alumno",
+    public: "Vista pública",
+  };
+  const classes = {
+    admin: "text-bg-dark",
+    supervisor: "text-bg-warning",
+    tecnico: "text-bg-info",
+    alumno: "text-bg-primary",
+    public: "text-bg-secondary",
+  };
+  return `<span class="badge rounded-pill ${classes[role] || classes.public}">${labels[role] || labels.public}</span>`;
 }
 
 function currentPageName() {
@@ -129,20 +154,21 @@ export function setupNav() {
   if (!nav) return;
   onAuthStateChanged(auth, async (user) => {
     if (!user) {
-      const isPurchasesPage = currentPageName() === "compras.html";
       nav.innerHTML = `
         ${roleBadge("public")}
         ${navLink("index.html", "Inventario")}
-        ${isPurchasesPage ? navLink("compras.html", "Compras") : ""}
         <a class="btn btn-outline-primary btn-sm" href="login.html">Entrar</a>`;
       return;
     }
+
     const profile = await getUserProfile(user.uid);
-    const role = profile?.role || "alumno";
+    const role = profile?.appRole || profile?.role || "alumno";
+    const canSeePurchases = role === "admin" || role === "supervisor";
+
     nav.innerHTML = `
       ${roleBadge(role)}
       ${navLink("index.html", "Inventario")}
-      ${navLink("compras.html", "Compras")}
+      ${canSeePurchases ? navLink("compras.html", "Compras") : ""}
       <span class="small text-muted d-none d-md-inline">${profile?.nombre || user.email}</span>
       ${role === "admin" ? '<a class="btn btn-outline-dark btn-sm" href="admin.html">Admin</a>' : ''}
       ${role === "tecnico" || role === "admin" ? '<a class="btn btn-outline-dark btn-sm" href="tecnico.html">Técnico</a>' : ''}
