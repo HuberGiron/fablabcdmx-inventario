@@ -34,6 +34,7 @@ let currentUser = null;
 let currentProfile = null;
 let currentDraftRequest = null;
 let enhancementQueued = false;
+let enhancementRerunRequested = false;
 let observer = null;
 let purchaseUiBusy = false;
 
@@ -355,6 +356,13 @@ function decoratePurchaseCost(card, item) {
   const available = quantityToBuy(item);
   const draftQty = draftQtyForItem(item.id);
   const subtotal = available * price;
+
+  // Evita reescribir el DOM en cada pasada. Esto es importante porque con
+  // miles de tarjetas un innerHTML repetitivo puede disparar nuevamente el
+  // MutationObserver y provocar un ciclo de renderizado.
+  const signature = [currency, price, pending, available, draftQty, subtotal].join("|");
+  if (cost.dataset.purchaseCostSignature === signature) return;
+  cost.dataset.purchaseCostSignature = signature;
 
   cost.innerHTML = `
     <span><strong>Precio unitario:</strong> ${reportEscape(formatCurrencyWithCode(price, currency))}</span>
@@ -1152,14 +1160,43 @@ function recalculateSummaryAndReport() {
 }
 
 function queueEnhancements() {
-  if (enhancementQueued) return;
+  if (enhancementQueued) {
+    enhancementRerunRequested = true;
+    return;
+  }
+
   enhancementQueued = true;
-  queueMicrotask(() => {
-    enhancementQueued = false;
-    nativeCards().forEach(decorateCard);
+  enhancementRerunRequested = false;
+  const cards = nativeCards();
+  let index = 0;
+  const batchSize = 80;
+
+  // Procesamos las tarjetas en lotes para no bloquear el hilo principal.
+  // Esto mantiene la página interactiva incluso con más de 2,000 elementos.
+  const processBatch = () => {
+    const end = Math.min(index + batchSize, cards.length);
+    for (; index < end; index += 1) {
+      decorateCard(cards[index]);
+    }
+
+    if (index < cards.length) {
+      requestAnimationFrame(processBatch);
+      return;
+    }
+
     applyCardFiltersAndOrdering();
     recalculateSummaryAndReport();
-  });
+    enhancementQueued = false;
+
+    // Si hubo un cambio mientras procesábamos (por ejemplo, un filtro),
+    // hacemos una última pasada con el estado más reciente.
+    if (enhancementRerunRequested) {
+      enhancementRerunRequested = false;
+      queueEnhancements();
+    }
+  };
+
+  requestAnimationFrame(processBatch);
 }
 
 async function fetchLiveItem(itemId) {
@@ -2628,8 +2665,19 @@ function bindExportOverrides() {
 function observePurchaseCards() {
   const itemsList = document.querySelector("#itemsList");
   if (!itemsList) return;
-  observer = new MutationObserver(() => queueEnhancements());
-  observer.observe(itemsList, { childList: true, subtree: true });
+
+  // Sólo observamos altas/bajas de tarjetas DIRECTAMENTE dentro de itemsList.
+  // No observamos el subárbol: los cambios internos que hace este mismo módulo
+  // (prioridad, costos, estado, botones) no deben volver a disparar otro ciclo
+  // completo de decoración.
+  observer = new MutationObserver(mutations => {
+    const cardsChanged = mutations.some(mutation =>
+      mutation.type === "childList" &&
+      (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)
+    );
+    if (cardsChanged) queueEnhancements();
+  });
+  observer.observe(itemsList, { childList: true, subtree: false });
 }
 
 async function loadPurchaseItems() {
