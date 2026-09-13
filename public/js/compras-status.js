@@ -1,24 +1,41 @@
 import { db } from "./firebase-app.js";
-import { waitForUser, getUserProfile } from "./common.js";
+import { waitForUser, getUserProfile, fileViewUrl } from "./common.js";
 import {
+  addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
   query,
+  runTransaction,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const PURCHASE_STATUS_ORDERED = "ordered";
 const PURCHASE_STATUS_RECEIVED = "received";
+const REQUEST_STATUS_DRAFT = "draft";
+const REQUEST_STATUS_SENT = "sent";
+const REQUEST_STATUS_PARTIAL = "partial";
+const REQUEST_STATUS_COMPLETED = "completed";
+const REQUEST_STATUS_CANCELLED = "cancelled";
 const ALLOWED_ROLES = new Set(["admin", "supervisor"]);
 
 const itemsById = new Map();
+const purchaseRequestsById = new Map();
+const draftLinesByItemId = new Map();
+
 let currentAccessRole = "";
+let currentUser = null;
+let currentProfile = null;
+let currentDraftRequest = null;
 let enhancementQueued = false;
 let observer = null;
+let purchaseUiBusy = false;
 
 // Evita que una vista no autorizada alcance a mostrar el contenido de Compras
 // mientras Firebase resuelve la sesión y el perfil.
@@ -82,6 +99,74 @@ function injectStyles() {
     #purchaseStatusFilterRow .form-select {
       min-height: 42px;
     }
+
+    .purchase-request-manager {
+      border: 1px solid #d9dde3;
+      border-radius: .85rem;
+      background: #fff;
+    }
+    .purchase-request-manager .request-manager-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin: 0;
+    }
+    .purchase-request-manager .request-manager-subtitle {
+      color: #6c757d;
+      font-size: .92rem;
+    }
+    .draft-request-card {
+      border: 1px solid #d7dce2;
+      border-left: 6px solid #212529;
+      border-radius: .75rem;
+      background: #fbfbfc;
+    }
+    .draft-request-empty {
+      color: #6c757d;
+      padding: .8rem 0;
+    }
+    .request-history-table td,
+    .request-history-table th {
+      vertical-align: middle;
+    }
+    .request-status-badge {
+      min-width: 92px;
+      text-align: center;
+    }
+    .purchase-status-controls .purchase-status-note-danger {
+      color: #b02a37;
+      font-weight: 700;
+    }
+    .purchase-status-controls .purchase-status-note-muted {
+      color: #6c757d;
+      font-size: .9rem;
+    }
+    .request-line-row {
+      border: 1px solid #e1e5ea;
+      border-radius: .65rem;
+      padding: .8rem;
+      margin-bottom: .65rem;
+      background: #fff;
+    }
+    .request-line-title {
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .request-line-meta {
+      color: #6c757d;
+      font-size: .88rem;
+    }
+    .request-quantity-input {
+      max-width: 140px;
+    }
+    .request-filter-chip {
+      display: inline-block;
+      margin: 0 .35rem .35rem 0;
+      padding: .25rem .55rem;
+      border: 1px solid #d9dde3;
+      border-radius: 999px;
+      background: #fff;
+      font-size: .78rem;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -99,8 +184,21 @@ function currentInventory(item) {
   return num(item.stockAlmacen) + num(item.stockPrestadoTemporal);
 }
 
+function pendingPurchaseQty(item) {
+  return Math.max(num(item?.purchasePendingQty), 0);
+}
+
+function draftQtyForItem(itemId) {
+  return Math.max(num(draftLinesByItemId.get(String(itemId))?.quantityRequested), 0);
+}
+
+function requestCapacity(item) {
+  const rawMissing = Math.max(num(item.inventarioDeseado) - currentInventory(item), 0);
+  return Math.max(rawMissing - pendingPurchaseQty(item), 0);
+}
+
 function quantityToBuy(item) {
-  return Math.max(num(item.inventarioDeseado) - currentInventory(item), 0);
+  return Math.max(requestCapacity(item) - draftQtyForItem(item?.id), 0);
 }
 
 function itemPriority(item) {
@@ -123,9 +221,26 @@ function priorityBadgeClass(priority) {
 }
 
 function purchaseVisualState(item) {
-  const missing = quantityToBuy(item);
+  const current = currentInventory(item);
+  const desired = num(item.inventarioDeseado);
+  const pending = pendingPurchaseQty(item);
+  const available = quantityToBuy(item);
+  const rawMissing = Math.max(desired - current, 0);
 
-  if (missing <= 0) {
+  if (pending > 0) {
+    return {
+      key: "ordered",
+      cardBorderClass: "border-warning",
+      bandClass: "purchase-state-ordered",
+      badgeClass: "text-bg-warning",
+      label: "En compras",
+      missing: rawMissing,
+      pending,
+      available,
+    };
+  }
+
+  if (rawMissing <= 0) {
     return {
       key: "complete",
       cardBorderClass: "border-success",
@@ -133,17 +248,8 @@ function purchaseVisualState(item) {
       badgeClass: "text-bg-success",
       label: "Inventario completo",
       missing: 0,
-    };
-  }
-
-  if (item.purchaseStatus === PURCHASE_STATUS_ORDERED) {
-    return {
-      key: "ordered",
-      cardBorderClass: "border-warning",
-      bandClass: "purchase-state-ordered",
-      badgeClass: "text-bg-warning",
-      label: "En compras",
-      missing,
+      pending: 0,
+      available: 0,
     };
   }
 
@@ -153,7 +259,9 @@ function purchaseVisualState(item) {
     bandClass: "purchase-state-missing",
     badgeClass: "text-bg-danger",
     label: "Falta comprar",
-    missing,
+    missing: rawMissing,
+    pending: 0,
+    available,
   };
 }
 
@@ -168,6 +276,8 @@ function pluralPieces(value) {
 function statusControlsHtml(item, state) {
   const current = currentInventory(item);
   const desired = num(item.inventarioDeseado);
+  const draftQty = draftQtyForItem(item.id);
+  const addLabel = draftQty > 0 ? "Editar cantidad" : "Agregar a solicitud";
 
   if (state.key === "complete") {
     return `
@@ -175,32 +285,41 @@ function statusControlsHtml(item, state) {
         <div class="d-flex flex-wrap gap-2 align-items-center">
           <span class="badge ${state.badgeClass}">${state.label}</span>
           <span class="purchase-status-text">Inventario actual: <strong>${current}</strong> / deseado: <strong>${desired}</strong></span>
+          ${draftQty > 0 ? `<span class="badge text-bg-dark">En borrador: ${pluralPieces(draftQty)}</span>` : ""}
         </div>
+        ${draftQty > 0 ? `<button type="button" class="btn btn-dark purchase-add-request-btn" data-id="${item.id}">${addLabel}</button>` : ""}
       </div>`;
   }
 
   if (state.key === "ordered") {
-    const requested = num(item.purchaseRequestedQty) || state.missing;
     return `
       <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
-        <div class="d-flex flex-wrap gap-2 align-items-center">
-          <span class="badge ${state.badgeClass}">${state.label}</span>
-          <span class="purchase-status-text">Faltan ${pluralPieces(state.missing)} · Solicitud enviada: ${pluralPieces(requested)}</span>
+        <div class="d-flex flex-column gap-1">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <span class="badge ${state.badgeClass}">${state.label}</span>
+            <span class="purchase-status-text">Pendiente de recibir: <strong>${pluralPieces(state.pending)}</strong></span>
+            ${draftQty > 0 ? `<span class="badge text-bg-dark">En borrador: ${pluralPieces(draftQty)}</span>` : ""}
+          </div>
+          ${state.available > 0 ? `<div class="purchase-status-note-danger">Aún disponible para solicitar: ${pluralPieces(state.available)}</div>` : `<div class="purchase-status-note-muted">Todo lo faltante ya está cubierto por solicitudes activas.</div>`}
         </div>
         <div class="d-flex flex-wrap gap-2 align-items-center">
-          <button type="button" class="btn btn-dark purchase-cancel-btn" data-id="${item.id}">Cancelar compra</button>
-          <button type="button" class="btn btn-warning purchase-received-btn" data-id="${item.id}">Ya llegó</button>
+          <button type="button" class="btn btn-dark purchase-view-requests-btn" data-id="${item.id}">Ver solicitudes</button>
+          ${state.available > 0 || draftQty > 0 ? `<button type="button" class="btn btn-danger purchase-add-request-btn" data-id="${item.id}">${addLabel}</button>` : ""}
         </div>
       </div>`;
   }
 
   return `
     <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
-      <div class="d-flex flex-wrap gap-2 align-items-center">
-        <span class="badge ${state.badgeClass}">${state.label}</span>
-        <span class="purchase-status-text">Faltan ${pluralPieces(state.missing)} para completar el inventario deseado</span>
+      <div class="d-flex flex-column gap-1">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <span class="badge ${state.badgeClass}">${state.label}</span>
+          <span class="purchase-status-text">Disponible para solicitar: <strong>${pluralPieces(state.available)}</strong></span>
+          ${draftQty > 0 ? `<span class="badge text-bg-dark">En borrador: ${pluralPieces(draftQty)}</span>` : ""}
+        </div>
+        <div class="purchase-status-note-muted">Actual: ${current} / Deseado: ${desired}</div>
       </div>
-      <button type="button" class="btn btn-danger purchase-send-btn" data-id="${item.id}">Mandar a comprar</button>
+      <button type="button" class="btn btn-danger purchase-add-request-btn" data-id="${item.id}">${addLabel}</button>
     </div>`;
 }
 
@@ -224,6 +343,25 @@ function priorityControlHtml(item) {
       <span class="purchase-priority-label">Prioridad de compra</span>
       <span class="badge priority-badge ${priorityBadgeClass(priority)}">${priorityLabel(priority)}</span>
     </div>`;
+}
+
+function decoratePurchaseCost(card, item) {
+  const cost = card.querySelector(".purchase-item-cost");
+  if (!cost) return;
+
+  const currency = item.moneda || "MXN";
+  const price = num(item.precioUnitario);
+  const pending = pendingPurchaseQty(item);
+  const available = quantityToBuy(item);
+  const draftQty = draftQtyForItem(item.id);
+  const subtotal = available * price;
+
+  cost.innerHTML = `
+    <span><strong>Precio unitario:</strong> ${reportEscape(formatCurrencyWithCode(price, currency))}</span>
+    <span><strong>Pendiente de recibir:</strong> ${pending}</span>
+    ${draftQty > 0 ? `<span><strong>En borrador:</strong> ${draftQty}</span>` : ""}
+    <span><strong>Disponible para solicitar:</strong> ${available}</span>
+    <span><strong>Subtotal disponible:</strong> ${reportEscape(formatCurrencyWithCode(subtotal, currency))}</span>`;
 }
 
 function decoratePriority(card, item) {
@@ -256,15 +394,17 @@ function decorateCard(card) {
   }
 
   decoratePriority(card, item);
+  decoratePurchaseCost(card, item);
 
   const state = purchaseVisualState(item);
   const signature = [
     state.key,
     state.missing,
+    state.pending || 0,
+    state.available || 0,
     currentInventory(item),
     num(item.inventarioDeseado),
-    item.purchaseStatus || "",
-    num(item.purchaseRequestedQty),
+    draftQtyForItem(item.id),
   ].join("|");
 
   card.classList.remove("border-success", "border-warning", "border-danger", "border-2");
@@ -1040,142 +1180,1205 @@ function setButtonBusy(button, busy, busyLabel) {
   }
 }
 
-async function sendToPurchases(itemId, button) {
-  setButtonBusy(button, true, "Guardando...");
+function requestStatusLabel(status) {
+  const labels = {
+    [REQUEST_STATUS_DRAFT]: "Borrador",
+    [REQUEST_STATUS_SENT]: "Enviada",
+    [REQUEST_STATUS_PARTIAL]: "Parcial",
+    [REQUEST_STATUS_COMPLETED]: "Completa",
+    [REQUEST_STATUS_CANCELLED]: "Cancelada",
+  };
+  return labels[status] || status || "Sin estado";
+}
 
+function requestStatusBadgeClass(status) {
+  if (status === REQUEST_STATUS_DRAFT) return "text-bg-dark";
+  if (status === REQUEST_STATUS_SENT) return "text-bg-warning";
+  if (status === REQUEST_STATUS_PARTIAL) return "text-bg-info";
+  if (status === REQUEST_STATUS_COMPLETED) return "text-bg-success";
+  if (status === REQUEST_STATUS_CANCELLED) return "text-bg-secondary";
+  return "text-bg-secondary";
+}
+
+function requestDateValue(value) {
+  if (!value) return null;
+  if (typeof value.toDate === "function") return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function requestDateText(value) {
+  const date = requestDateValue(value);
+  return date ? date.toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" }) : "";
+}
+
+function linePendingQty(line) {
+  return Math.max(
+    num(line?.quantityRequested) - num(line?.quantityReceived) - num(line?.quantityCancelled),
+    0
+  );
+}
+
+function normalizePendingRefs(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(ref => ({
+      requestId: String(ref?.requestId || ""),
+      lineId: String(ref?.lineId || ref?.itemId || ""),
+      folio: String(ref?.folio || ""),
+      pendingQty: Math.max(num(ref?.pendingQty), 0),
+    }))
+    .filter(ref => ref.requestId && ref.lineId && ref.pendingQty > 0);
+}
+
+function snapshotLineFromItem(item, quantityRequested) {
+  const qty = Math.max(num(quantityRequested), 0);
+  return {
+    itemId: item.id,
+    sku: item.sku || "",
+    nombre: item.nombre || "",
+    descripcion: item.descripcion || "",
+    tipo: item.tipo || "",
+    zoneId: item.zoneId || "",
+    zoneName: item.zoneName || "",
+    subzoneId: item.subzoneId || "",
+    subzoneName: item.subzoneName || "",
+    locationId: item.locationId || "",
+    locationName: item.locationName || "",
+    locationCode: item.locationCode || item.areaCode || "",
+    inventarioDeseadoSnapshot: num(item.inventarioDeseado),
+    inventorySnapshot: currentInventory(item),
+    pendingSnapshot: pendingPurchaseQty(item),
+    quantityRequested: qty,
+    quantityReceived: 0,
+    quantityCancelled: 0,
+    unitPrice: num(item.precioUnitario),
+    currency: item.moneda || "MXN",
+    infoUrl: item.infoUrl || "",
+    purchaseUrl: item.purchaseUrl || "",
+    imageFileId: item.imageFileId || "",
+    priority: itemPriority(item),
+    status: REQUEST_STATUS_DRAFT,
+    updatedAt: serverTimestamp(),
+  };
+}
+
+function filtersSnapshotForRequest() {
+  return appliedFiltersForReport().map(([label, value]) => ({
+    label: String(label || ""),
+    value: String(value || ""),
+  }));
+}
+
+function draftLinesArray() {
+  return [...draftLinesByItemId.values()].sort((a, b) =>
+    String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }) ||
+    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
+  );
+}
+
+function totalsForLines(lines, quantityField = "quantityRequested") {
+  const totals = {};
+  let quantity = 0;
+  for (const line of lines) {
+    const qty = Math.max(num(line?.[quantityField]), 0);
+    quantity += qty;
+    addMoneyTotal(totals, line.currency || line.moneda || "MXN", qty * num(line.unitPrice ?? line.precioUnitario));
+  }
+  return { totals, quantity };
+}
+
+async function loadPurchaseRequests() {
+  const snapshot = await getDocs(collection(db, "purchaseRequests"));
+  purchaseRequestsById.clear();
+  snapshot.docs.forEach(requestDoc => {
+    purchaseRequestsById.set(requestDoc.id, { id: requestDoc.id, ...requestDoc.data() });
+  });
+}
+
+async function loadDraftLines(requestId) {
+  draftLinesByItemId.clear();
+  if (!requestId) return;
+  const snapshot = await getDocs(collection(db, "purchaseRequests", requestId, "items"));
+  snapshot.docs.forEach(lineDoc => {
+    const line = { id: lineDoc.id, ...lineDoc.data() };
+    draftLinesByItemId.set(String(line.itemId || lineDoc.id), line);
+  });
+}
+
+async function loadCurrentDraft() {
+  const drafts = [...purchaseRequestsById.values()]
+    .filter(request =>
+      request.status === REQUEST_STATUS_DRAFT &&
+      String(request.createdBy || "") === String(currentUser?.uid || "")
+    )
+    .sort((a, b) => {
+      const da = requestDateValue(a.updatedAt || a.createdAt)?.getTime() || 0;
+      const dbv = requestDateValue(b.updatedAt || b.createdAt)?.getTime() || 0;
+      return dbv - da;
+    });
+
+  currentDraftRequest = drafts[0] || null;
+  await loadDraftLines(currentDraftRequest?.id || "");
+}
+
+async function ensureDraftRequest() {
+  if (currentDraftRequest?.id) return currentDraftRequest;
+
+  const ref = await addDoc(collection(db, "purchaseRequests"), {
+    status: REQUEST_STATUS_DRAFT,
+    folio: "",
+    createdBy: currentUser.uid,
+    createdByName: currentProfile?.nombre || currentUser.email || "",
+    createdByEmail: currentProfile?.correo || currentUser.email || "",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    itemCount: 0,
+    totalQty: 0,
+    totalsByCurrency: {},
+  });
+
+  currentDraftRequest = {
+    id: ref.id,
+    status: REQUEST_STATUS_DRAFT,
+    folio: "",
+    createdBy: currentUser.uid,
+    createdByName: currentProfile?.nombre || currentUser.email || "",
+  };
+  purchaseRequestsById.set(ref.id, currentDraftRequest);
+  return currentDraftRequest;
+}
+
+async function syncDraftRequestSummary() {
+  if (!currentDraftRequest?.id) return;
+  const lines = draftLinesArray();
+  const { totals, quantity } = totalsForLines(lines);
+  await updateDoc(doc(db, "purchaseRequests", currentDraftRequest.id), {
+    itemCount: lines.length,
+    totalQty: quantity,
+    totalsByCurrency: totals,
+    updatedAt: serverTimestamp(),
+  });
+  currentDraftRequest = {
+    ...currentDraftRequest,
+    itemCount: lines.length,
+    totalQty: quantity,
+    totalsByCurrency: totals,
+  };
+  purchaseRequestsById.set(currentDraftRequest.id, currentDraftRequest);
+}
+
+function ensureQuantityModal() {
+  if (document.querySelector("#purchaseQuantityModal")) return;
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = `
+    <div class="modal fade" id="purchaseQuantityModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="purchaseQuantityTitle">Cantidad</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p id="purchaseQuantityMessage" class="mb-3"></p>
+            <label class="form-label" for="purchaseQuantityInput">Cantidad</label>
+            <input id="purchaseQuantityInput" class="form-control request-quantity-input" type="number" min="0" step="1">
+            <div id="purchaseQuantityHelp" class="form-text"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="button" class="btn btn-dark" id="purchaseQuantitySave">Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(wrapper.firstElementChild);
+}
+
+function askQuantity({ title, message, max, value, allowZero = true }) {
+  ensureQuantityModal();
+
+  const modalEl = document.querySelector("#purchaseQuantityModal");
+  const titleEl = document.querySelector("#purchaseQuantityTitle");
+  const messageEl = document.querySelector("#purchaseQuantityMessage");
+  const input = document.querySelector("#purchaseQuantityInput");
+  const help = document.querySelector("#purchaseQuantityHelp");
+  const save = document.querySelector("#purchaseQuantitySave");
+
+  titleEl.textContent = title || "Cantidad";
+  messageEl.textContent = message || "";
+  input.min = allowZero ? "0" : "1";
+  input.max = String(Math.max(num(max), allowZero ? 0 : 1));
+  input.value = String(Math.max(num(value), allowZero ? 0 : 1));
+  help.textContent = `Máximo permitido: ${Math.max(num(max), 0)}.`;
+
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+
+  return new Promise(resolve => {
+    let settled = false;
+
+    const cleanup = () => {
+      save.removeEventListener("click", onSave);
+      modalEl.removeEventListener("hidden.bs.modal", onHidden);
+    };
+
+    const settle = result => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const onHidden = () => settle(null);
+    const onSave = () => {
+      const qty = Number(input.value);
+      const min = allowZero ? 0 : 1;
+      const maximum = Math.max(num(max), 0);
+      if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty < min || qty > maximum) {
+        alert(`Captura una cantidad entera entre ${min} y ${maximum}.`);
+        return;
+      }
+      settle(qty);
+      modal.hide();
+    };
+
+    save.addEventListener("click", onSave);
+    modalEl.addEventListener("hidden.bs.modal", onHidden);
+    modal.show();
+    setTimeout(() => input.select(), 150);
+  });
+}
+
+async function addOrEditDraftItem(itemId) {
+  const item = itemsById.get(String(itemId)) || await fetchLiveItem(itemId);
+  const existingQty = draftQtyForItem(itemId);
+  const maxQty = requestCapacity(item);
+
+  if (maxQty <= 0 && existingQty <= 0) {
+    alert("Todo lo faltante de este artículo ya está cubierto por solicitudes activas.");
+    return;
+  }
+
+  const qty = await askQuantity({
+    title: existingQty > 0 ? "Editar cantidad del borrador" : "Agregar a solicitud",
+    message: `${item.nombre || item.sku || "Item"}\nDisponible para esta solicitud: ${maxQty}. Puedes solicitar una cantidad menor.`,
+    max: maxQty,
+    value: existingQty > 0 ? existingQty : Math.max(maxQty, 1),
+    allowZero: true,
+  });
+  if (qty === null) return;
+
+  const request = await ensureDraftRequest();
+  const lineRef = doc(db, "purchaseRequests", request.id, "items", item.id);
+
+  if (qty === 0) {
+    await deleteDoc(lineRef);
+    draftLinesByItemId.delete(String(item.id));
+  } else {
+    const existing = draftLinesByItemId.get(String(item.id));
+    await setDoc(lineRef, {
+      ...snapshotLineFromItem(item, qty),
+      addedAt: existing?.addedAt || serverTimestamp(),
+    }, { merge: true });
+    draftLinesByItemId.set(String(item.id), {
+      ...(existing || {}),
+      ...snapshotLineFromItem(item, qty),
+      itemId: item.id,
+      quantityRequested: qty,
+      addedAt: existing?.addedAt || new Date(),
+    });
+  }
+
+  await syncDraftRequestSummary();
+  renderPurchaseRequestManager();
+  queueEnhancements();
+}
+
+async function emptyCurrentDraft() {
+  if (!currentDraftRequest?.id || !draftLinesByItemId.size) return;
+  if (!confirm("¿Vaciar todos los elementos del borrador actual?")) return;
+
+  const deletions = [...draftLinesByItemId.values()].map(line =>
+    deleteDoc(doc(db, "purchaseRequests", currentDraftRequest.id, "items", String(line.itemId || line.id)))
+  );
+  await Promise.all(deletions);
+  draftLinesByItemId.clear();
+  await syncDraftRequestSummary();
+  renderPurchaseRequestManager();
+  queueEnhancements();
+}
+
+function requestHistoryArray() {
+  return [...purchaseRequestsById.values()]
+    .filter(request => request.status !== REQUEST_STATUS_DRAFT)
+    .sort((a, b) => {
+      const da = requestDateValue(a.sentAt || a.createdAt)?.getTime() || 0;
+      const dbv = requestDateValue(b.sentAt || b.createdAt)?.getTime() || 0;
+      return dbv - da;
+    });
+}
+
+function injectPurchaseRequestManager() {
+  if (document.querySelector("#purchaseRequestManager")) return;
+
+  const summary = document.querySelector(".purchase-summary-card");
+  if (!summary?.parentNode) return;
+
+  const section = document.createElement("section");
+  section.id = "purchaseRequestManager";
+  section.className = "card purchase-request-manager mb-4";
+  section.innerHTML = `
+    <div class="card-body">
+      <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start mb-3">
+        <div>
+          <h2 class="request-manager-title">Solicitudes de compra</h2>
+          <div class="request-manager-subtitle">Agrupa artículos en solicitudes independientes y conserva historial, pendientes y recepciones.</div>
+        </div>
+        <button type="button" class="btn btn-outline-dark btn-sm" id="refreshPurchaseRequests">Actualizar solicitudes</button>
+      </div>
+      <div id="currentDraftPanel"></div>
+      <hr class="my-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+        <h3 class="h6 mb-0">Historial de solicitudes</h3>
+        <span class="small text-muted" id="purchaseRequestHistoryCount"></span>
+      </div>
+      <div id="purchaseRequestHistory"></div>
+    </div>`;
+  summary.parentNode.insertBefore(section, summary);
+}
+
+function renderPurchaseRequestManager() {
+  injectPurchaseRequestManager();
+
+  const draftPanel = document.querySelector("#currentDraftPanel");
+  const history = document.querySelector("#purchaseRequestHistory");
+  const count = document.querySelector("#purchaseRequestHistoryCount");
+  if (!draftPanel || !history) return;
+
+  const draftLines = draftLinesArray();
+  const { totals, quantity } = totalsForLines(draftLines);
+
+  if (!currentDraftRequest || !draftLines.length) {
+    draftPanel.innerHTML = `
+      <div class="draft-request-card p-3">
+        <div class="fw-semibold">Solicitud actual · Borrador</div>
+        <div class="draft-request-empty">Todavía no hay elementos en el borrador. Usa “Agregar a solicitud” en las tarjetas.</div>
+      </div>`;
+  } else {
+    draftPanel.innerHTML = `
+      <div class="draft-request-card p-3">
+        <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
+          <div>
+            <div class="fw-semibold">Solicitud actual · Borrador</div>
+            <div class="small text-muted">${draftLines.length} artículo${draftLines.length === 1 ? "" : "s"} · ${quantity} pieza${quantity === 1 ? "" : "s"} · ${reportEscape(formatMoneyTotals(totals))}</div>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <button type="button" class="btn btn-outline-danger btn-sm request-draft-pdf">PDF borrador</button>
+            <button type="button" class="btn btn-outline-success btn-sm request-draft-xlsx">Excel borrador</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm request-draft-empty">Vaciar</button>
+            <button type="button" class="btn btn-dark btn-sm request-draft-send">Enviar solicitud a Compras</button>
+          </div>
+        </div>
+        <div class="mt-3">
+          ${draftLines.map(line => `
+            <div class="d-flex flex-wrap justify-content-between gap-2 border-top py-2">
+              <div>
+                <strong>${reportEscape(line.nombre || line.sku || "Item")}</strong>
+                <span class="text-muted ms-2">${reportEscape(line.sku || "")}</span>
+              </div>
+              <div>
+                <span class="badge text-bg-dark">${pluralPieces(line.quantityRequested)}</span>
+                <button type="button" class="btn btn-link btn-sm request-draft-edit" data-item-id="${reportEscape(line.itemId)}">Editar</button>
+              </div>
+            </div>`).join("")}
+        </div>
+      </div>`;
+  }
+
+  const requests = requestHistoryArray();
+  if (count) count.textContent = `${requests.length} solicitud${requests.length === 1 ? "" : "es"}`;
+
+  if (!requests.length) {
+    history.innerHTML = `<div class="text-muted small">Aún no hay solicitudes enviadas.</div>`;
+    return;
+  }
+
+  history.innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-sm request-history-table">
+        <thead>
+          <tr>
+            <th>Solicitud</th>
+            <th>Fecha</th>
+            <th>Estado</th>
+            <th>Artículos</th>
+            <th>Piezas</th>
+            <th>Total</th>
+            <th class="text-end">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${requests.map(request => `
+            <tr>
+              <td><strong>${reportEscape(request.folio || request.id)}</strong></td>
+              <td>${reportEscape(requestDateText(request.sentAt || request.createdAt))}</td>
+              <td><span class="badge request-status-badge ${requestStatusBadgeClass(request.status)}">${reportEscape(requestStatusLabel(request.status))}</span></td>
+              <td>${num(request.itemCount)}</td>
+              <td>${num(request.totalQty)}</td>
+              <td>${reportEscape(formatMoneyTotals(request.totalsByCurrency || {}))}</td>
+              <td class="text-end">
+                <div class="d-flex flex-wrap gap-1 justify-content-end">
+                  <button type="button" class="btn btn-outline-dark btn-sm request-history-view" data-request-id="${request.id}">Ver</button>
+                  <button type="button" class="btn btn-outline-danger btn-sm request-history-pdf" data-request-id="${request.id}">PDF</button>
+                  <button type="button" class="btn btn-outline-success btn-sm request-history-xlsx" data-request-id="${request.id}">Excel</button>
+                </div>
+              </td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function fetchRequestLines(requestId) {
+  const snapshot = await getDocs(collection(db, "purchaseRequests", requestId, "items"));
+  return snapshot.docs.map(lineDoc => ({ id: lineDoc.id, ...lineDoc.data() }));
+}
+
+function calculateRequestStatus(lines) {
+  let pending = 0;
+  let received = 0;
+  let cancelled = 0;
+  for (const line of lines) {
+    pending += linePendingQty(line);
+    received += num(line.quantityReceived);
+    cancelled += num(line.quantityCancelled);
+  }
+
+  if (pending > 0 && (received > 0 || cancelled > 0)) return REQUEST_STATUS_PARTIAL;
+  if (pending > 0) return REQUEST_STATUS_SENT;
+  if (received > 0) return REQUEST_STATUS_COMPLETED;
+  return REQUEST_STATUS_CANCELLED;
+}
+
+async function refreshRequestAggregate(requestId) {
+  const lines = await fetchRequestLines(requestId);
+  const status = calculateRequestStatus(lines);
+  const { totals, quantity } = totalsForLines(lines);
+  await updateDoc(doc(db, "purchaseRequests", requestId), {
+    status,
+    itemCount: lines.length,
+    totalQty: quantity,
+    totalsByCurrency: totals,
+    updatedAt: serverTimestamp(),
+  });
+  return { lines, status };
+}
+
+async function sendCurrentDraft() {
+  if (purchaseUiBusy) return;
+  const lines = draftLinesArray();
+  if (!currentDraftRequest?.id || !lines.length) {
+    alert("Agrega al menos un artículo al borrador antes de enviar la solicitud.");
+    return;
+  }
+
+  const ok = confirm(
+    `¿Enviar esta solicitud a Compras?\n\n${lines.length} artículo${lines.length === 1 ? "" : "s"} · ${lines.reduce((sum, line) => sum + num(line.quantityRequested), 0)} piezas.\n\nUna vez enviada, estas cantidades se contabilizarán como pendientes de recibir.`
+  );
+  if (!ok) return;
+
+  purchaseUiBusy = true;
   try {
-    const item = await fetchLiveItem(itemId);
-    const missing = quantityToBuy(item);
+    const year = new Date().getFullYear();
+    const requestRef = doc(db, "purchaseRequests", currentDraftRequest.id);
+    const counterRef = doc(db, "purchaseRequestCounters", String(year));
+    let generatedFolio = "";
 
-    if (missing <= 0) {
-      itemsById.set(itemId, item);
-      queueEnhancements();
-      alert("Este item ya tiene completo su inventario deseado.");
-      return;
-    }
+    await runTransaction(db, async transaction => {
+      const counterSnap = await transaction.get(counterRef);
+      const requestSnap = await transaction.get(requestRef);
+      if (!requestSnap.exists() || requestSnap.data().status !== REQUEST_STATUS_DRAFT) {
+        throw new Error("El borrador ya no está disponible para enviarse.");
+      }
 
-    const ok = confirm(
-      `¿Marcar como enviado a Compras?\n\n${item.nombre || item.sku || "Item"}\nCantidad faltante: ${pluralPieces(missing)}`
-    );
-    if (!ok) return;
+      const itemSnapshots = [];
+      for (const line of lines) {
+        const itemRef = doc(db, "items", String(line.itemId));
+        const itemSnap = await transaction.get(itemRef);
+        if (!itemSnap.exists()) throw new Error(`Ya no existe el item ${line.sku || line.itemId}.`);
+        itemSnapshots.push({ line, itemRef, itemSnap });
+      }
 
-    await updateDoc(doc(db, "items", itemId), {
-      purchaseStatus: PURCHASE_STATUS_ORDERED,
-      purchaseRequestedQty: missing,
-      purchaseRequestedAt: serverTimestamp(),
-      purchaseReceivedAt: null,
-      purchaseReceivedQty: null,
-      updatedAt: serverTimestamp(),
+      const next = num(counterSnap.data()?.last) + 1;
+      generatedFolio = `SC-${year}-${String(next).padStart(4, "0")}`;
+
+      for (const entry of itemSnapshots) {
+        const item = { id: entry.itemSnap.id, ...entry.itemSnap.data() };
+        const available = Math.max(
+          num(item.inventarioDeseado) - currentInventory(item) - pendingPurchaseQty(item),
+          0
+        );
+        if (num(entry.line.quantityRequested) > available) {
+          throw new Error(
+            `${item.nombre || item.sku}: el borrador solicita ${entry.line.quantityRequested}, pero ahora sólo hay ${available} disponibles para solicitar. Ajusta la cantidad.`
+          );
+        }
+      }
+
+      transaction.set(counterRef, { last: next, updatedAt: serverTimestamp() }, { merge: true });
+
+      const { totals, quantity } = totalsForLines(lines);
+      transaction.update(requestRef, {
+        folio: generatedFolio,
+        status: REQUEST_STATUS_SENT,
+        sentAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        filtersSnapshot: filtersSnapshotForRequest(),
+        itemCount: lines.length,
+        totalQty: quantity,
+        totalsByCurrency: totals,
+      });
+
+      for (const entry of itemSnapshots) {
+        const line = entry.line;
+        const item = { id: entry.itemSnap.id, ...entry.itemSnap.data() };
+        const qty = num(line.quantityRequested);
+        const refs = normalizePendingRefs(item.purchasePendingRefs)
+          .filter(ref => ref.requestId !== currentDraftRequest.id);
+
+        refs.push({
+          requestId: currentDraftRequest.id,
+          lineId: String(line.itemId),
+          folio: generatedFolio,
+          pendingQty: qty,
+        });
+
+        transaction.update(entry.itemRef, {
+          purchasePendingQty: pendingPurchaseQty(item) + qty,
+          purchasePendingRefs: refs,
+          updatedAt: serverTimestamp(),
+        });
+
+        transaction.update(
+          doc(db, "purchaseRequests", currentDraftRequest.id, "items", String(line.itemId)),
+          {
+            status: PURCHASE_STATUS_ORDERED,
+            folio: generatedFolio,
+            sentAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }
+        );
+      }
     });
 
-    itemsById.set(itemId, {
-      ...item,
-      purchaseStatus: PURCHASE_STATUS_ORDERED,
-      purchaseRequestedQty: missing,
-    });
+    currentDraftRequest = null;
+    draftLinesByItemId.clear();
+    await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
+    await loadCurrentDraft();
+    renderPurchaseRequestManager();
     queueEnhancements();
+    alert(`Solicitud ${generatedFolio} enviada correctamente.`);
   } catch (error) {
     console.error(error);
-    alert(`No se pudo mandar el item a Compras: ${error.message}`);
+    alert(`No se pudo enviar la solicitud: ${error.message}`);
   } finally {
-    setButtonBusy(button, false);
+    purchaseUiBusy = false;
   }
 }
 
-async function cancelPurchase(itemId, button) {
-  setButtonBusy(button, true, "Cancelando...");
+function ensureRequestDetailModal() {
+  if (document.querySelector("#purchaseRequestDetailModal")) return;
+  const modal = document.createElement("div");
+  modal.className = "modal fade";
+  modal.id = "purchaseRequestDetailModal";
+  modal.tabIndex = -1;
+  modal.innerHTML = `
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <h5 class="modal-title mb-0" id="purchaseRequestDetailTitle">Solicitud de compra</h5>
+            <div class="small text-muted" id="purchaseRequestDetailSubtitle"></div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" id="purchaseRequestDetailBody"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-danger" id="purchaseRequestDetailPdf">PDF</button>
+          <button type="button" class="btn btn-outline-success" id="purchaseRequestDetailXlsx">Excel</button>
+          <button type="button" class="btn btn-dark" id="purchaseRequestCancelAll">Cancelar pendientes de la solicitud</button>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
 
-  try {
-    const item = await fetchLiveItem(itemId);
+async function openRequestDetail(requestId) {
+  ensureRequestDetailModal();
+  const request = purchaseRequestsById.get(requestId) || {
+    id: requestId,
+    ...(await getDoc(doc(db, "purchaseRequests", requestId))).data(),
+  };
+  const lines = await fetchRequestLines(requestId);
 
-    if (item.purchaseStatus !== PURCHASE_STATUS_ORDERED) {
-      itemsById.set(itemId, item);
-      queueEnhancements();
-      alert("Este item ya no está marcado como 'En compras'. Se actualizó la tarjeta con el estado actual.");
-      return;
+  const title = document.querySelector("#purchaseRequestDetailTitle");
+  const subtitle = document.querySelector("#purchaseRequestDetailSubtitle");
+  const body = document.querySelector("#purchaseRequestDetailBody");
+  const cancelAll = document.querySelector("#purchaseRequestCancelAll");
+  const pdf = document.querySelector("#purchaseRequestDetailPdf");
+  const xlsx = document.querySelector("#purchaseRequestDetailXlsx");
+
+  title.textContent = request.folio || "Solicitud de compra";
+  subtitle.textContent = `${requestStatusLabel(request.status)} · ${requestDateText(request.sentAt || request.createdAt)}`;
+  pdf.dataset.requestId = requestId;
+  xlsx.dataset.requestId = requestId;
+  cancelAll.dataset.requestId = requestId;
+  pdf.classList.remove("d-none");
+  xlsx.classList.remove("d-none");
+
+  const filters = Array.isArray(request.filtersSnapshot) ? request.filtersSnapshot : [];
+  const filterHtml = filters.length
+    ? `<div class="mb-3">${filters.map(filter => `<span class="request-filter-chip"><strong>${reportEscape(filter.label)}:</strong> ${reportEscape(filter.value)}</span>`).join("")}</div>`
+    : "";
+
+  body.innerHTML = `
+    ${filterHtml}
+    ${lines.map(line => {
+      const pending = linePendingQty(line);
+      return `
+        <div class="request-line-row">
+          <div class="d-flex flex-wrap justify-content-between gap-3">
+            <div>
+              <div class="request-line-title">${reportEscape(line.nombre || line.sku || "Item")}</div>
+              <div class="request-line-meta">${reportEscape(line.sku || "")} · Prioridad ${itemPriority({ purchasePriority: line.priority })}</div>
+            </div>
+            <div class="text-end">
+              <div><strong>Solicitado:</strong> ${num(line.quantityRequested)}</div>
+              <div><strong>Recibido:</strong> ${num(line.quantityReceived)}</div>
+              <div><strong>Cancelado:</strong> ${num(line.quantityCancelled)}</div>
+              <div><strong>Pendiente:</strong> ${pending}</div>
+            </div>
+          </div>
+          ${pending > 0 ? `
+            <div class="d-flex flex-wrap gap-2 mt-3">
+              <button type="button" class="btn btn-success btn-sm request-line-receive" data-request-id="${requestId}" data-line-id="${reportEscape(line.id)}" data-pending="${pending}">Registrar recepción</button>
+              <button type="button" class="btn btn-dark btn-sm request-line-cancel" data-request-id="${requestId}" data-line-id="${reportEscape(line.id)}" data-pending="${pending}">Cancelar pendiente</button>
+            </div>` : ""}
+        </div>`;
+    }).join("")}`;
+
+  cancelAll.classList.toggle("d-none", !lines.some(line => linePendingQty(line) > 0));
+  bootstrap.Modal.getOrCreateInstance(document.querySelector("#purchaseRequestDetailModal")).show();
+}
+
+async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = true } = {}) {
+  const qty = Math.max(num(quantity), 0);
+  if (qty <= 0) return;
+
+  const lineRef = doc(db, "purchaseRequests", requestId, "items", lineId);
+  const requestRef = doc(db, "purchaseRequests", requestId);
+
+  await runTransaction(db, async transaction => {
+    const lineSnap = await transaction.get(lineRef);
+    if (!lineSnap.exists()) throw new Error("La línea de compra ya no existe.");
+
+    const line = { id: lineSnap.id, ...lineSnap.data() };
+    const itemRef = doc(db, "items", String(line.itemId || lineId));
+    const itemSnap = await transaction.get(itemRef);
+    if (!itemSnap.exists()) throw new Error("El item asociado ya no existe.");
+
+    const item = { id: itemSnap.id, ...itemSnap.data() };
+    const remaining = linePendingQty(line);
+    if (qty > remaining) throw new Error(`Sólo quedan ${remaining} piezas pendientes.`);
+
+    const newReceived = num(line.quantityReceived) + (mode === "receive" ? qty : 0);
+    const newCancelled = num(line.quantityCancelled) + (mode === "cancel" ? qty : 0);
+    const newRemaining = Math.max(num(line.quantityRequested) - newReceived - newCancelled, 0);
+    const newLineStatus = newRemaining > 0
+      ? REQUEST_STATUS_PARTIAL
+      : (newReceived > 0 ? PURCHASE_STATUS_RECEIVED : REQUEST_STATUS_CANCELLED);
+
+    const currentPending = pendingPurchaseQty(item);
+    const nextPending = Math.max(currentPending - qty, 0);
+    const refs = normalizePendingRefs(item.purchasePendingRefs)
+      .map(ref => {
+        if (ref.requestId !== requestId || ref.lineId !== String(line.itemId || lineId)) return ref;
+        return { ...ref, pendingQty: Math.max(ref.pendingQty - qty, 0) };
+      })
+      .filter(ref => ref.pendingQty > 0);
+
+    const itemUpdate = {
+      purchasePendingQty: nextPending,
+      purchasePendingRefs: refs,
+      updatedAt: serverTimestamp(),
+    };
+    if (mode === "receive") {
+      itemUpdate.stockAlmacen = num(item.stockAlmacen) + qty;
     }
 
-    const ok = confirm(
-      `¿Cancelar esta solicitud de compra?\n\n${item.nombre || item.sku || "Item"}\n\nEl artículo volverá al estado "Falta comprar" y podrá solicitarse nuevamente.`
-    );
-    if (!ok) return;
-
-    await updateDoc(doc(db, "items", itemId), {
-      purchaseStatus: "cancelled",
-      purchaseRequestedQty: 0,
-      purchaseRequestedAt: null,
-      purchaseReceivedQty: null,
-      purchaseReceivedAt: null,
+    transaction.update(itemRef, itemUpdate);
+    transaction.update(lineRef, {
+      quantityReceived: newReceived,
+      quantityCancelled: newCancelled,
+      status: newLineStatus,
       updatedAt: serverTimestamp(),
+      ...(mode === "receive" ? { lastReceivedAt: serverTimestamp() } : { lastCancelledAt: serverTimestamp() }),
     });
+    transaction.update(requestRef, { updatedAt: serverTimestamp() });
+  });
 
-    itemsById.set(itemId, {
-      ...item,
-      purchaseStatus: "cancelled",
-      purchaseRequestedQty: 0,
-      purchaseRequestedAt: null,
-      purchaseReceivedQty: null,
-      purchaseReceivedAt: null,
-    });
-
-    // No se modifica stock ni prioridad. Al dejar de estar "ordered",
-    // purchaseVisualState() lo devuelve automáticamente a "Falta comprar".
+  if (refresh) {
+    await refreshRequestAggregate(requestId);
+    await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
+    renderPurchaseRequestManager();
     queueEnhancements();
-  } catch (error) {
-    console.error(error);
-    alert(`No se pudo cancelar la compra: ${error.message}`);
-  } finally {
-    setButtonBusy(button, false);
   }
 }
 
-async function markAsReceived(itemId, button) {
-  setButtonBusy(button, true, "Actualizando...");
+async function registerLineReceipt(requestId, lineId, pending) {
+  const qty = await askQuantity({
+    title: "Registrar recepción",
+    message: "Indica cuántas piezas llegaron en esta recepción.",
+    max: pending,
+    value: pending,
+    allowZero: false,
+  });
+  if (qty === null) return;
 
   try {
-    const item = await fetchLiveItem(itemId);
+    await applyLineMovement(requestId, lineId, "receive", qty);
+    await openRequestDetail(requestId);
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo registrar la recepción: ${error.message}`);
+  }
+}
 
-    if (item.purchaseStatus !== PURCHASE_STATUS_ORDERED) {
-      itemsById.set(itemId, item);
-      queueEnhancements();
-      alert("Este item ya no está marcado como 'En compras'. Se actualizó la tarjeta con el estado actual.");
-      return;
+async function cancelLinePending(requestId, lineId, pending) {
+  const qty = await askQuantity({
+    title: "Cancelar piezas pendientes",
+    message: "Indica cuántas piezas pendientes se cancelaron en esta solicitud.",
+    max: pending,
+    value: pending,
+    allowZero: false,
+  });
+  if (qty === null) return;
+
+  try {
+    await applyLineMovement(requestId, lineId, "cancel", qty);
+    await openRequestDetail(requestId);
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo cancelar la cantidad pendiente: ${error.message}`);
+  }
+}
+
+async function cancelAllPendingInRequest(requestId) {
+  const lines = await fetchRequestLines(requestId);
+  const pendingLines = lines.filter(line => linePendingQty(line) > 0);
+  if (!pendingLines.length) return;
+
+  if (!confirm(`¿Cancelar todas las cantidades pendientes de esta solicitud?\n\nSe afectarán ${pendingLines.length} líneas.`)) return;
+
+  purchaseUiBusy = true;
+  try {
+    for (const line of pendingLines) {
+      await applyLineMovement(requestId, line.id, "cancel", linePendingQty(line), { refresh: false });
+    }
+    await refreshRequestAggregate(requestId);
+    await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
+    renderPurchaseRequestManager();
+    queueEnhancements();
+    await openRequestDetail(requestId);
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo cancelar la solicitud: ${error.message}`);
+  } finally {
+    purchaseUiBusy = false;
+  }
+}
+
+async function openItemRequests(itemId) {
+  const item = itemsById.get(String(itemId)) || await fetchLiveItem(itemId);
+  const refs = normalizePendingRefs(item.purchasePendingRefs);
+  if (!refs.length) {
+    alert("Este artículo no tiene solicitudes activas pendientes.");
+    return;
+  }
+
+  const requestIds = [...new Set(refs.map(ref => ref.requestId))];
+  if (requestIds.length === 1) {
+    await openRequestDetail(requestIds[0]);
+    return;
+  }
+
+  ensureRequestDetailModal();
+  const body = document.querySelector("#purchaseRequestDetailBody");
+  document.querySelector("#purchaseRequestDetailTitle").textContent = `Solicitudes activas · ${item.nombre || item.sku}`;
+  document.querySelector("#purchaseRequestDetailSubtitle").textContent = `${refs.length} referencia${refs.length === 1 ? "" : "s"} pendiente${refs.length === 1 ? "" : "s"}`;
+  document.querySelector("#purchaseRequestCancelAll").classList.add("d-none");
+  document.querySelector("#purchaseRequestDetailPdf").classList.add("d-none");
+  document.querySelector("#purchaseRequestDetailXlsx").classList.add("d-none");
+
+  body.innerHTML = refs.map(ref => `
+    <div class="request-line-row d-flex flex-wrap justify-content-between gap-3 align-items-center">
+      <div>
+        <div class="request-line-title">${reportEscape(ref.folio || ref.requestId)}</div>
+        <div class="request-line-meta">Pendiente: ${pluralPieces(ref.pendingQty)}</div>
+      </div>
+      <button type="button" class="btn btn-outline-dark btn-sm request-open-from-item" data-request-id="${reportEscape(ref.requestId)}">Abrir solicitud</button>
+    </div>`).join("");
+
+  bootstrap.Modal.getOrCreateInstance(document.querySelector("#purchaseRequestDetailModal")).show();
+}
+
+async function migrateLegacyOrdersIfNeeded() {
+  if (currentAccessRole !== "admin") return;
+
+  const candidates = [...itemsById.values()].filter(item =>
+    item.purchaseStatus === PURCHASE_STATUS_ORDERED &&
+    item.purchaseLegacyMigrated !== true &&
+    pendingPurchaseQty(item) <= 0 &&
+    Math.max(num(item.inventarioDeseado) - currentInventory(item), 0) > 0
+  );
+  if (!candidates.length) return;
+
+  const requestId = "legacy-migration-v1";
+  const requestRef = doc(db, "purchaseRequests", requestId);
+  const requestSnap = await getDoc(requestRef);
+  const year = new Date().getFullYear();
+  const folio = requestSnap.data()?.folio || `SC-MIGRADA-${year}`;
+
+  const lines = candidates.map(item =>
+    snapshotLineFromItem(item, Math.max(num(item.inventarioDeseado) - currentInventory(item), 0))
+  );
+  const { totals, quantity } = totalsForLines(lines);
+
+  // Normalmente son pocos registros. Se divide en lotes para mantenernos
+  // holgadamente por debajo del límite de 500 operaciones de Firestore.
+  const chunks = [];
+  for (let i = 0; i < candidates.length; i += 180) chunks.push(candidates.slice(i, i + 180));
+
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const batch = writeBatch(db);
+    if (chunkIndex === 0) {
+      batch.set(requestRef, {
+        folio,
+        status: REQUEST_STATUS_SENT,
+        createdBy: currentUser.uid,
+        createdByName: currentProfile?.nombre || currentUser.email || "",
+        createdAt: serverTimestamp(),
+        sentAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        itemCount: lines.length,
+        totalQty: quantity,
+        totalsByCurrency: totals,
+        legacyMigration: true,
+        filtersSnapshot: [{ label: "Origen", value: "Compras marcadas antes del sistema de solicitudes" }],
+      }, { merge: true });
     }
 
-    const missing = quantityToBuy(item);
-    if (missing <= 0) {
-      await updateDoc(doc(db, "items", itemId), {
-        purchaseStatus: PURCHASE_STATUS_RECEIVED,
-        purchaseReceivedQty: 0,
-        purchaseReceivedAt: serverTimestamp(),
+    for (const item of chunks[chunkIndex]) {
+      const qty = Math.max(num(item.inventarioDeseado) - currentInventory(item), 0);
+      const line = snapshotLineFromItem(item, qty);
+      const lineRef = doc(db, "purchaseRequests", requestId, "items", item.id);
+      batch.set(lineRef, {
+        ...line,
+        folio,
+        status: PURCHASE_STATUS_ORDERED,
+        sentAt: serverTimestamp(),
+        addedAt: serverTimestamp(),
+      }, { merge: true });
+
+      const refs = normalizePendingRefs(item.purchasePendingRefs)
+        .filter(ref => ref.requestId !== requestId);
+      refs.push({ requestId, lineId: item.id, folio, pendingQty: qty });
+
+      batch.update(doc(db, "items", item.id), {
+        purchasePendingQty: qty,
+        purchasePendingRefs: refs,
+        purchaseLegacyMigrated: true,
+        purchaseStatus: "migrated",
         updatedAt: serverTimestamp(),
       });
-      window.location.reload();
+    }
+    await batch.commit();
+  }
+
+  await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
+}
+
+function requestLineCardsHtml(lines) {
+  return lines.map(line => {
+    const pending = linePendingQty(line);
+    const subtotal = num(line.quantityRequested) * num(line.unitPrice);
+    const imageSrc = line.imageFileId ? fileViewUrl(line.imageFileId) : "assets/placeholder.svg";
+    return `
+      <article class="request-report-card">
+        <div class="request-report-image"><img src="${reportEscape(imageSrc)}" alt="${reportEscape(line.nombre || "")}"></div>
+        <div class="request-report-content">
+          <div class="request-report-head">
+            <div>
+              <h2>${reportEscape(line.nombre || "Item")}</h2>
+              <div class="muted">${reportEscape(line.sku || "")} · ${reportEscape(line.tipo || "")}</div>
+            </div>
+            <div class="priority-box"><strong>${reportEscape(priorityLabel(num(line.priority) || 3))}</strong></div>
+          </div>
+          <div class="cost-line"><strong>Precio unitario:</strong> ${reportEscape(formatCurrencyWithCode(line.unitPrice, line.currency || "MXN"))} &nbsp; <strong>Solicitado:</strong> ${num(line.quantityRequested)} &nbsp; <strong>Subtotal:</strong> ${reportEscape(formatCurrencyWithCode(subtotal, line.currency || "MXN"))}</div>
+          <div class="area-line"><strong>Zona:</strong> ${reportEscape(line.zoneId || "")} · ${reportEscape(line.zoneName || "")} &nbsp; <strong>Subzona:</strong> ${reportEscape(line.subzoneId || "")} · ${reportEscape(line.subzoneName || "")} &nbsp; <strong>Área:</strong> ${reportEscape(line.locationCode || "")} ${reportEscape(line.locationName || "")}</div>
+          ${line.descripcion ? `<p>${reportEscape(line.descripcion)}</p>` : ""}
+          <div class="links">
+            ${line.infoUrl ? `<a href="${reportEscape(line.infoUrl)}" target="_blank">Más info</a>` : ""}
+            ${line.purchaseUrl ? `<a href="${reportEscape(line.purchaseUrl)}" target="_blank">Info Compra</a>` : ""}
+          </div>
+          <div class="status-band">
+            Solicitado: <strong>${num(line.quantityRequested)}</strong> · Recibido: <strong>${num(line.quantityReceived)}</strong> · Cancelado: <strong>${num(line.quantityCancelled)}</strong> · Pendiente: <strong>${pending}</strong>
+          </div>
+        </div>
+      </article>`;
+  }).join("");
+}
+
+async function exportRequestPdf(requestId, providedLines = null) {
+  const request = requestId === currentDraftRequest?.id
+    ? currentDraftRequest
+    : purchaseRequestsById.get(requestId);
+  const lines = providedLines || (requestId ? await fetchRequestLines(requestId) : draftLinesArray());
+  if (!lines.length) {
+    alert("Esta solicitud no tiene elementos para generar el PDF.");
+    return;
+  }
+
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    alert("El navegador bloqueó la ventana del reporte. Permite ventanas emergentes e inténtalo nuevamente.");
+    return;
+  }
+
+  const folio = request?.folio || "BORRADOR";
+  const status = request?.status || REQUEST_STATUS_DRAFT;
+  const filters = Array.isArray(request?.filtersSnapshot) && request.filtersSnapshot.length
+    ? request.filtersSnapshot
+    : filtersSnapshotForRequest();
+  const { totals, quantity } = totalsForLines(lines);
+  const created = requestDateText(request?.sentAt || request?.createdAt) || new Date().toLocaleString("es-MX");
+  const stylesHref = new URL("css/styles.css", window.location.href).href;
+
+  popup.document.write(`<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<base href="${reportEscape(document.baseURI)}">
+<title>${reportEscape(folio)} · Solicitud de compra</title>
+<link rel="stylesheet" href="https://use.typekit.net/jov3nat.css">
+<link rel="stylesheet" href="${reportEscape(stylesHref)}">
+<style>
+@page{size:A4 landscape;margin:9mm}
+*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;box-sizing:border-box}
+body{font-family:Arial,sans-serif;color:#171717;margin:0;background:#fff}
+.toolbar{display:flex;justify-content:flex-end;gap:8px;padding:10px;border-bottom:1px solid #ddd}
+.page{padding:0}
+header{border-bottom:3px solid #c8102e;padding-bottom:4mm;margin-bottom:5mm}
+.kicker{font-size:9pt;font-weight:700;color:#c8102e;text-transform:uppercase}
+h1{font-size:23pt;margin:1mm 0}
+.meta{display:flex;gap:8mm;flex-wrap:wrap;font-size:9pt;color:#555}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:3mm;margin:4mm 0}
+.summary>div{border:1px solid #ddd;border-radius:2mm;padding:3mm}
+.summary .big{font-size:16pt;font-weight:700}
+.filters{display:flex;flex-wrap:wrap;gap:2mm;margin-bottom:5mm}
+.filter{border:1px solid #ddd;border-radius:99px;padding:1.5mm 2.5mm;font-size:8pt}
+.request-report-card{display:grid;grid-template-columns:42mm 1fr;border:1.5px solid #e0b12f;border-radius:2mm;margin-bottom:5mm;break-inside:avoid;overflow:hidden}
+.request-report-image{display:flex;align-items:center;justify-content:center;border-right:1px solid #eee;padding:3mm}
+.request-report-image img{max-width:100%;max-height:48mm;object-fit:contain}
+.request-report-content{padding:3.5mm}
+.request-report-head{display:flex;justify-content:space-between;gap:4mm}
+.request-report-head h2{font-size:15pt;margin:0 0 1mm}
+.muted{color:#666;font-size:8.5pt}
+.priority-box{border:1px solid #ddd;border-radius:2mm;padding:2mm 3mm;white-space:nowrap}
+.cost-line{margin:2mm 0;padding:2mm;background:#fff8ed;border:1px solid #f1d4a7;font-size:9pt}
+.area-line{margin:2mm 0;padding:2mm;border:1px solid #eee;background:#fafafa;font-size:8.5pt}
+.request-report-content p{font-size:9pt;margin:2mm 0}
+.links{display:flex;gap:2mm;margin:2mm 0}
+.links a{border:1px solid #198754;border-radius:99px;padding:1.5mm 2.5mm;text-decoration:none;color:#176b3a;font-size:8.5pt}
+.status-band{margin-top:2mm;background:#fff3cd;border-left:2mm solid #e0b12f;border-radius:2mm;padding:2.5mm;font-size:9pt}
+@media print{.toolbar{display:none!important}}
+</style>
+</head>
+<body>
+<div class="toolbar"><button onclick="window.print()">Imprimir / Guardar PDF</button><button onclick="window.close()">Cerrar</button></div>
+<main class="page">
+<header>
+<div class="kicker">Universidad Iberoamericana Ciudad de México · FabLab</div>
+<h1>Solicitud de compra ${reportEscape(folio)}</h1>
+<div class="meta"><span><strong>Estado:</strong> ${reportEscape(requestStatusLabel(status))}</span><span><strong>Fecha:</strong> ${reportEscape(created)}</span><span><strong>Generado por:</strong> ${reportEscape(request?.createdByName || currentProfile?.nombre || currentUser?.email || "")}</span></div>
+</header>
+<section class="summary">
+<div><div class="muted">Artículos</div><div class="big">${lines.length}</div></div>
+<div><div class="muted">Piezas solicitadas</div><div class="big">${quantity}</div></div>
+<div><div class="muted">Importe</div><div class="big">${reportEscape(formatMoneyTotals(totals))}</div></div>
+</section>
+<section class="filters">${filters.map(filter => `<span class="filter"><strong>${reportEscape(filter.label)}:</strong> ${reportEscape(filter.value)}</span>`).join("")}</section>
+<section>${requestLineCardsHtml(lines)}</section>
+</main>
+<script>
+window.addEventListener("load",async()=>{const waits=Array.from(document.images).map(img=>img.complete?Promise.resolve():new Promise(r=>{img.onload=r;img.onerror=r}));await Promise.all(waits);setTimeout(()=>window.print(),350)});
+<\/script>
+</body></html>`);
+  popup.document.close();
+}
+
+async function exportRequestXlsx(requestId, providedLines = null) {
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX.");
+    return;
+  }
+  const request = requestId === currentDraftRequest?.id
+    ? currentDraftRequest
+    : purchaseRequestsById.get(requestId);
+  const lines = providedLines || (requestId ? await fetchRequestLines(requestId) : draftLinesArray());
+  if (!lines.length) {
+    alert("Esta solicitud no tiene elementos para exportar.");
+    return;
+  }
+
+  const header = [
+    "Solicitud", "Estado", "Zona", "Subzona", "Área", "SKU", "Tipo", "Nombre", "Prioridad",
+    "Solicitado", "Recibido", "Cancelado", "Pendiente", "Precio unitario", "Moneda", "Subtotal solicitado",
+    "Más info", "Info compra"
+  ];
+  const folio = request?.folio || "BORRADOR";
+  const rows = lines.map(line => [
+    folio,
+    requestStatusLabel(request?.status || REQUEST_STATUS_DRAFT),
+    line.zoneName || "",
+    line.subzoneName || "",
+    `${line.locationCode || ""} ${line.locationName || ""}`.trim(),
+    line.sku || "",
+    line.tipo || "",
+    line.nombre || "",
+    num(line.priority) || 3,
+    num(line.quantityRequested),
+    num(line.quantityReceived),
+    num(line.quantityCancelled),
+    linePendingQty(line),
+    num(line.unitPrice),
+    line.currency || "MXN",
+    num(line.quantityRequested) * num(line.unitPrice),
+    line.infoUrl || "",
+    line.purchaseUrl || "",
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  ws["!cols"] = [
+    {wch:18},{wch:14},{wch:20},{wch:24},{wch:28},{wch:12},{wch:16},{wch:36},{wch:10},
+    {wch:12},{wch:12},{wch:12},{wch:12},{wch:15},{wch:10},{wch:18},{wch:40},{wch:40}
+  ];
+  for (let r = 2; r <= rows.length + 1; r++) {
+    ["I","J","K","L","M","N","P"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
+    const currency = ws[`O${r}`]?.v || "MXN";
+    const fmt = xlsxMoneyFormat(currency);
+    if (ws[`N${r}`]) ws[`N${r}`].z = fmt;
+    if (ws[`P${r}`]) ws[`P${r}`].z = fmt;
+  }
+  ws["!autofilter"] = { ref: `A1:R${rows.length + 1}` };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Solicitud");
+  XLSX.writeFile(wb, `${folio.replace(/[^A-Za-z0-9_-]+/g, "_")}.xlsx`, { bookType: "xlsx", compression: true });
+}
+
+function bindPurchaseRequestManagerActions() {
+  document.addEventListener("click", async event => {
+    const target = event.target;
+
+    if (target.closest("#refreshPurchaseRequests")) {
+      await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
+      await loadCurrentDraft();
+      renderPurchaseRequestManager();
+      queueEnhancements();
       return;
     }
 
-    const ok = confirm(
-      `¿Confirmar que ya llegó la compra?\n\n${item.nombre || item.sku || "Item"}\nSe agregarán ${pluralPieces(missing)} al stock de almacén para completar el inventario deseado.`
-    );
-    if (!ok) return;
+    const draftEdit = target.closest(".request-draft-edit");
+    if (draftEdit) {
+      await addOrEditDraftItem(draftEdit.dataset.itemId);
+      return;
+    }
 
-    const newWarehouseStock = num(item.stockAlmacen) + missing;
+    if (target.closest(".request-draft-empty")) {
+      await emptyCurrentDraft();
+      return;
+    }
 
-    await updateDoc(doc(db, "items", itemId), {
-      stockAlmacen: newWarehouseStock,
-      purchaseStatus: PURCHASE_STATUS_RECEIVED,
-      purchaseReceivedQty: missing,
-      purchaseReceivedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    if (target.closest(".request-draft-send")) {
+      await sendCurrentDraft();
+      return;
+    }
 
-    window.location.reload();
-  } catch (error) {
-    console.error(error);
-    alert(`No se pudo registrar la recepción de la compra: ${error.message}`);
-  } finally {
-    setButtonBusy(button, false);
-  }
+    if (target.closest(".request-draft-pdf")) {
+      await exportRequestPdf(currentDraftRequest?.id || "", draftLinesArray());
+      return;
+    }
+
+    if (target.closest(".request-draft-xlsx")) {
+      await exportRequestXlsx(currentDraftRequest?.id || "", draftLinesArray());
+      return;
+    }
+
+    const view = target.closest(".request-history-view");
+    if (view) {
+      await openRequestDetail(view.dataset.requestId);
+      return;
+    }
+
+    const pdf = target.closest(".request-history-pdf");
+    if (pdf) {
+      await exportRequestPdf(pdf.dataset.requestId);
+      return;
+    }
+
+    const xlsx = target.closest(".request-history-xlsx");
+    if (xlsx) {
+      await exportRequestXlsx(xlsx.dataset.requestId);
+      return;
+    }
+
+    const receive = target.closest(".request-line-receive");
+    if (receive) {
+      await registerLineReceipt(receive.dataset.requestId, receive.dataset.lineId, num(receive.dataset.pending));
+      return;
+    }
+
+    const cancel = target.closest(".request-line-cancel");
+    if (cancel) {
+      await cancelLinePending(cancel.dataset.requestId, cancel.dataset.lineId, num(cancel.dataset.pending));
+      return;
+    }
+
+    const openFromItem = target.closest(".request-open-from-item");
+    if (openFromItem) {
+      await openRequestDetail(openFromItem.dataset.requestId);
+      return;
+    }
+
+    const detailPdf = target.closest("#purchaseRequestDetailPdf");
+    if (detailPdf && detailPdf.dataset.requestId) {
+      await exportRequestPdf(detailPdf.dataset.requestId);
+      return;
+    }
+
+    const detailXlsx = target.closest("#purchaseRequestDetailXlsx");
+    if (detailXlsx && detailXlsx.dataset.requestId) {
+      await exportRequestXlsx(detailXlsx.dataset.requestId);
+      return;
+    }
+
+    const cancelAll = target.closest("#purchaseRequestCancelAll");
+    if (cancelAll && cancelAll.dataset.requestId) {
+      await cancelAllPendingInRequest(cancelAll.dataset.requestId);
+    }
+  });
 }
 
 async function updatePriority(itemId, select) {
@@ -1208,22 +2411,16 @@ function bindPurchaseActions() {
   const itemsList = document.querySelector("#itemsList");
   if (!itemsList) return;
 
-  itemsList.addEventListener("click", event => {
-    const sendButton = event.target.closest(".purchase-send-btn");
-    if (sendButton) {
-      sendToPurchases(sendButton.dataset.id, sendButton);
+  itemsList.addEventListener("click", async event => {
+    const addButton = event.target.closest(".purchase-add-request-btn");
+    if (addButton) {
+      await addOrEditDraftItem(addButton.dataset.id);
       return;
     }
 
-    const cancelButton = event.target.closest(".purchase-cancel-btn");
-    if (cancelButton) {
-      cancelPurchase(cancelButton.dataset.id, cancelButton);
-      return;
-    }
-
-    const receivedButton = event.target.closest(".purchase-received-btn");
-    if (receivedButton) {
-      markAsReceived(receivedButton.dataset.id, receivedButton);
+    const viewButton = event.target.closest(".purchase-view-requests-btn");
+    if (viewButton) {
+      await openItemRequests(viewButton.dataset.id);
     }
   });
 
@@ -1288,6 +2485,7 @@ function inventoryReportRows(rows) {
     prioridad: itemPriority(item),
     inventario_actual: currentInventory(item),
     inventario_deseado: num(item.inventarioDeseado),
+    pendiente_recibir: pendingPurchaseQty(item),
     cantidad_a_comprar: quantityToBuy(item),
     precio_unitario: num(item.precioUnitario),
     moneda: item.moneda || "MXN",
@@ -1309,27 +2507,27 @@ function exportVisibleXlsx(rows) {
   const data = inventoryReportRows(rows);
   const headers = [
     "Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Descripción",
-    "Estado de compra", "Prioridad", "Inventario actual", "Inventario deseado", "Cantidad a comprar",
+    "Estado de compra", "Prioridad", "Inventario actual", "Inventario deseado", "Pendiente de recibir", "Disponible para solicitar",
     "Precio unitario", "Moneda", "Subtotal", "Liga de compra",
   ];
   const aoa = [headers, ...data.map(row => [
     cleanXlsxText(row.zona), cleanXlsxText(row.subzona), cleanXlsxText(row.area_codigo), cleanXlsxText(row.area),
     cleanXlsxText(row.sku), cleanXlsxText(row.tipo), cleanXlsxText(row.nombre), cleanXlsxText(row.descripcion),
     cleanXlsxText(row.estado_compra), cleanXlsxNumber(row.prioridad), cleanXlsxNumber(row.inventario_actual),
-    cleanXlsxNumber(row.inventario_deseado), cleanXlsxNumber(row.cantidad_a_comprar), cleanXlsxNumber(row.precio_unitario),
-    cleanXlsxText(row.moneda), cleanXlsxNumber(row.subtotal), cleanXlsxText(row.liga_compra),
+    cleanXlsxNumber(row.inventario_deseado), cleanXlsxNumber(row.pendiente_recibir), cleanXlsxNumber(row.cantidad_a_comprar),
+    cleanXlsxNumber(row.precio_unitario), cleanXlsxText(row.moneda), cleanXlsxNumber(row.subtotal), cleanXlsxText(row.liga_compra),
   ])];
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [
     { wch: 18 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 36 },
-    { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 },
+    { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 17 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 },
   ];
   for (let r = 2; r <= data.length + 1; r++) {
-    ["J", "K", "L", "M"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
+    ["J", "K", "L", "M", "N"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
   }
-  applyXlsxMoneyFormat(ws, data.length, ["N", "P"], "O");
-  ws["!autofilter"] = { ref: `A1:Q${data.length + 1}` };
+  applyXlsxMoneyFormat(ws, data.length, ["O", "Q"], "P");
+  ws["!autofilter"] = { ref: `A1:R${data.length + 1}` };
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Inventario filtrado");
@@ -1373,11 +2571,11 @@ function exportPurchaseReportXlsx(rows) {
 
   const detail = inventoryReportRows(rows);
   const detailAoa = [
-    ["Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Estado de compra", "Prioridad", "Inventario actual", "Inventario deseado", "Cantidad a comprar", "Precio unitario", "Moneda", "Subtotal", "Liga de compra"],
+    ["Zona", "Subzona", "Código de área", "Área", "SKU", "Tipo", "Nombre", "Estado de compra", "Prioridad", "Inventario actual", "Inventario deseado", "Pendiente de recibir", "Disponible para solicitar", "Precio unitario", "Moneda", "Subtotal", "Liga de compra"],
     ...detail.map(row => [
       cleanXlsxText(row.zona), cleanXlsxText(row.subzona), cleanXlsxText(row.area_codigo), cleanXlsxText(row.area), cleanXlsxText(row.sku),
       cleanXlsxText(row.tipo), cleanXlsxText(row.nombre), cleanXlsxText(row.estado_compra), cleanXlsxNumber(row.prioridad),
-      cleanXlsxNumber(row.inventario_actual), cleanXlsxNumber(row.inventario_deseado), cleanXlsxNumber(row.cantidad_a_comprar),
+      cleanXlsxNumber(row.inventario_actual), cleanXlsxNumber(row.inventario_deseado), cleanXlsxNumber(row.pendiente_recibir), cleanXlsxNumber(row.cantidad_a_comprar),
       cleanXlsxNumber(row.precio_unitario), cleanXlsxText(row.moneda), cleanXlsxNumber(row.subtotal), cleanXlsxText(row.liga_compra),
     ]),
   ];
@@ -1394,9 +2592,9 @@ function exportPurchaseReportXlsx(rows) {
   const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
   wsDetail["!cols"] = [
     { wch: 20 }, { wch: 24 }, { wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 36 }, { wch: 24 },
-    { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 },
+    { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 17 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 40 },
   ];
-  applyXlsxMoneyFormat(wsDetail, detailAoa.length - 1, ["M", "O"], "N");
+  applyXlsxMoneyFormat(wsDetail, detailAoa.length - 1, ["N", "P"], "O");
 
   XLSX.utils.book_append_sheet(wb, wsCategories, "Totales categoria");
   XLSX.utils.book_append_sheet(wb, wsBreakdown, "Zona subzona categoria");
@@ -1445,7 +2643,6 @@ async function loadPurchaseItems() {
 async function initPurchaseWorkflow() {
   injectStyles();
 
-  // Primero validamos únicamente la sesión y el rol.
   const user = await waitForUser();
   if (!user) {
     window.location.replace("login.html");
@@ -1453,6 +2650,8 @@ async function initPurchaseWorkflow() {
   }
 
   const profile = await getUserProfile(user.uid);
+  currentUser = user;
+  currentProfile = profile;
   currentAccessRole = profile?.appRole || profile?.role || "";
 
   if (!ALLOWED_ROLES.has(currentAccessRole)) {
@@ -1461,23 +2660,28 @@ async function initPurchaseWorkflow() {
     return;
   }
 
-  // Una vez validado el acceso, mostramos inmediatamente la página.
-  // La consulta adicional de items puede terminar en segundo plano sin
-  // mantener al usuario frente a una pantalla blanca.
+  // Mostramos la página inmediatamente después de validar el acceso.
   revealPage();
 
-  // La interfaz base no necesita esperar la consulta completa de Firestore.
   addFilters();
   addPrioritySortOption();
   addLegend();
   addPdfReportButton();
+  injectPurchaseRequestManager();
   bindPurchaseActions();
+  bindPurchaseRequestManagerActions();
   bindExportOverrides();
 
-  // Cargamos los datos adicionales de Compras con la página ya visible.
-  await loadPurchaseItems();
+  // Datos del inventario y solicitudes se cargan con la página ya visible.
+  await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
 
-  // Finalmente decoramos tarjetas, prioridades, estados y reportes.
+  // Migra una sola vez las compras antiguas que estaban marcadas como ordered
+  // antes de existir el sistema formal de solicitudes.
+  await migrateLegacyOrdersIfNeeded();
+
+  await loadCurrentDraft();
+  renderPurchaseRequestManager();
+
   observePurchaseCards();
   queueEnhancements();
 }
