@@ -28,6 +28,7 @@ const ALLOWED_ROLES = new Set(["admin", "supervisor"]);
 const itemsById = new Map();
 const purchaseRequestsById = new Map();
 const draftLinesByItemId = new Map();
+const bulkSelectedItemIds = new Set();
 
 let currentAccessRole = "";
 let currentUser = null;
@@ -37,6 +38,7 @@ let enhancementQueued = false;
 let enhancementRerunRequested = false;
 let observer = null;
 let purchaseUiBusy = false;
+let bulkAddBusy = false;
 
 // Evita que una vista no autorizada alcance a mostrar el contenido de Compras
 // mientras Firebase resuelve la sesión y el perfil.
@@ -100,6 +102,38 @@ function injectStyles() {
     #purchaseStatusFilterRow .form-select {
       min-height: 42px;
     }
+
+    .purchase-bulk-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem 1rem;
+      margin-bottom: 1rem;
+      padding: .75rem 1rem;
+      border: 1px solid #d9dde3;
+      border-radius: .75rem;
+      background: #fff;
+    }
+    .purchase-bulk-toolbar .form-check { margin: 0; }
+    .purchase-bulk-toolbar .bulk-selection-meta { color: #6c757d; font-size: .9rem; }
+    .purchase-bulk-selector {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      margin-bottom: .6rem;
+      padding-bottom: .55rem;
+      border-bottom: 1px solid rgba(0,0,0,.09);
+    }
+    .purchase-bulk-selector .form-check-input {
+      margin-top: 0;
+      width: 1.1rem;
+      height: 1.1rem;
+      cursor: pointer;
+    }
+    .purchase-bulk-selector label { cursor: pointer; font-size: .86rem; font-weight: 600; }
+    .purchase-bulk-selector.is-disabled { display: none; }
+    .item-card.bulk-selected { box-shadow: 0 0 0 3px rgba(33,37,41,.16); }
 
     .purchase-request-launcher {
       display: flex;
@@ -493,6 +527,223 @@ function decorateCard(card) {
     controls.dataset.signature = signature;
     controls.innerHTML = statusControlsHtml(item, state);
   }
+
+  decorateBulkSelector(card, item, controls);
+}
+
+function decorateBulkSelector(card, item, controls) {
+  if (!controls) return;
+
+  const itemId = String(item.id);
+  const eligible = quantityToBuy(item) > 0;
+  if (!eligible) bulkSelectedItemIds.delete(itemId);
+
+  let wrapper = controls.querySelector(".purchase-bulk-selector");
+  if (!wrapper) {
+    wrapper = document.createElement("div");
+    wrapper.className = "purchase-bulk-selector";
+    controls.prepend(wrapper);
+  }
+
+  wrapper.classList.toggle("is-disabled", !eligible);
+  wrapper.innerHTML = `
+    <input class="form-check-input purchase-bulk-checkbox" type="checkbox"
+      id="bulk-select-${reportEscape(itemId)}" data-id="${reportEscape(itemId)}"
+      ${bulkSelectedItemIds.has(itemId) ? "checked" : ""}
+      ${eligible ? "" : "disabled"}>
+    <label for="bulk-select-${reportEscape(itemId)}">Seleccionar para solicitud</label>`;
+
+  card.classList.toggle("bulk-selected", eligible && bulkSelectedItemIds.has(itemId));
+}
+
+function visibleBulkEligibleItems() {
+  return nativeCards()
+    .filter(card => !card.classList.contains("d-none"))
+    .map(card => itemsById.get(card.dataset.itemId))
+    .filter(Boolean)
+    .filter(item => quantityToBuy(item) > 0);
+}
+
+function updateBulkPurchaseToolbar() {
+  const toolbar = document.querySelector("#purchaseBulkToolbar");
+  if (!toolbar) return;
+
+  for (const itemId of [...bulkSelectedItemIds]) {
+    const item = itemsById.get(itemId);
+    if (!item || quantityToBuy(item) <= 0) bulkSelectedItemIds.delete(itemId);
+  }
+
+  const visibleEligible = visibleBulkEligibleItems();
+  const visibleIds = visibleEligible.map(item => String(item.id));
+  const selectedVisible = visibleIds.filter(id => bulkSelectedItemIds.has(id)).length;
+  const totalSelected = bulkSelectedItemIds.size;
+
+  const selectVisible = toolbar.querySelector("#bulkSelectVisible");
+  const selectedText = toolbar.querySelector("#bulkSelectedCount");
+  const eligibleText = toolbar.querySelector("#bulkEligibleCount");
+  const addButton = toolbar.querySelector("#bulkAddSelected");
+  const clearButton = toolbar.querySelector("#bulkClearSelection");
+
+  if (selectVisible) {
+    selectVisible.disabled = visibleEligible.length === 0 || bulkAddBusy;
+    selectVisible.checked = visibleEligible.length > 0 && selectedVisible === visibleEligible.length;
+    selectVisible.indeterminate = selectedVisible > 0 && selectedVisible < visibleEligible.length;
+  }
+  if (selectedText) selectedText.textContent = `${totalSelected} seleccionado${totalSelected === 1 ? "" : "s"}`;
+  if (eligibleText) eligibleText.textContent = `${visibleEligible.length} disponible${visibleEligible.length === 1 ? "" : "s"} en el filtro actual`;
+  if (addButton) {
+    addButton.disabled = totalSelected === 0 || bulkAddBusy;
+    addButton.textContent = bulkAddBusy
+      ? "Agregando…"
+      : `Agregar seleccionados al borrador${totalSelected ? ` (${totalSelected})` : ""}`;
+  }
+  if (clearButton) clearButton.disabled = totalSelected === 0 || bulkAddBusy;
+
+  nativeCards().forEach(card => {
+    const checkbox = card.querySelector(".purchase-bulk-checkbox");
+    const itemId = String(card.dataset.itemId || "");
+    if (checkbox) checkbox.checked = bulkSelectedItemIds.has(itemId);
+    card.classList.toggle("bulk-selected", bulkSelectedItemIds.has(itemId));
+  });
+}
+
+function addBulkPurchaseToolbar() {
+  if (document.querySelector("#purchaseBulkToolbar")) return;
+
+  const itemsList = document.querySelector("#itemsList");
+  if (!itemsList?.parentNode) return;
+
+  const toolbar = document.createElement("div");
+  toolbar.id = "purchaseBulkToolbar";
+  toolbar.className = "purchase-bulk-toolbar";
+  toolbar.innerHTML = `
+    <div class="d-flex flex-wrap align-items-center gap-3">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="bulkSelectVisible">
+        <label class="form-check-label fw-semibold" for="bulkSelectVisible">Seleccionar todos los visibles</label>
+      </div>
+      <span class="bulk-selection-meta" id="bulkEligibleCount">0 disponibles en el filtro actual</span>
+      <span class="badge text-bg-dark" id="bulkSelectedCount">0 seleccionados</span>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="bulkClearSelection" disabled>Limpiar selección</button>
+      <button type="button" class="btn btn-dark btn-sm" id="bulkAddSelected" disabled>Agregar seleccionados al borrador</button>
+    </div>`;
+
+  const legend = document.querySelector("#purchaseStatusLegend");
+  itemsList.parentNode.insertBefore(toolbar, legend || itemsList);
+  updateBulkPurchaseToolbar();
+}
+
+async function addSelectedItemsToDraft() {
+  if (bulkAddBusy || !bulkSelectedItemIds.size) return;
+
+  const selectedItems = [...bulkSelectedItemIds]
+    .map(id => itemsById.get(id))
+    .filter(Boolean)
+    .map(item => ({ item, qty: requestCapacity(item) }))
+    .filter(entry => entry.qty > 0);
+
+  if (!selectedItems.length) {
+    bulkSelectedItemIds.clear();
+    updateBulkPurchaseToolbar();
+    alert("Los artículos seleccionados ya no tienen cantidad disponible para solicitar.");
+    return;
+  }
+
+  const totalQty = selectedItems.reduce((sum, entry) => sum + entry.qty, 0);
+  const ok = confirm(
+    `¿Agregar ${selectedItems.length} artículo${selectedItems.length === 1 ? "" : "s"} al borrador con la cantidad máxima disponible?\n\n` +
+    `Se agregarán ${totalQty} pieza${totalQty === 1 ? "" : "s"} en total. Después puedes editar cada cantidad antes de enviar la solicitud.`
+  );
+  if (!ok) return;
+
+  bulkAddBusy = true;
+  updateBulkPurchaseToolbar();
+
+  try {
+    const request = await ensureDraftRequest();
+    const chunks = [];
+    for (let i = 0; i < selectedItems.length; i += 350) chunks.push(selectedItems.slice(i, i + 350));
+
+    for (const chunk of chunks) {
+      const batch = writeBatch(db);
+      for (const { item, qty } of chunk) {
+        const existing = draftLinesByItemId.get(String(item.id));
+        const lineRef = doc(db, "purchaseRequests", request.id, "items", String(item.id));
+        batch.set(lineRef, {
+          ...snapshotLineFromItem(item, qty),
+          addedAt: existing?.addedAt || serverTimestamp(),
+        }, { merge: true });
+      }
+      await batch.commit();
+    }
+
+    for (const { item, qty } of selectedItems) {
+      const existing = draftLinesByItemId.get(String(item.id));
+      draftLinesByItemId.set(String(item.id), {
+        ...(existing || {}),
+        ...snapshotLineFromItem(item, qty),
+        itemId: item.id,
+        quantityRequested: qty,
+        addedAt: existing?.addedAt || new Date(),
+      });
+    }
+
+    await syncDraftRequestSummary();
+    bulkSelectedItemIds.clear();
+    renderPurchaseRequestManager();
+    queueEnhancements();
+
+    alert(
+      `${selectedItems.length} artículo${selectedItems.length === 1 ? "" : "s"} agregado${selectedItems.length === 1 ? "" : "s"} al borrador con su cantidad máxima disponible.\n\n` +
+      `Puedes ajustar las cantidades desde “Solicitudes de compra” antes de enviar.`
+    );
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudieron agregar los artículos al borrador: ${error.message}`);
+  } finally {
+    bulkAddBusy = false;
+    updateBulkPurchaseToolbar();
+  }
+}
+
+function bindBulkPurchaseActions() {
+  const itemsList = document.querySelector("#itemsList");
+  if (itemsList) {
+    itemsList.addEventListener("change", event => {
+      const checkbox = event.target.closest(".purchase-bulk-checkbox");
+      if (!checkbox) return;
+      const itemId = String(checkbox.dataset.id || "");
+      if (!itemId) return;
+      if (checkbox.checked) bulkSelectedItemIds.add(itemId);
+      else bulkSelectedItemIds.delete(itemId);
+      updateBulkPurchaseToolbar();
+    });
+  }
+
+  document.addEventListener("change", event => {
+    const selectVisible = event.target.closest("#bulkSelectVisible");
+    if (!selectVisible) return;
+    const visible = visibleBulkEligibleItems();
+    visible.forEach(item => {
+      const itemId = String(item.id);
+      if (selectVisible.checked) bulkSelectedItemIds.add(itemId);
+      else bulkSelectedItemIds.delete(itemId);
+    });
+    updateBulkPurchaseToolbar();
+  });
+
+  document.addEventListener("click", async event => {
+    if (event.target.closest("#bulkClearSelection")) {
+      bulkSelectedItemIds.clear();
+      updateBulkPurchaseToolbar();
+      return;
+    }
+    if (event.target.closest("#bulkAddSelected")) {
+      await addSelectedItemsToDraft();
+    }
+  });
 }
 
 function addFilters() {
@@ -640,6 +891,7 @@ function cloneCardForPdf(card) {
   clone.classList.remove("d-none");
   clone.removeAttribute("data-purchase-status-signature");
   clone.querySelector(".admin-card-actions")?.remove();
+  clone.querySelector(".purchase-bulk-selector")?.remove();
 
   // En el PDF no deben aparecer acciones operativas: editar, descargar,
   // mandar a comprar, cancelar o registrar recepción.
@@ -1242,6 +1494,7 @@ function queueEnhancements() {
 
     applyCardFiltersAndOrdering();
     recalculateSummaryAndReport();
+    updateBulkPurchaseToolbar();
     enhancementQueued = false;
 
     // Si hubo un cambio mientras procesábamos (por ejemplo, un filtro),
@@ -2859,9 +3112,11 @@ async function initPurchaseWorkflow() {
   addFilters();
   addPrioritySortOption();
   addLegend();
+  addBulkPurchaseToolbar();
   addPdfReportButton();
   injectPurchaseRequestManager();
   bindPurchaseActions();
+  bindBulkPurchaseActions();
   bindPurchaseRequestManagerActions();
   bindExportOverrides();
 
