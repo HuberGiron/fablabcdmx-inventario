@@ -103,9 +103,10 @@ function injectStyles() {
 
     .purchase-request-launcher {
       display: flex;
-      justify-content: flex-end;
+      justify-content: flex-start;
       align-items: center;
-      margin-bottom: 1rem;
+      margin-top: 1.75rem;
+      margin-bottom: 0;
     }
     .purchase-request-launcher .btn {
       display: inline-flex;
@@ -1664,12 +1665,14 @@ function injectPurchaseRequestManager() {
     return;
   }
 
-  const filterCard = document.querySelector(".filter-card");
-  const catalogContainer = filterCard?.parentNode;
-  if (!filterCard || !catalogContainer) return;
+  const heroLead = document.querySelector(".inventory-hero .inventory-lead");
+  const heroColumn = heroLead?.parentElement;
+  if (!heroLead || !heroColumn) return;
 
-  // El acceso a Solicitudes vive antes de los filtros porque el historial y
-  // el borrador son independientes del filtro actual del inventario.
+  // Solicitudes de compra no depende de los filtros. El acceso vive dentro
+  // del hero, debajo de la descripción, aprovechando el espacio libre que
+  // deja el título grande de Compras FabLab sin aumentar la altura del área
+  // de trabajo ni desplazar el bloque de filtros.
   let launcher = document.querySelector("#purchaseRequestLauncher");
   if (!launcher) {
     launcher = document.createElement("div");
@@ -1681,7 +1684,7 @@ function injectPurchaseRequestManager() {
         <span id="purchaseRequestLauncherDraft" class="badge rounded-pill text-bg-warning d-none"></span>
         <span id="purchaseRequestLauncherCount" class="badge rounded-pill text-bg-light text-dark">0</span>
       </button>`;
-    catalogContainer.insertBefore(launcher, filterCard);
+    heroColumn.appendChild(launcher);
   }
 
   let panel = document.querySelector("#purchaseRequestsPanel");
