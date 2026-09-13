@@ -77,25 +77,6 @@ function injectStyles() {
     .priority-badge {
       font-size: .78rem;
       padding: .45rem .65rem;
-      border: 1px solid rgba(0, 0, 0, .18);
-    }
-    .priority-level-1 {
-      background: #dc3545 !important;
-      color: #fff !important;
-      border-color: #dc3545 !important;
-    }
-    .priority-level-2 {
-      background: #f3b6c2 !important;
-      color: #5b1f2a !important;
-      border-color: #df8fa0 !important;
-    }
-    .priority-level-3 {
-      background: #fff !important;
-      color: #212529 !important;
-      border-color: #ced4da !important;
-    }
-    .purchase-priority-select {
-      font-weight: 700;
     }
 
     #purchaseStatusFilterRow .form-select {
@@ -136,9 +117,9 @@ function priorityLabel(priority) {
 
 function priorityBadgeClass(priority) {
   const p = Number(priority);
-  if (p === 1) return "priority-level-1";
-  if (p === 2) return "priority-level-2";
-  return "priority-level-3";
+  if (p === 1) return "text-bg-danger";
+  if (p === 2) return "text-bg-warning";
+  return "text-bg-secondary";
 }
 
 function purchaseVisualState(item) {
@@ -230,7 +211,7 @@ function priorityControlHtml(item) {
     return `
       <div class="purchase-priority-box">
         <label class="purchase-priority-label" for="priority-${item.id}">Prioridad de compra</label>
-        <select id="priority-${item.id}" class="form-select form-select-sm purchase-priority-select priority-level-${priority}" data-id="${item.id}" aria-label="Prioridad de compra">
+        <select id="priority-${item.id}" class="form-select form-select-sm purchase-priority-select" data-id="${item.id}" aria-label="Prioridad de compra">
           <option value="1" ${priority === 1 ? "selected" : ""}>1 · Alta</option>
           <option value="2" ${priority === 2 ? "selected" : ""}>2 · Media</option>
           <option value="3" ${priority === 3 ? "selected" : ""}>3 · Normal</option>
@@ -671,26 +652,7 @@ function exportPurchaseReportPdf() {
       font-weight: 700;
       text-transform: uppercase;
     }
-    .priority-badge {
-      font-size: 8pt;
-      padding: 1.6mm 2.2mm;
-      border: 1px solid rgba(0, 0, 0, .18);
-    }
-    .priority-level-1 {
-      background: #dc3545 !important;
-      color: #fff !important;
-      border-color: #dc3545 !important;
-    }
-    .priority-level-2 {
-      background: #f3b6c2 !important;
-      color: #5b1f2a !important;
-      border-color: #df8fa0 !important;
-    }
-    .priority-level-3 {
-      background: #fff !important;
-      color: #212529 !important;
-      border-color: #ced4da !important;
-    }
+    .priority-badge { font-size: 8pt; padding: 1.6mm 2.2mm; }
     .admin-card-actions,
     .purchase-send-btn,
     .purchase-cancel-btn,
