@@ -367,6 +367,383 @@ function addLegend() {
   itemsList.parentNode.insertBefore(legend, itemsList);
 }
 
+
+function addPdfReportButton() {
+  if (document.querySelector("#exportPurchasePdf")) return;
+
+  const excelButton = document.querySelector("#exportPurchaseReport");
+  const container = excelButton?.parentElement;
+  if (!excelButton || !container) return;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "exportPurchasePdf";
+  button.className = "btn btn-outline-danger";
+  button.textContent = "Generar reporte PDF";
+  container.insertBefore(button, excelButton);
+}
+
+function reportEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function selectedOptionText(selector, fallback = "") {
+  const select = document.querySelector(selector);
+  if (!select) return fallback;
+  return select.selectedOptions?.[0]?.textContent?.trim() || fallback;
+}
+
+function selectedTypesText() {
+  const checks = [...document.querySelectorAll(".tipo-check")];
+  if (!checks.length) return "Todas las categorías";
+
+  const selected = checks.filter(check => check.checked).map(check => String(check.value || "").trim()).filter(Boolean);
+  if (selected.length === checks.length) return "Todas las categorías";
+  if (!selected.length) return "Ningún tipo seleccionado";
+  return selected.join(", ");
+}
+
+function appliedFiltersForReport() {
+  return [
+    ["Zona", selectedOptionText("#filterZone", "Todas las zonas")],
+    ["Subzona", selectedOptionText("#filterSubzone", "Todas las subzonas")],
+    ["Ubicación", selectedOptionText("#filterLocation", "Todas las ubicaciones")],
+    ["Tipo", selectedTypesText()],
+    ["FabAcademy", selectedOptionText("#filterWeek", "Todas las semanas FabAcademy")],
+    ["Buscar", document.querySelector("#search")?.value?.trim() || "Sin búsqueda"],
+    ["Estado de compra", selectedOptionText("#filterPurchaseStatus", "Todos los estados")],
+    ["Prioridad", selectedOptionText("#filterPurchasePriority", "Todas las prioridades")],
+    ["Orden", selectedOptionText("#sortMode", "Zona / subzona")],
+  ];
+}
+
+function reportCards() {
+  return nativeCards().filter(card => {
+    const item = itemsById.get(card.dataset.itemId);
+    return Boolean(item) && matchesExtraFilters(item) && !card.classList.contains("d-none");
+  });
+}
+
+function cloneCardForPdf(card) {
+  const clone = card.cloneNode(true);
+  const item = itemsById.get(card.dataset.itemId);
+
+  clone.classList.remove("d-none");
+  clone.removeAttribute("data-purchase-status-signature");
+  clone.querySelector(".admin-card-actions")?.remove();
+
+  // En el PDF no deben aparecer acciones operativas: editar, descargar,
+  // mandar a comprar, cancelar o registrar recepción.
+  clone.querySelectorAll("button").forEach(button => button.remove());
+
+  // La prioridad se vuelve una etiqueta estática aun cuando el reporte
+  // sea generado por un administrador que en pantalla ve un <select>.
+  let priorityWrapper = clone.querySelector(".purchase-priority-wrapper");
+  if (!priorityWrapper && item) {
+    const body = clone.querySelector(".card-body");
+    const header = body?.querySelector(":scope > .d-flex.justify-content-between");
+    if (header) {
+      priorityWrapper = document.createElement("div");
+      priorityWrapper.className = "purchase-priority-wrapper ms-auto";
+      header.appendChild(priorityWrapper);
+    }
+  }
+  if (priorityWrapper && item) {
+    const priority = itemPriority(item);
+    priorityWrapper.innerHTML = `
+      <div class="purchase-priority-box">
+        <span class="purchase-priority-label">Prioridad de compra</span>
+        <span class="badge priority-badge ${priorityBadgeClass(priority)}">${reportEscape(priorityLabel(priority))}</span>
+      </div>`;
+  }
+
+  // Conservamos el estado y su franja de color, pero eliminamos cualquier
+  // contenedor que haya quedado vacío al retirar los botones de acción.
+  clone.querySelectorAll(".purchase-status-controls .d-flex").forEach(el => {
+    if (!el.textContent.trim() && !el.querySelector("*") ) el.remove();
+  });
+
+  // Convertimos enlaces e imágenes a URL absoluta para que funcionen en la
+  // ventana independiente usada para imprimir/guardar el PDF.
+  clone.querySelectorAll("a[href]").forEach(anchor => {
+    try {
+      anchor.setAttribute("href", new URL(anchor.getAttribute("href"), document.baseURI).href);
+    } catch (_) {}
+  });
+  clone.querySelectorAll("img[src]").forEach(img => {
+    try {
+      img.setAttribute("src", new URL(img.getAttribute("src"), document.baseURI).href);
+    } catch (_) {}
+  });
+
+  return clone.outerHTML;
+}
+
+function exportPurchaseReportPdf() {
+  const cards = reportCards();
+  if (!cards.length) {
+    alert("No hay elementos dentro del filtro actual para generar el PDF.");
+    return;
+  }
+
+  const reportWindow = window.open("", "_blank");
+  if (!reportWindow) {
+    alert("El navegador bloqueó la ventana del reporte. Permite ventanas emergentes para este sitio e inténtalo nuevamente.");
+    return;
+  }
+
+  const now = new Date();
+  const dateIso = now.toISOString().slice(0, 10);
+  const generatedAt = now.toLocaleString("es-MX", { dateStyle: "long", timeStyle: "short" });
+  const filterRows = appliedFiltersForReport();
+  const filterHtml = filterRows.map(([label, value]) => `
+    <div class="report-filter">
+      <span class="report-filter-label">${reportEscape(label)}</span>
+      <span class="report-filter-value">${reportEscape(value)}</span>
+    </div>`).join("");
+
+  const totalText = document.querySelector("#purchaseSummaryTotals")?.textContent?.trim() || "";
+  const metaText = document.querySelector("#purchaseSummaryMeta")?.textContent?.trim() || `${cards.length} elementos`;
+  const statusText = selectedOptionText("#filterPurchaseStatus", "Todos los estados")
+    .replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const documentTitle = `Reporte_Compras_FabLab_${dateIso}${statusText ? `_${statusText}` : ""}`;
+  const cardsHtml = cards.map(cloneCardForPdf).join("\n");
+  const stylesHref = new URL("css/styles.css", window.location.href).href;
+
+  reportWindow.document.open();
+  reportWindow.document.write(`<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <base href="${reportEscape(document.baseURI)}">
+  <title>${reportEscape(documentTitle)}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://use.typekit.net/jov3nat.css">
+  <link rel="stylesheet" href="${reportEscape(stylesHref)}">
+  <style>
+    @page { size: A4 landscape; margin: 9mm; }
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    html, body { background: #fff !important; }
+    body { margin: 0; color: #171717; }
+    .report-page { width: 100%; }
+    .report-header {
+      border-bottom: 3px solid #c8102e;
+      margin-bottom: 6mm;
+      padding-bottom: 4mm;
+    }
+    .report-kicker {
+      color: #c8102e;
+      font-size: 10pt;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .report-title {
+      margin: 1mm 0 2mm;
+      font-size: 24pt;
+      line-height: 1.08;
+    }
+    .report-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3mm 8mm;
+      color: #555;
+      font-size: 9.5pt;
+    }
+    .report-summary {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 5mm;
+      margin: 5mm 0;
+      padding: 4mm;
+      border: 1px solid #ddd;
+      border-radius: 3mm;
+      background: #fafafa;
+    }
+    .report-summary-total { font-size: 18pt; font-weight: 700; }
+    .report-summary-meta { color: #555; font-size: 10pt; }
+    .report-filters-title {
+      margin: 0 0 2mm;
+      font-size: 11pt;
+      font-weight: 700;
+    }
+    .report-filter-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 2mm;
+      margin-bottom: 6mm;
+    }
+    .report-filter {
+      min-width: 0;
+      padding: 2.2mm 2.8mm;
+      border: 1px solid #ddd;
+      border-radius: 2mm;
+      background: #fff;
+    }
+    .report-filter-label {
+      display: block;
+      color: #666;
+      font-size: 7.5pt;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .report-filter-value {
+      display: block;
+      margin-top: .5mm;
+      font-size: 9pt;
+      overflow-wrap: anywhere;
+    }
+    .report-items-title {
+      margin: 0 0 3mm;
+      font-size: 13pt;
+      font-weight: 700;
+    }
+    .items-list { display: block !important; }
+    .item-card {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      margin-bottom: 6mm !important;
+      box-shadow: none !important;
+    }
+    .item-card .card-body { padding: 4mm !important; }
+    .item-card .image-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3mm;
+      background: #fff;
+    }
+    .item-card .item-image {
+      width: 100%;
+      max-height: 54mm;
+      object-fit: contain;
+    }
+    .item-card h2, .item-card h3, .item-card .card-title { break-after: avoid; }
+    .purchase-status-controls {
+      margin-top: 3mm;
+      padding: 3mm 4mm;
+      border: 1px solid transparent;
+      border-left-width: 2mm;
+      border-radius: 2.5mm;
+    }
+    .purchase-state-missing { background: #f8d7da !important; border-color: #dc3545 !important; }
+    .purchase-state-ordered { background: #fff3cd !important; border-color: #f0ad00 !important; }
+    .purchase-state-complete { background: #d1e7dd !important; border-color: #198754 !important; }
+    .purchase-priority-box {
+      min-width: 36mm;
+      padding: 2.5mm 3mm;
+      border: 1px solid #dee2e6;
+      border-radius: 2.5mm;
+      background: #fff !important;
+      text-align: right;
+    }
+    .purchase-priority-label {
+      display: block;
+      margin-bottom: 1mm;
+      color: #6c757d;
+      font-size: 7pt;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .priority-badge { font-size: 8pt; padding: 1.6mm 2.2mm; }
+    .admin-card-actions,
+    .purchase-send-btn,
+    .purchase-cancel-btn,
+    .purchase-received-btn,
+    .file-download,
+    .item-card button { display: none !important; }
+    a.btn {
+      text-decoration: none !important;
+      white-space: nowrap;
+    }
+    .report-footer-note {
+      margin-top: 4mm;
+      color: #666;
+      font-size: 8pt;
+    }
+    .report-print-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      padding: 10px;
+      background: rgba(255,255,255,.96);
+      border-bottom: 1px solid #ddd;
+    }
+    @media print {
+      .no-print { display: none !important; }
+      body { font-size: 9.5pt; }
+      a[href] { text-decoration: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-print-toolbar no-print">
+    <button type="button" class="btn btn-dark" onclick="window.print()">Imprimir / Guardar como PDF</button>
+    <button type="button" class="btn btn-outline-secondary" onclick="window.close()">Cerrar</button>
+  </div>
+  <main class="report-page">
+    <header class="report-header">
+      <div class="report-kicker">Universidad Iberoamericana Ciudad de México · FabLab</div>
+      <h1 class="report-title">Reporte visual de compras</h1>
+      <div class="report-meta">
+        <span><strong>Generado:</strong> ${reportEscape(generatedAt)}</span>
+        <span><strong>Elementos:</strong> ${cards.length}</span>
+      </div>
+    </header>
+
+    <section class="report-summary">
+      <div>
+        <div class="report-filter-label">Presupuesto estimado</div>
+        <div class="report-summary-total">${reportEscape(totalText)}</div>
+      </div>
+      <div>
+        <div class="report-filter-label">Resumen del filtro</div>
+        <div class="report-summary-meta">${reportEscape(metaText)}</div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="report-filters-title">Filtros aplicados en el inventario</h2>
+      <div class="report-filter-grid">${filterHtml}</div>
+    </section>
+
+    <section>
+      <h2 class="report-items-title">Elementos del reporte</h2>
+      <div class="items-list">${cardsHtml}</div>
+    </section>
+
+    <div class="report-footer-note">
+      Los botones “Más info” e “Info Compra” conservan sus hipervínculos en el PDF generado por el navegador.
+    </div>
+  </main>
+  <script>
+    window.addEventListener("load", async () => {
+      const waits = Array.from(document.images).map(img => img.complete
+        ? Promise.resolve()
+        : new Promise(resolve => {
+            img.addEventListener("load", resolve, { once: true });
+            img.addEventListener("error", resolve, { once: true });
+          })
+      );
+      await Promise.all(waits);
+      setTimeout(() => window.print(), 350);
+    });
+  <\/script>
+</body>
+</html>`);
+  reportWindow.document.close();
+}
+
 function currentStatusFilter() {
   return document.querySelector("#filterPurchaseStatus")?.value || "all";
 }
@@ -1033,10 +1410,17 @@ function bindExportOverrides() {
   document.addEventListener("click", event => {
     const exportInventory = event.target.closest("#exportXlsx");
     const exportReport = event.target.closest("#exportPurchaseReport");
-    if (!exportInventory && !exportReport) return;
+    const exportPdf = event.target.closest("#exportPurchasePdf");
+    if (!exportInventory && !exportReport && !exportPdf) return;
 
     event.preventDefault();
     event.stopImmediatePropagation();
+
+    if (exportPdf) {
+      exportPurchaseReportPdf();
+      return;
+    }
+
     const rows = effectiveRows();
     if (exportInventory) exportVisibleXlsx(rows);
     else exportPurchaseReportXlsx(rows);
@@ -1086,6 +1470,7 @@ async function initPurchaseWorkflow() {
   addFilters();
   addPrioritySortOption();
   addLegend();
+  addPdfReportButton();
   bindPurchaseActions();
   bindExportOverrides();
 
