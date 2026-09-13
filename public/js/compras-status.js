@@ -1005,6 +1005,7 @@ async function loadPurchaseItems() {
 async function initPurchaseWorkflow() {
   injectStyles();
 
+  // Primero validamos únicamente la sesión y el rol.
   const user = await waitForUser();
   if (!user) {
     window.location.replace("login.html");
@@ -1020,14 +1021,23 @@ async function initPurchaseWorkflow() {
     return;
   }
 
-  await loadPurchaseItems();
+  // Una vez validado el acceso, mostramos inmediatamente la página.
+  // La consulta adicional de items puede terminar en segundo plano sin
+  // mantener al usuario frente a una pantalla blanca.
+  revealPage();
+
+  // La interfaz base no necesita esperar la consulta completa de Firestore.
   addFilters();
   addPrioritySortOption();
   addLegend();
   bindPurchaseActions();
   bindExportOverrides();
+
+  // Cargamos los datos adicionales de Compras con la página ya visible.
+  await loadPurchaseItems();
+
+  // Finalmente decoramos tarjetas, prioridades, estados y reportes.
   observePurchaseCards();
-  revealPage();
   queueEnhancements();
 }
 
