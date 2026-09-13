@@ -101,6 +101,61 @@ function injectStyles() {
       min-height: 42px;
     }
 
+    .purchase-request-launcher {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .purchase-request-launcher .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .55rem;
+      border-radius: 999px;
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+    .purchase-request-launcher .badge {
+      font-size: .72rem;
+    }
+    .purchase-requests-offcanvas {
+      height: min(90vh, 920px) !important;
+      border-bottom-left-radius: 1rem;
+      border-bottom-right-radius: 1rem;
+    }
+    .purchase-requests-offcanvas .offcanvas-header {
+      border-bottom: 1px solid #dee2e6;
+      padding: 1rem 1.4rem;
+    }
+    .purchase-requests-offcanvas .offcanvas-body {
+      overflow-y: auto;
+      padding: 1.25rem 1.4rem 1.5rem;
+    }
+    .purchase-requests-offcanvas .request-history-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #fff;
+      box-shadow: inset 0 -1px 0 #dee2e6;
+    }
+    .purchase-requests-offcanvas .purchase-request-manager {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+    @media (max-width: 767.98px) {
+      .purchase-requests-offcanvas {
+        height: 94vh !important;
+      }
+      .purchase-request-launcher {
+        justify-content: stretch;
+      }
+      .purchase-request-launcher .btn {
+        width: 100%;
+        justify-content: center;
+      }
+    }
+
     .purchase-request-manager {
       border: 1px solid #d9dde3;
       border-radius: .85rem;
@@ -1432,7 +1487,7 @@ function ensureQuantityModal() {
   document.body.appendChild(wrapper.firstElementChild);
 }
 
-function askQuantity({ title, message, max, value, allowZero = true }) {
+async function askQuantity({ title, message, max, value, allowZero = true }) {
   ensureQuantityModal();
 
   const modalEl = document.querySelector("#purchaseQuantityModal");
@@ -1449,9 +1504,29 @@ function askQuantity({ title, message, max, value, allowZero = true }) {
   input.value = String(Math.max(num(value), allowZero ? 0 : 1));
   help.textContent = `Máximo permitido: ${Math.max(num(max), 0)}.`;
 
+  // Bootstrap 5 no soporta de forma fiable dos modales abiertos al mismo
+  // tiempo. Si la cantidad se solicita desde el detalle de una solicitud,
+  // ocultamos temporalmente ese modal antes de abrir el de cantidad.
+  // Al cerrar el modal de cantidad se restaura automáticamente el anterior.
+  const parentModalEl = [...document.querySelectorAll(".modal.show")]
+    .find(element => element.id !== "purchaseQuantityModal");
+  const parentModal = parentModalEl
+    ? bootstrap.Modal.getOrCreateInstance(parentModalEl)
+    : null;
+  const parentBody = parentModalEl?.querySelector(".modal-body");
+  const parentScrollTop = parentBody?.scrollTop || 0;
+
+  if (parentModalEl && parentModal) {
+    await new Promise(resolve => {
+      parentModalEl.addEventListener("hidden.bs.modal", resolve, { once: true });
+      parentModal.hide();
+    });
+  }
+
   const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
 
   return new Promise(resolve => {
+    let result = null;
     let settled = false;
 
     const cleanup = () => {
@@ -1459,14 +1534,23 @@ function askQuantity({ title, message, max, value, allowZero = true }) {
       modalEl.removeEventListener("hidden.bs.modal", onHidden);
     };
 
-    const settle = result => {
+    const restoreParentModal = () => {
+      if (!parentModalEl || !parentModal) return;
+      parentModalEl.addEventListener("shown.bs.modal", () => {
+        const restoredBody = parentModalEl.querySelector(".modal-body");
+        if (restoredBody) restoredBody.scrollTop = parentScrollTop;
+      }, { once: true });
+      parentModal.show();
+    };
+
+    const onHidden = () => {
       if (settled) return;
       settled = true;
       cleanup();
+      restoreParentModal();
       resolve(result);
     };
 
-    const onHidden = () => settle(null);
     const onSave = () => {
       const qty = Number(input.value);
       const min = allowZero ? 0 : 1;
@@ -1475,7 +1559,7 @@ function askQuantity({ title, message, max, value, allowZero = true }) {
         alert(`Captura una cantidad entera entre ${min} y ${maximum}.`);
         return;
       }
-      settle(qty);
+      result = qty;
       modal.hide();
     };
 
@@ -1555,33 +1639,90 @@ function requestHistoryArray() {
     });
 }
 
-function injectPurchaseRequestManager() {
-  if (document.querySelector("#purchaseRequestManager")) return;
+function updatePurchaseRequestLauncher() {
+  const countBadge = document.querySelector("#purchaseRequestLauncherCount");
+  const draftBadge = document.querySelector("#purchaseRequestLauncherDraft");
+  const historyCount = requestHistoryArray().length;
+  const draftCount = draftLinesByItemId.size;
 
-  const summary = document.querySelector(".purchase-summary-card");
-  if (!summary?.parentNode) return;
+  if (countBadge) {
+    countBadge.textContent = String(historyCount);
+    countBadge.title = `${historyCount} solicitud${historyCount === 1 ? "" : "es"} en el historial`;
+  }
+
+  if (draftBadge) {
+    draftBadge.classList.toggle("d-none", draftCount <= 0);
+    draftBadge.textContent = draftCount > 0
+      ? `Borrador: ${draftCount}`
+      : "";
+  }
+}
+
+function injectPurchaseRequestManager() {
+  if (document.querySelector("#purchaseRequestManager")) {
+    updatePurchaseRequestLauncher();
+    return;
+  }
+
+  const filterCard = document.querySelector(".filter-card");
+  const catalogContainer = filterCard?.parentNode;
+  if (!filterCard || !catalogContainer) return;
+
+  // El acceso a Solicitudes vive antes de los filtros porque el historial y
+  // el borrador son independientes del filtro actual del inventario.
+  let launcher = document.querySelector("#purchaseRequestLauncher");
+  if (!launcher) {
+    launcher = document.createElement("div");
+    launcher.id = "purchaseRequestLauncher";
+    launcher.className = "purchase-request-launcher";
+    launcher.innerHTML = `
+      <button type="button" class="btn btn-dark" data-bs-toggle="offcanvas" data-bs-target="#purchaseRequestsPanel" aria-controls="purchaseRequestsPanel">
+        <span>Solicitudes de compra</span>
+        <span id="purchaseRequestLauncherDraft" class="badge rounded-pill text-bg-warning d-none"></span>
+        <span id="purchaseRequestLauncherCount" class="badge rounded-pill text-bg-light text-dark">0</span>
+      </button>`;
+    catalogContainer.insertBefore(launcher, filterCard);
+  }
+
+  let panel = document.querySelector("#purchaseRequestsPanel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "purchaseRequestsPanel";
+    panel.className = "offcanvas offcanvas-top purchase-requests-offcanvas";
+    panel.tabIndex = -1;
+    panel.setAttribute("aria-labelledby", "purchaseRequestsPanelLabel");
+    panel.innerHTML = `
+      <div class="offcanvas-header">
+        <div>
+          <h2 class="offcanvas-title h4 mb-1" id="purchaseRequestsPanelLabel">Solicitudes de compra</h2>
+          <div class="text-muted small">Borrador actual, historial, recepciones y cancelaciones.</div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+      </div>
+      <div class="offcanvas-body" id="purchaseRequestsPanelBody"></div>`;
+    document.body.appendChild(panel);
+  }
+
+  const panelBody = panel.querySelector("#purchaseRequestsPanelBody");
+  if (!panelBody) return;
 
   const section = document.createElement("section");
   section.id = "purchaseRequestManager";
-  section.className = "card purchase-request-manager mb-4";
+  section.className = "purchase-request-manager";
   section.innerHTML = `
-    <div class="card-body">
-      <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start mb-3">
-        <div>
-          <h2 class="request-manager-title">Solicitudes de compra</h2>
-          <div class="request-manager-subtitle">Agrupa artículos en solicitudes independientes y conserva historial, pendientes y recepciones.</div>
-        </div>
-        <button type="button" class="btn btn-outline-dark btn-sm" id="refreshPurchaseRequests">Actualizar solicitudes</button>
-      </div>
-      <div id="currentDraftPanel"></div>
-      <hr class="my-4">
-      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
-        <h3 class="h6 mb-0">Historial de solicitudes</h3>
-        <span class="small text-muted" id="purchaseRequestHistoryCount"></span>
-      </div>
-      <div id="purchaseRequestHistory"></div>
-    </div>`;
-  summary.parentNode.insertBefore(section, summary);
+    <div class="d-flex flex-wrap justify-content-end gap-2 mb-3">
+      <button type="button" class="btn btn-outline-dark btn-sm" id="refreshPurchaseRequests">Actualizar solicitudes</button>
+    </div>
+    <div id="currentDraftPanel"></div>
+    <hr class="my-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+      <h3 class="h6 mb-0">Historial de solicitudes</h3>
+      <span class="small text-muted" id="purchaseRequestHistoryCount"></span>
+    </div>
+    <div id="purchaseRequestHistory"></div>`;
+  panelBody.appendChild(section);
+
+  updatePurchaseRequestLauncher();
 }
 
 function renderPurchaseRequestManager() {
@@ -1634,6 +1775,7 @@ function renderPurchaseRequestManager() {
 
   const requests = requestHistoryArray();
   if (count) count.textContent = `${requests.length} solicitud${requests.length === 1 ? "" : "es"}`;
+  updatePurchaseRequestLauncher();
 
   if (!requests.length) {
     history.innerHTML = `<div class="text-muted small">Aún no hay solicitudes enviadas.</div>`;
