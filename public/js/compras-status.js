@@ -39,6 +39,7 @@ let enhancementRerunRequested = false;
 let observer = null;
 let purchaseUiBusy = false;
 let bulkAddBusy = false;
+let draftRequestSortMode = "zone";
 
 // Evita que una vista no autorizada alcance a mostrar el contenido de Compras
 // mientras Firebase resuelve la sesión y el perfil.
@@ -177,6 +178,12 @@ function injectStyles() {
       border: 0;
       border-radius: 0;
       background: transparent;
+    }
+    .request-draft-sort {
+      min-width: 220px;
+    }
+    .request-draft-sort .form-select {
+      min-width: 220px;
     }
     @media (max-width: 767.98px) {
       .purchase-requests-offcanvas {
@@ -1609,18 +1616,72 @@ function snapshotLineFromItem(item, quantityRequested) {
   };
 }
 
+const REQUEST_SORT_OPTIONS = [
+  ["zone", "Zona / subzona"],
+  ["nombre", "Nombre (alfabético)"],
+  ["sku", "SKU"],
+  ["tipo", "Tipo (alfabético)"],
+  ["precio_desc", "Precio más alto"],
+  ["precio_asc", "Precio más bajo"],
+  ["priority", "Prioridad (1 → 3)"],
+];
+
+function requestSortLabel(mode) {
+  return REQUEST_SORT_OPTIONS.find(([value]) => value === mode)?.[1] || "Zona / subzona";
+}
+
+function requestSortModeFromLabel(label) {
+  const normalized = String(label || "").trim().toLocaleLowerCase("es");
+  return REQUEST_SORT_OPTIONS.find(([, text]) => text.toLocaleLowerCase("es") === normalized)?.[0] || "zone";
+}
+
+function requestSortModeForRequest(request) {
+  if (!request || request.id === currentDraftRequest?.id) return draftRequestSortMode;
+  const snapshot = Array.isArray(request.filtersSnapshot) ? request.filtersSnapshot : [];
+  const saved = snapshot.find(filter => String(filter?.label || "").toLocaleLowerCase("es") === "orden de solicitud");
+  return saved ? requestSortModeFromLabel(saved.value) : "zone";
+}
+
+function compareRequestLines(a, b, mode = "zone") {
+  const text = value => String(value || "");
+  const locale = (left, right, numeric = false) =>
+    text(left).localeCompare(text(right), "es", { numeric, sensitivity: "base" });
+  const fallback = () => locale(a.sku, b.sku, true) || locale(a.nombre, b.nombre);
+
+  if (mode === "nombre") return locale(a.nombre, b.nombre) || fallback();
+  if (mode === "sku") return locale(a.sku, b.sku, true) || locale(a.nombre, b.nombre);
+  if (mode === "tipo") return locale(a.tipo, b.tipo) || locale(a.nombre, b.nombre) || fallback();
+  if (mode === "precio_desc") return num(b.unitPrice ?? b.precioUnitario) - num(a.unitPrice ?? a.precioUnitario) || fallback();
+  if (mode === "precio_asc") return num(a.unitPrice ?? a.precioUnitario) - num(b.unitPrice ?? b.precioUnitario) || fallback();
+  if (mode === "priority") return (num(a.priority ?? a.purchasePriority) || 3) - (num(b.priority ?? b.purchasePriority) || 3) || locale(a.nombre, b.nombre) || fallback();
+
+  return locale(a.zoneId, b.zoneId, true)
+    || locale(a.subzoneId, b.subzoneId, true)
+    || locale(a.locationCode || a.locationId, b.locationCode || b.locationId, true)
+    || fallback();
+}
+
+function sortRequestLines(lines, mode = draftRequestSortMode) {
+  return [...(lines || [])].sort((a, b) => compareRequestLines(a, b, mode));
+}
+
 function filtersSnapshotForRequest() {
-  return appliedFiltersForReport().map(([label, value]) => ({
-    label: String(label || ""),
-    value: String(value || ""),
-  }));
+  const filters = appliedFiltersForReport()
+    .filter(([label]) => String(label || "").toLocaleLowerCase("es") !== "orden de solicitud")
+    .map(([label, value]) => ({
+      label: String(label || ""),
+      value: String(value || ""),
+    }));
+
+  filters.push({
+    label: "Orden de solicitud",
+    value: requestSortLabel(draftRequestSortMode),
+  });
+  return filters;
 }
 
 function draftLinesArray() {
-  return [...draftLinesByItemId.values()].sort((a, b) =>
-    String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true }) ||
-    String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
-  );
+  return sortRequestLines([...draftLinesByItemId.values()], draftRequestSortMode);
 }
 
 function totalsForLines(lines, quantityField = "quantityRequested") {
@@ -1666,6 +1727,13 @@ async function loadCurrentDraft() {
 
   currentDraftRequest = drafts[0] || null;
   await loadDraftLines(currentDraftRequest?.id || "");
+
+  const draftKey = currentDraftRequest?.id ? `purchaseDraftSort:${currentDraftRequest.id}` : "purchaseDraftSort:new";
+  const savedMode = localStorage.getItem(draftKey);
+  const mainSortMode = document.querySelector("#sortMode")?.value || "zone";
+  draftRequestSortMode = REQUEST_SORT_OPTIONS.some(([value]) => value === savedMode)
+    ? savedMode
+    : (REQUEST_SORT_OPTIONS.some(([value]) => value === mainSortMode) ? mainSortMode : "zone");
 }
 
 async function ensureDraftRequest() {
@@ -1692,6 +1760,7 @@ async function ensureDraftRequest() {
     createdByName: currentProfile?.nombre || currentUser.email || "",
   };
   purchaseRequestsById.set(ref.id, currentDraftRequest);
+  localStorage.setItem(`purchaseDraftSort:${ref.id}`, draftRequestSortMode);
   return currentDraftRequest;
 }
 
@@ -1758,10 +1827,9 @@ async function askQuantity({ title, message, max, value, allowZero = true }) {
   input.value = String(Math.max(num(value), allowZero ? 0 : 1));
   help.textContent = `Máximo permitido: ${Math.max(num(max), 0)}.`;
 
-  // Bootstrap 5 no soporta de forma fiable dos modales abiertos al mismo
-  // tiempo. Si la cantidad se solicita desde el detalle de una solicitud,
-  // ocultamos temporalmente ese modal antes de abrir el de cantidad.
-  // Al cerrar el modal de cantidad se restaura automáticamente el anterior.
+  // Bootstrap 5 no maneja bien dos modales abiertos a la vez. Si el cuadro
+  // de cantidad se invoca desde el detalle de una solicitud, ocultamos
+  // temporalmente ese modal y lo restauramos al cerrar el de cantidad.
   const parentModalEl = [...document.querySelectorAll(".modal.show")]
     .find(element => element.id !== "purchaseQuantityModal");
   const parentModal = parentModalEl
@@ -2006,7 +2074,13 @@ function renderPurchaseRequestManager() {
             <div class="fw-semibold">Solicitud actual · Borrador</div>
             <div class="small text-muted">${draftLines.length} artículo${draftLines.length === 1 ? "" : "s"} · ${quantity} pieza${quantity === 1 ? "" : "s"} · ${reportEscape(formatMoneyTotals(totals))}</div>
           </div>
-          <div class="d-flex flex-wrap gap-2">
+          <div class="d-flex flex-wrap gap-2 align-items-end justify-content-end">
+            <div class="request-draft-sort">
+              <label class="form-label small mb-1" for="requestDraftSortMode">Ordenar solicitud</label>
+              <select id="requestDraftSortMode" class="form-select form-select-sm">
+                ${REQUEST_SORT_OPTIONS.map(([value, label]) => `<option value="${value}" ${draftRequestSortMode === value ? "selected" : ""}>${reportEscape(label)}</option>`).join("")}
+              </select>
+            </div>
             <button type="button" class="btn btn-outline-danger btn-sm request-draft-pdf">PDF borrador</button>
             <button type="button" class="btn btn-outline-success btn-sm request-draft-xlsx">Excel borrador</button>
             <button type="button" class="btn btn-outline-secondary btn-sm request-draft-empty">Vaciar</button>
@@ -2206,8 +2280,11 @@ async function sendCurrentDraft() {
       }
     });
 
+    const sentDraftId = currentDraftRequest?.id || "";
+    if (sentDraftId) localStorage.removeItem(`purchaseDraftSort:${sentDraftId}`);
     currentDraftRequest = null;
     draftLinesByItemId.clear();
+    draftRequestSortMode = document.querySelector("#sortMode")?.value || "zone";
     await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
     await loadCurrentDraft();
     renderPurchaseRequestManager();
@@ -2255,7 +2332,7 @@ async function openRequestDetail(requestId) {
     id: requestId,
     ...(await getDoc(doc(db, "purchaseRequests", requestId))).data(),
   };
-  const lines = await fetchRequestLines(requestId);
+  const lines = sortRequestLines(await fetchRequestLines(requestId), requestSortModeForRequest(request));
 
   const title = document.querySelector("#purchaseRequestDetailTitle");
   const subtitle = document.querySelector("#purchaseRequestDetailSubtitle");
@@ -2579,7 +2656,11 @@ async function exportRequestPdf(requestId, providedLines = null) {
   const request = requestId === currentDraftRequest?.id
     ? currentDraftRequest
     : purchaseRequestsById.get(requestId);
-  const lines = providedLines || (requestId ? await fetchRequestLines(requestId) : draftLinesArray());
+  const rawLines = providedLines || (requestId ? await fetchRequestLines(requestId) : draftLinesArray());
+  const sortMode = requestId === currentDraftRequest?.id || !requestId
+    ? draftRequestSortMode
+    : requestSortModeForRequest(request);
+  const lines = sortRequestLines(rawLines, sortMode);
   if (!lines.length) {
     alert("Esta solicitud no tiene elementos para generar el PDF.");
     return;
@@ -2671,7 +2752,11 @@ async function exportRequestXlsx(requestId, providedLines = null) {
   const request = requestId === currentDraftRequest?.id
     ? currentDraftRequest
     : purchaseRequestsById.get(requestId);
-  const lines = providedLines || (requestId ? await fetchRequestLines(requestId) : draftLinesArray());
+  const rawLines = providedLines || (requestId ? await fetchRequestLines(requestId) : draftLinesArray());
+  const sortMode = requestId === currentDraftRequest?.id || !requestId
+    ? draftRequestSortMode
+    : requestSortModeForRequest(request);
+  const lines = sortRequestLines(rawLines, sortMode);
   if (!lines.length) {
     alert("Esta solicitud no tiene elementos para exportar.");
     return;
@@ -2724,6 +2809,17 @@ async function exportRequestXlsx(requestId, providedLines = null) {
 }
 
 function bindPurchaseRequestManagerActions() {
+  document.addEventListener("change", event => {
+    const sortSelect = event.target.closest("#requestDraftSortMode");
+    if (!sortSelect) return;
+    const mode = String(sortSelect.value || "zone");
+    if (!REQUEST_SORT_OPTIONS.some(([value]) => value === mode)) return;
+    draftRequestSortMode = mode;
+    const key = currentDraftRequest?.id ? `purchaseDraftSort:${currentDraftRequest.id}` : "purchaseDraftSort:new";
+    localStorage.setItem(key, mode);
+    renderPurchaseRequestManager();
+  });
+
   document.addEventListener("click", async event => {
     const target = event.target;
 
