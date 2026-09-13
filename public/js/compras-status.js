@@ -187,7 +187,10 @@ function statusControlsHtml(item, state) {
           <span class="badge ${state.badgeClass}">${state.label}</span>
           <span class="purchase-status-text">Faltan ${pluralPieces(state.missing)} · Solicitud enviada: ${pluralPieces(requested)}</span>
         </div>
-        <button type="button" class="btn btn-warning purchase-received-btn" data-id="${item.id}">Ya llegó</button>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <button type="button" class="btn btn-dark purchase-cancel-btn" data-id="${item.id}">Cancelar compra</button>
+          <button type="button" class="btn btn-warning purchase-received-btn" data-id="${item.id}">Ya llegó</button>
+        </div>
       </div>`;
   }
 
@@ -702,6 +705,53 @@ async function sendToPurchases(itemId, button) {
   }
 }
 
+async function cancelPurchase(itemId, button) {
+  setButtonBusy(button, true, "Cancelando...");
+
+  try {
+    const item = await fetchLiveItem(itemId);
+
+    if (item.purchaseStatus !== PURCHASE_STATUS_ORDERED) {
+      itemsById.set(itemId, item);
+      queueEnhancements();
+      alert("Este item ya no está marcado como 'En compras'. Se actualizó la tarjeta con el estado actual.");
+      return;
+    }
+
+    const ok = confirm(
+      `¿Cancelar esta solicitud de compra?\n\n${item.nombre || item.sku || "Item"}\n\nEl artículo volverá al estado "Falta comprar" y podrá solicitarse nuevamente.`
+    );
+    if (!ok) return;
+
+    await updateDoc(doc(db, "items", itemId), {
+      purchaseStatus: "cancelled",
+      purchaseRequestedQty: 0,
+      purchaseRequestedAt: null,
+      purchaseReceivedQty: null,
+      purchaseReceivedAt: null,
+      updatedAt: serverTimestamp(),
+    });
+
+    itemsById.set(itemId, {
+      ...item,
+      purchaseStatus: "cancelled",
+      purchaseRequestedQty: 0,
+      purchaseRequestedAt: null,
+      purchaseReceivedQty: null,
+      purchaseReceivedAt: null,
+    });
+
+    // No se modifica stock ni prioridad. Al dejar de estar "ordered",
+    // purchaseVisualState() lo devuelve automáticamente a "Falta comprar".
+    queueEnhancements();
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo cancelar la compra: ${error.message}`);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
 async function markAsReceived(itemId, button) {
   setButtonBusy(button, true, "Actualizando...");
 
@@ -785,6 +835,12 @@ function bindPurchaseActions() {
     const sendButton = event.target.closest(".purchase-send-btn");
     if (sendButton) {
       sendToPurchases(sendButton.dataset.id, sendButton);
+      return;
+    }
+
+    const cancelButton = event.target.closest(".purchase-cancel-btn");
+    if (cancelButton) {
+      cancelPurchase(cancelButton.dataset.id, cancelButton);
       return;
     }
 
