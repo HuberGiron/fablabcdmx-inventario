@@ -48,6 +48,7 @@ let budgetFilterZone = "all";
 let budgetFilterSubzone = "all";
 let budgetFilterArea = "all";
 let budgetUiBusy = false;
+let budgetActiveTab = "allocation";
 
 // Evita que una vista no autorizada alcance a mostrar el contenido de Compras
 // mientras Firebase resuelve la sesión y el perfil.
@@ -3555,6 +3556,8 @@ function renderBudgetPanel() {
   const foreignLines = budgetFinancialLines.filter(line => budgetLineFinancials(line).currency !== "MXN");
   const subzones = uniqueBudgetValues(budgetFinancialLines, "subzoneId", "subzoneName");
   const areas = uniqueBudgetValues(budgetFinancialLines, "locationCode", "locationName");
+  const allocationActive = budgetActiveTab === "allocation";
+  const spendingActive = budgetActiveTab === "spending";
 
   body.innerHTML = `
     <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
@@ -3574,45 +3577,67 @@ function renderBudgetPanel() {
 
     ${foreignLines.length ? `<div class="purchase-budget-foreign-warning"><strong>Atención:</strong> hay ${foreignLines.length} línea${foreignLines.length === 1 ? "" : "s"} de compra en moneda distinta de MXN. No se incluyen en el consumo presupuestal hasta que el precio esperado esté expresado en MXN.</div>` : ""}
 
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
-      <h3 class="h6 mb-0">Asignación por zona</h3>
-      <span class="small text-muted">Sólo Administrador puede modificar la asignación.</span>
-    </div>
-    <div class="table-responsive mb-4">
-      <table class="table table-sm purchase-budget-zone-table">
-        <thead><tr><th>Zona</th><th class="text-end">Asignado</th><th class="text-end">Comprometido</th><th class="text-end">Gasto real</th><th class="text-end">Disponible</th><th class="text-end">Asignación</th></tr></thead>
-        <tbody>
-          ${zones.map(zone => {
-            const row = usage.get(zone.zoneId) || { committed: 0, spent: 0 };
-            const allocated = budgetAllocated(zone.zoneId);
-            const available = allocated - row.committed - row.spent;
-            const cls = budgetStatusClass(allocated, available);
-            return `<tr>
-              <td><strong>${reportEscape(zone.zoneId)}</strong> · ${reportEscape(zone.zoneName)}</td>
-              <td class="text-end">${reportEscape(formatCurrencyWithCode(allocated, "MXN"))}</td>
-              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.committed, "MXN"))}</td>
-              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.spent, "MXN"))}</td>
-              <td class="text-end ${cls}">${reportEscape(formatCurrencyWithCode(available, "MXN"))}</td>
-              <td class="text-end">
-                ${currentAccessRole === "admin" ? `<div class="d-inline-flex gap-1 align-items-center"><input class="form-control form-control-sm purchase-budget-zone-input" type="number" min="0" step="0.01" value="${allocated}" data-zone-id="${reportEscape(zone.zoneId)}" data-zone-name="${reportEscape(zone.zoneName)}"><button type="button" class="btn btn-dark btn-sm budget-save-zone" data-zone-id="${reportEscape(zone.zoneId)}">Guardar</button></div>` : `<span class="text-muted">Sólo lectura</span>`}
-              </td>
-            </tr>`;
-          }).join("")}
-        </tbody>
-      </table>
-    </div>
+    <ul class="nav nav-tabs mb-3" id="purchaseBudgetTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link budget-tab-button ${allocationActive ? "active" : ""}" id="budget-allocation-tab" data-budget-tab="allocation" data-bs-toggle="tab" data-bs-target="#budget-allocation-pane" type="button" role="tab" aria-controls="budget-allocation-pane" aria-selected="${allocationActive ? "true" : "false"}">Asignación inicial por zona</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link budget-tab-button ${spendingActive ? "active" : ""}" id="budget-spending-tab" data-budget-tab="spending" data-bs-toggle="tab" data-bs-target="#budget-spending-pane" type="button" role="tab" aria-controls="budget-spending-pane" aria-selected="${spendingActive ? "true" : "false"}">Ejecución y gastos</button>
+      </li>
+    </ul>
 
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
-      <h3 class="h6 mb-0">Reporte de gastos y compromisos</h3>
-      <button type="button" class="btn btn-outline-success btn-sm" id="exportBudgetReportXlsx">Exportar Excel</button>
-    </div>
-    <div class="row g-2 mb-3">
-      <div class="col-lg-4"><label class="form-label small mb-1">Zona</label><select id="budgetFilterZone" class="form-select form-select-sm"><option value="all">Todas las zonas</option>${zones.map(zone => `<option value="${reportEscape(zone.zoneId)}" ${budgetFilterZone === zone.zoneId ? "selected" : ""}>${reportEscape(`${zone.zoneId} · ${zone.zoneName}`)}</option>`).join("")}</select></div>
-      <div class="col-lg-4"><label class="form-label small mb-1">Subzona</label><select id="budgetFilterSubzone" class="form-select form-select-sm"><option value="all">Todas las subzonas</option>${subzones.map(([id,name]) => `<option value="${reportEscape(id)}" ${budgetFilterSubzone === id ? "selected" : ""}>${reportEscape(`${id} · ${name}`)}</option>`).join("")}</select></div>
-      <div class="col-lg-4"><label class="form-label small mb-1">Área</label><select id="budgetFilterArea" class="form-select form-select-sm"><option value="all">Todas las áreas</option>${areas.map(([id,name]) => `<option value="${reportEscape(id)}" ${budgetFilterArea === id ? "selected" : ""}>${reportEscape(`${id} · ${name}`)}</option>`).join("")}</select></div>
-    </div>
-    <div id="purchaseBudgetReport"></div>`;
-  renderBudgetReport();
+    <div class="tab-content" id="purchaseBudgetTabContent">
+      <div class="tab-pane fade ${allocationActive ? "show active" : ""}" id="budget-allocation-pane" role="tabpanel" aria-labelledby="budget-allocation-tab" tabindex="0">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+          <div>
+            <h3 class="h6 mb-1">Presupuesto inicial / autorizado por zona</h3>
+            <div class="small text-muted">Captura el monto total autorizado para cada zona en el ejercicio ${budgetReportYear}. Al guardar, el valor sustituye la asignación anterior de esa zona.</div>
+          </div>
+          <span class="small text-muted">${currentAccessRole === "admin" ? "Administrador: edición habilitada" : "Sólo Administrador puede modificar la asignación"}</span>
+        </div>
+        <div class="table-responsive mb-2">
+          <table class="table table-sm purchase-budget-zone-table">
+            <thead><tr><th>Zona</th><th class="text-end">Asignado</th><th class="text-end">Comprometido</th><th class="text-end">Gasto real</th><th class="text-end">Disponible</th><th class="text-end">Presupuesto autorizado</th></tr></thead>
+            <tbody>
+              ${zones.map(zone => {
+                const row = usage.get(zone.zoneId) || { committed: 0, spent: 0 };
+                const allocated = budgetAllocated(zone.zoneId);
+                const available = allocated - row.committed - row.spent;
+                const cls = budgetStatusClass(allocated, available);
+                return `<tr>
+                  <td><strong>${reportEscape(zone.zoneId)}</strong> · ${reportEscape(zone.zoneName)}</td>
+                  <td class="text-end">${reportEscape(formatCurrencyWithCode(allocated, "MXN"))}</td>
+                  <td class="text-end">${reportEscape(formatCurrencyWithCode(row.committed, "MXN"))}</td>
+                  <td class="text-end">${reportEscape(formatCurrencyWithCode(row.spent, "MXN"))}</td>
+                  <td class="text-end ${cls}">${reportEscape(formatCurrencyWithCode(available, "MXN"))}</td>
+                  <td class="text-end">
+                    ${currentAccessRole === "admin" ? `<div class="d-inline-flex gap-1 align-items-center"><input class="form-control form-control-sm purchase-budget-zone-input" type="number" min="0" step="0.01" value="${allocated}" data-zone-id="${reportEscape(zone.zoneId)}" data-zone-name="${reportEscape(zone.zoneName)}" aria-label="Presupuesto de ${reportEscape(zone.zoneName)}"><button type="button" class="btn btn-dark btn-sm budget-save-zone" data-zone-id="${reportEscape(zone.zoneId)}">Guardar</button></div>` : `<span class="text-muted">Sólo lectura</span>`}
+                  </td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+        <div class="small text-muted">Una zona con $0.00 MXN no podrá enviar nuevas solicitudes con cargo a esa zona. Puedes incrementar el monto cuando recibas una ampliación presupuestal.</div>
+      </div>
+
+      <div class="tab-pane fade ${spendingActive ? "show active" : ""}" id="budget-spending-pane" role="tabpanel" aria-labelledby="budget-spending-tab" tabindex="0">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+          <div>
+            <h3 class="h6 mb-1">Dónde se ha comprometido y gastado el presupuesto</h3>
+            <div class="small text-muted">El reporte parte de la zona presupuestal y permite bajar a subzona y área. Las cancelaciones liberan el compromiso; las recepciones se contabilizan con el costo real registrado.</div>
+          </div>
+          <button type="button" class="btn btn-outline-success btn-sm" id="exportBudgetReportXlsx">Exportar Excel</button>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-lg-4"><label class="form-label small mb-1">Zona</label><select id="budgetFilterZone" class="form-select form-select-sm"><option value="all">Todas las zonas</option>${zones.map(zone => `<option value="${reportEscape(zone.zoneId)}" ${budgetFilterZone === zone.zoneId ? "selected" : ""}>${reportEscape(`${zone.zoneId} · ${zone.zoneName}`)}</option>`).join("")}</select></div>
+          <div class="col-lg-4"><label class="form-label small mb-1">Subzona</label><select id="budgetFilterSubzone" class="form-select form-select-sm"><option value="all">Todas las subzonas</option>${subzones.map(([id,name]) => `<option value="${reportEscape(id)}" ${budgetFilterSubzone === id ? "selected" : ""}>${reportEscape(`${id} · ${name}`)}</option>`).join("")}</select></div>
+          <div class="col-lg-4"><label class="form-label small mb-1">Área</label><select id="budgetFilterArea" class="form-select form-select-sm"><option value="all">Todas las áreas</option>${areas.map(([id,name]) => `<option value="${reportEscape(id)}" ${budgetFilterArea === id ? "selected" : ""}>${reportEscape(`${id} · ${name}`)}</option>`).join("")}</select></div>
+        </div>
+        <div id="purchaseBudgetReport"></div>
+      </div>
+    </div>`;
+  if (spendingActive) renderBudgetReport();
 }
 
 async function refreshBudgetPanel() {
@@ -3716,6 +3741,12 @@ function bindBudgetActions() {
     }
     if (event.target.closest("#refreshPurchaseBudgets")) {
       await refreshBudgetPanel();
+      return;
+    }
+    const budgetTab = event.target.closest(".budget-tab-button");
+    if (budgetTab) {
+      budgetActiveTab = budgetTab.dataset.budgetTab === "spending" ? "spending" : "allocation";
+      if (budgetActiveTab === "spending") setTimeout(() => renderBudgetReport(), 0);
       return;
     }
     if (event.target.closest("#exportBudgetReportXlsx")) {
