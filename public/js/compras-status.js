@@ -2198,6 +2198,7 @@ function renderPurchaseRequestManager() {
                   <button type="button" class="btn btn-outline-danger btn-sm request-history-pdf" data-request-id="${request.id}">PDF</button>
                   <button type="button" class="btn btn-outline-success btn-sm request-history-xlsx" data-request-id="${request.id}">Excel</button>
                   ${[REQUEST_STATUS_SENT, REQUEST_STATUS_PARTIAL].includes(request.status) ? `<button type="button" class="btn btn-dark btn-sm request-history-cancel" data-request-id="${request.id}">${request.status === REQUEST_STATUS_SENT ? "Cancelar solicitud" : "Cancelar pendientes"}</button>` : ""}
+                  ${currentAccessRole === "admin" && [REQUEST_STATUS_COMPLETED, REQUEST_STATUS_CANCELLED].includes(request.status) ? `<button type="button" class="btn btn-danger btn-sm request-history-delete" data-request-id="${request.id}">Eliminar</button>` : ""}
                 </div>
               </td>
             </tr>`).join("")}
@@ -2383,6 +2384,7 @@ function ensureRequestDetailModal() {
           <button type="button" class="btn btn-outline-danger" id="purchaseRequestDetailPdf">PDF</button>
           <button type="button" class="btn btn-outline-success" id="purchaseRequestDetailXlsx">Excel</button>
           <button type="button" class="btn btn-dark" id="purchaseRequestCancelAll">Cancelar solicitud</button>
+          <button type="button" class="btn btn-danger d-none" id="purchaseRequestDelete">Eliminar solicitud</button>
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
         </div>
       </div>
@@ -2402,6 +2404,7 @@ async function openRequestDetail(requestId) {
   const subtitle = document.querySelector("#purchaseRequestDetailSubtitle");
   const body = document.querySelector("#purchaseRequestDetailBody");
   const cancelAll = document.querySelector("#purchaseRequestCancelAll");
+  const deleteRequestButton = document.querySelector("#purchaseRequestDelete");
   const pdf = document.querySelector("#purchaseRequestDetailPdf");
   const xlsx = document.querySelector("#purchaseRequestDetailXlsx");
 
@@ -2410,6 +2413,7 @@ async function openRequestDetail(requestId) {
   pdf.dataset.requestId = requestId;
   xlsx.dataset.requestId = requestId;
   cancelAll.dataset.requestId = requestId;
+  deleteRequestButton.dataset.requestId = requestId;
   pdf.classList.remove("d-none");
   xlsx.classList.remove("d-none");
 
@@ -2450,6 +2454,12 @@ async function openRequestDetail(requestId) {
   const hasReceived = lines.some(line => num(line.quantityReceived) > 0);
   cancelAll.classList.toggle("d-none", !hasPending);
   cancelAll.textContent = hasReceived ? "Cancelar pendientes restantes" : "Cancelar solicitud completa";
+
+  const canDeleteRequest = currentAccessRole === "admin"
+    && !hasPending
+    && [REQUEST_STATUS_COMPLETED, REQUEST_STATUS_CANCELLED].includes(request.status);
+  deleteRequestButton.classList.toggle("d-none", !canDeleteRequest);
+
   bootstrap.Modal.getOrCreateInstance(document.querySelector("#purchaseRequestDetailModal")).show();
 }
 
@@ -2913,6 +2923,102 @@ async function exportRequestXlsx(requestId, providedLines = null) {
   XLSX.writeFile(wb, `${folio.replace(/[^A-Za-z0-9_-]+/g, "_")}.xlsx`, { bookType: "xlsx", compression: true });
 }
 
+async function deleteFinishedPurchaseRequest(requestId) {
+  if (currentAccessRole !== "admin") {
+    alert("Sólo el Administrador puede eliminar solicitudes de compra.");
+    return;
+  }
+
+  const requestRef = doc(db, "purchaseRequests", requestId);
+  const requestSnap = await getDoc(requestRef);
+  if (!requestSnap.exists()) {
+    purchaseRequestsById.delete(requestId);
+    renderPurchaseRequestManager();
+    alert("La solicitud ya no existe.");
+    return;
+  }
+
+  const request = { id: requestSnap.id, ...requestSnap.data() };
+  if (![REQUEST_STATUS_COMPLETED, REQUEST_STATUS_CANCELLED].includes(request.status)) {
+    alert("Sólo se pueden eliminar solicitudes completamente terminadas o canceladas.");
+    return;
+  }
+
+  const lines = await fetchRequestLines(requestId);
+  const pendingLines = lines.filter(line => linePendingQty(line) > 0);
+  if (pendingLines.length) {
+    alert(
+      `No se puede eliminar ${request.folio || requestId}: todavía hay ${pendingLines.length} línea${pendingLines.length === 1 ? "" : "s"} con cantidades pendientes.\n\nCancela o recibe primero todas las piezas pendientes.`
+    );
+    return;
+  }
+
+  const spentByCurrency = {};
+  for (const line of lines) {
+    addMoneyTotal(spentByCurrency, line.currency || "MXN", lineActualSpent(line));
+  }
+  const spentText = formatMoneyTotals(spentByCurrency);
+  const folio = request.folio || requestId;
+  const completed = request.status === REQUEST_STATUS_COMPLETED;
+
+  const ok = confirm(
+    `¿Eliminar permanentemente ${folio}?\n\n`
+    + `Estado: ${requestStatusLabel(request.status)}\n`
+    + `${completed ? `Gasto real que dejará de contabilizarse en Presupuestos: ${spentText}\n` : ""}`
+    + `Esta acción elimina también sus líneas y la solicitud desaparecerá de PDF, Excel e historial.\n\n`
+    + `IMPORTANTE: las existencias que ya fueron recibidas NO se descuentan del inventario.\n`
+    + `El folio tampoco se reutiliza.\n\n`
+    + `Esta acción no se puede deshacer.`
+  );
+  if (!ok) return;
+
+  purchaseUiBusy = true;
+  try {
+    // Firestore no elimina subcolecciones al borrar el documento padre.
+    // Eliminamos primero todas las líneas en lotes y después la solicitud.
+    const chunkSize = 400;
+    for (let index = 0; index < lines.length; index += chunkSize) {
+      const batch = writeBatch(db);
+      for (const line of lines.slice(index, index + chunkSize)) {
+        batch.delete(doc(db, "purchaseRequests", requestId, "items", line.id));
+      }
+      await batch.commit();
+    }
+
+    await deleteDoc(requestRef);
+
+    localStorage.removeItem(`purchaseDraftSort:${requestId}`);
+    purchaseRequestsById.delete(requestId);
+    budgetFinancialLines = budgetFinancialLines.filter(line => line.requestId !== requestId);
+
+    const detailModalEl = document.querySelector("#purchaseRequestDetailModal");
+    if (detailModalEl?.classList.contains("show")) {
+      bootstrap.Modal.getOrCreateInstance(detailModalEl).hide();
+    }
+
+    await loadPurchaseRequests();
+    renderPurchaseRequestManager();
+
+    // Si Presupuestos está abierto, recalculamos inmediatamente. Si está
+    // cerrado, el evento de apertura volverá a cargarlo desde Firestore.
+    const budgetPanel = document.querySelector("#purchaseBudgetsPanel");
+    if (budgetPanel?.classList.contains("show")) {
+      await refreshBudgetPanel();
+    }
+
+    alert(
+      `${folio} fue eliminada.\n\n`
+      + `El presupuesto asociado quedó liberado del reporte.\n`
+      + `Las existencias previamente recibidas permanecen sin cambios.`
+    );
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo eliminar la solicitud: ${error.message}`);
+  } finally {
+    purchaseUiBusy = false;
+  }
+}
+
 function bindPurchaseRequestManagerActions() {
   document.addEventListener("change", event => {
     const sortSelect = event.target.closest("#requestDraftSortMode");
@@ -2986,6 +3092,12 @@ function bindPurchaseRequestManagerActions() {
       return;
     }
 
+    const historyDelete = target.closest(".request-history-delete");
+    if (historyDelete) {
+      await deleteFinishedPurchaseRequest(historyDelete.dataset.requestId);
+      return;
+    }
+
     const receive = target.closest(".request-line-receive");
     if (receive) {
       await registerLineReceipt(receive.dataset.requestId, receive.dataset.lineId, num(receive.dataset.pending));
@@ -3013,6 +3125,12 @@ function bindPurchaseRequestManagerActions() {
     const detailXlsx = target.closest("#purchaseRequestDetailXlsx");
     if (detailXlsx && detailXlsx.dataset.requestId) {
       await exportRequestXlsx(detailXlsx.dataset.requestId);
+      return;
+    }
+
+    const detailDelete = target.closest("#purchaseRequestDelete");
+    if (detailDelete && detailDelete.dataset.requestId) {
+      await deleteFinishedPurchaseRequest(detailDelete.dataset.requestId);
       return;
     }
 
