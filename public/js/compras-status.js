@@ -29,6 +29,9 @@ const itemsById = new Map();
 const purchaseRequestsById = new Map();
 const draftLinesByItemId = new Map();
 const bulkSelectedItemIds = new Set();
+const purchaseBudgetsByZone = new Map();
+const budgetZonesById = new Map();
+let budgetFinancialLines = [];
 
 let currentAccessRole = "";
 let currentUser = null;
@@ -40,6 +43,11 @@ let observer = null;
 let purchaseUiBusy = false;
 let bulkAddBusy = false;
 let draftRequestSortMode = "zone";
+let budgetReportYear = new Date().getFullYear();
+let budgetFilterZone = "all";
+let budgetFilterSubzone = "all";
+let budgetFilterArea = "all";
+let budgetUiBusy = false;
 
 // Evita que una vista no autorizada alcance a mostrar el contenido de Compras
 // mientras Firebase resuelve la sesión y el perfil.
@@ -265,6 +273,20 @@ function injectStyles() {
       background: #fff;
       font-size: .78rem;
     }
+
+    .purchase-request-launcher { gap: .75rem; flex-wrap: wrap; }
+    .purchase-budget-summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.75rem; margin-bottom:1rem; }
+    .purchase-budget-summary-card { border:1px solid #dee2e6; border-radius:.75rem; padding:.85rem 1rem; background:#fff; }
+    .purchase-budget-summary-label { color:#6c757d; font-size:.78rem; font-weight:700; text-transform:uppercase; }
+    .purchase-budget-summary-value { font-size:1.25rem; font-weight:700; margin-top:.2rem; }
+    .purchase-budget-zone-table td, .purchase-budget-zone-table th, .purchase-budget-report-table td, .purchase-budget-report-table th { vertical-align:middle; }
+    .purchase-budget-zone-input { min-width:150px; max-width:190px; }
+    .purchase-budget-negative { color:#b02a37 !important; font-weight:700; }
+    .purchase-budget-warning { color:#8a6500 !important; font-weight:700; }
+    .purchase-budget-offcanvas .offcanvas-body { overflow-y:auto; }
+    .purchase-budget-foreign-warning { border:1px solid #f0ad00; background:#fff3cd; border-radius:.65rem; padding:.7rem .85rem; margin-bottom:1rem; color:#664d03; }
+    @media (max-width:991.98px) { .purchase-budget-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:575.98px) { .purchase-budget-summary-grid { grid-template-columns:1fr; } }
   `;
   document.head.appendChild(style);
 }
@@ -1605,6 +1627,7 @@ function snapshotLineFromItem(item, quantityRequested) {
     quantityRequested: qty,
     quantityReceived: 0,
     quantityCancelled: 0,
+    actualCostTotal: 0,
     unitPrice: num(item.precioUnitario),
     currency: item.moneda || "MXN",
     infoUrl: item.infoUrl || "",
@@ -1799,6 +1822,14 @@ function ensureQuantityModal() {
             <label class="form-label" for="purchaseQuantityInput">Cantidad</label>
             <input id="purchaseQuantityInput" class="form-control request-quantity-input" type="number" min="0" step="1">
             <div id="purchaseQuantityHelp" class="form-text"></div>
+            <div id="purchaseQuantityCostGroup" class="mt-3 d-none">
+              <label class="form-label" for="purchaseQuantityCostInput">Costo unitario real</label>
+              <div class="input-group">
+                <span class="input-group-text" id="purchaseQuantityCurrency">MXN</span>
+                <input id="purchaseQuantityCostInput" class="form-control" type="number" min="0" step="0.01">
+              </div>
+              <div id="purchaseQuantityCostHelp" class="form-text"></div>
+            </div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
@@ -1810,7 +1841,7 @@ function ensureQuantityModal() {
   document.body.appendChild(wrapper.firstElementChild);
 }
 
-async function askQuantity({ title, message, max, value, allowZero = true }) {
+async function askQuantity({ title, message, max, value, allowZero = true, includeCost = false, costValue = 0, costEditable = false, currency = "MXN" }) {
   ensureQuantityModal();
 
   const modalEl = document.querySelector("#purchaseQuantityModal");
@@ -1819,6 +1850,10 @@ async function askQuantity({ title, message, max, value, allowZero = true }) {
   const input = document.querySelector("#purchaseQuantityInput");
   const help = document.querySelector("#purchaseQuantityHelp");
   const save = document.querySelector("#purchaseQuantitySave");
+  const costGroup = document.querySelector("#purchaseQuantityCostGroup");
+  const costInput = document.querySelector("#purchaseQuantityCostInput");
+  const costCurrency = document.querySelector("#purchaseQuantityCurrency");
+  const costHelp = document.querySelector("#purchaseQuantityCostHelp");
 
   titleEl.textContent = title || "Cantidad";
   messageEl.textContent = message || "";
@@ -1826,6 +1861,17 @@ async function askQuantity({ title, message, max, value, allowZero = true }) {
   input.max = String(Math.max(num(max), allowZero ? 0 : 1));
   input.value = String(Math.max(num(value), allowZero ? 0 : 1));
   help.textContent = `Máximo permitido: ${Math.max(num(max), 0)}.`;
+  costGroup?.classList.toggle("d-none", !includeCost);
+  if (includeCost && costInput) {
+    costInput.value = String(Math.max(num(costValue), 0));
+    costInput.disabled = !costEditable;
+    if (costCurrency) costCurrency.textContent = String(currency || "MXN").toUpperCase();
+    if (costHelp) {
+      costHelp.textContent = costEditable
+        ? "Por defecto se usa el costo esperado. Ajústalo si la factura fue diferente."
+        : "El Supervisor registra la recepción con el costo esperado; sólo el Administrador puede ajustar el costo real.";
+    }
+  }
 
   // Bootstrap 5 no maneja bien dos modales abiertos a la vez. Si el cuadro
   // de cantidad se invoca desde el detalle de una solicitud, ocultamos
@@ -1881,7 +1927,16 @@ async function askQuantity({ title, message, max, value, allowZero = true }) {
         alert(`Captura una cantidad entera entre ${min} y ${maximum}.`);
         return;
       }
-      result = qty;
+      if (includeCost) {
+        const unitCost = Number(costInput?.value);
+        if (!Number.isFinite(unitCost) || unitCost < 0) {
+          alert("Captura un costo unitario real válido, mayor o igual a cero.");
+          return;
+        }
+        result = { quantity: qty, unitCost };
+      } else {
+        result = qty;
+      }
       modal.hide();
     };
 
@@ -2051,6 +2106,7 @@ function injectPurchaseRequestManager() {
 
 function renderPurchaseRequestManager() {
   injectPurchaseRequestManager();
+  injectBudgetManager();
 
   const draftPanel = document.querySelector("#currentDraftPanel");
   const history = document.querySelector("#purchaseRequestHistory");
@@ -2140,6 +2196,7 @@ function renderPurchaseRequestManager() {
                   <button type="button" class="btn btn-outline-dark btn-sm request-history-view" data-request-id="${request.id}">Ver</button>
                   <button type="button" class="btn btn-outline-danger btn-sm request-history-pdf" data-request-id="${request.id}">PDF</button>
                   <button type="button" class="btn btn-outline-success btn-sm request-history-xlsx" data-request-id="${request.id}">Excel</button>
+                  ${[REQUEST_STATUS_SENT, REQUEST_STATUS_PARTIAL].includes(request.status) ? `<button type="button" class="btn btn-dark btn-sm request-history-cancel" data-request-id="${request.id}">${request.status === REQUEST_STATUS_SENT ? "Cancelar solicitud" : "Cancelar pendientes"}</button>` : ""}
                 </div>
               </td>
             </tr>`).join("")}
@@ -2191,8 +2248,14 @@ async function sendCurrentDraft() {
     return;
   }
 
+  const budgetValidation = await validateDraftBudget(lines);
+  if (!budgetValidation.ok) {
+    alert(`No se puede enviar la solicitud por presupuesto:\n\n${budgetValidation.message}\n\nAbre “Presupuestos” y asigna o incrementa el presupuesto de las zonas indicadas.`);
+    return;
+  }
+
   const ok = confirm(
-    `¿Enviar esta solicitud a Compras?\n\n${lines.length} artículo${lines.length === 1 ? "" : "s"} · ${lines.reduce((sum, line) => sum + num(line.quantityRequested), 0)} piezas.\n\nUna vez enviada, estas cantidades se contabilizarán como pendientes de recibir.`
+    `¿Enviar esta solicitud a Compras?\n\n${lines.length} artículo${lines.length === 1 ? "" : "s"} · ${lines.reduce((sum, line) => sum + num(line.quantityRequested), 0)} piezas.\n\nPresupuesto validado. Una vez enviada, estas cantidades se contabilizarán como comprometidas y pendientes de recibir.`
   );
   if (!ok) return;
 
@@ -2318,7 +2381,7 @@ function ensureRequestDetailModal() {
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-danger" id="purchaseRequestDetailPdf">PDF</button>
           <button type="button" class="btn btn-outline-success" id="purchaseRequestDetailXlsx">Excel</button>
-          <button type="button" class="btn btn-dark" id="purchaseRequestCancelAll">Cancelar pendientes de la solicitud</button>
+          <button type="button" class="btn btn-dark" id="purchaseRequestCancelAll">Cancelar solicitud</button>
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
         </div>
       </div>
@@ -2370,6 +2433,8 @@ async function openRequestDetail(requestId) {
               <div><strong>Recibido:</strong> ${num(line.quantityReceived)}</div>
               <div><strong>Cancelado:</strong> ${num(line.quantityCancelled)}</div>
               <div><strong>Pendiente:</strong> ${pending}</div>
+              <div><strong>Costo esperado:</strong> ${reportEscape(formatCurrencyWithCode(line.unitPrice, line.currency || "MXN"))}</div>
+              <div><strong>Gasto real recibido:</strong> ${reportEscape(formatCurrencyWithCode(lineActualSpent(line), line.currency || "MXN"))}</div>
             </div>
           </div>
           ${pending > 0 ? `
@@ -2380,11 +2445,14 @@ async function openRequestDetail(requestId) {
         </div>`;
     }).join("")}`;
 
-  cancelAll.classList.toggle("d-none", !lines.some(line => linePendingQty(line) > 0));
+  const hasPending = lines.some(line => linePendingQty(line) > 0);
+  const hasReceived = lines.some(line => num(line.quantityReceived) > 0);
+  cancelAll.classList.toggle("d-none", !hasPending);
+  cancelAll.textContent = hasReceived ? "Cancelar pendientes restantes" : "Cancelar solicitud completa";
   bootstrap.Modal.getOrCreateInstance(document.querySelector("#purchaseRequestDetailModal")).show();
 }
 
-async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = true } = {}) {
+async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = true, unitCost = null } = {}) {
   const qty = Math.max(num(quantity), 0);
   if (qty <= 0) return;
 
@@ -2403,6 +2471,14 @@ async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = 
     const item = { id: itemSnap.id, ...itemSnap.data() };
     const remaining = linePendingQty(line);
     if (qty > remaining) throw new Error(`Sólo quedan ${remaining} piezas pendientes.`);
+
+    const expectedUnitCost = num(line.unitPrice);
+    const previousActualTotal = Object.prototype.hasOwnProperty.call(line, "actualCostTotal")
+      ? num(line.actualCostTotal)
+      : num(line.quantityReceived) * expectedUnitCost;
+    const actualUnitCost = mode === "receive"
+      ? Math.max(num(unitCost === null ? expectedUnitCost : unitCost), 0)
+      : 0;
 
     const newReceived = num(line.quantityReceived) + (mode === "receive" ? qty : 0);
     const newCancelled = num(line.quantityCancelled) + (mode === "cancel" ? qty : 0);
@@ -2435,7 +2511,12 @@ async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = 
       quantityCancelled: newCancelled,
       status: newLineStatus,
       updatedAt: serverTimestamp(),
-      ...(mode === "receive" ? { lastReceivedAt: serverTimestamp() } : { lastCancelledAt: serverTimestamp() }),
+      ...(mode === "receive" ? {
+        lastReceivedAt: serverTimestamp(),
+        lastActualCostAt: serverTimestamp(),
+        lastActualUnitCost: actualUnitCost,
+        actualCostTotal: previousActualTotal + qty * actualUnitCost,
+      } : { lastCancelledAt: serverTimestamp() }),
     });
     transaction.update(requestRef, { updatedAt: serverTimestamp() });
   });
@@ -2445,21 +2526,39 @@ async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = 
     await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
     renderPurchaseRequestManager();
     queueEnhancements();
+    if (document.querySelector("#purchaseBudgetsPanel.show")) {
+      await refreshBudgetPanel();
+    }
   }
 }
 
 async function registerLineReceipt(requestId, lineId, pending) {
-  const qty = await askQuantity({
+  const lineSnap = await getDoc(doc(db, "purchaseRequests", requestId, "items", lineId));
+  if (!lineSnap.exists()) {
+    alert("La línea de compra ya no existe.");
+    return;
+  }
+  const line = { id: lineSnap.id, ...lineSnap.data() };
+  const expectedUnitCost = num(line.unitPrice);
+  const currency = line.currency || "MXN";
+
+  const result = await askQuantity({
     title: "Registrar recepción",
-    message: "Indica cuántas piezas llegaron en esta recepción.",
+    message: `Indica cuántas piezas llegaron. El costo esperado por unidad es ${formatCurrencyWithCode(expectedUnitCost, currency)}.`,
     max: pending,
     value: pending,
     allowZero: false,
+    includeCost: true,
+    costValue: expectedUnitCost,
+    costEditable: currentAccessRole === "admin",
+    currency,
   });
-  if (qty === null) return;
+  if (result === null) return;
 
   try {
-    await applyLineMovement(requestId, lineId, "receive", qty);
+    await applyLineMovement(requestId, lineId, "receive", result.quantity, { unitCost: result.unitCost });
+    const budgetAlert = await budgetDeficitMessageForLine(line);
+    if (budgetAlert) alert(budgetAlert);
     await openRequestDetail(requestId);
   } catch (error) {
     console.error(error);
@@ -2486,12 +2585,12 @@ async function cancelLinePending(requestId, lineId, pending) {
   }
 }
 
-async function cancelAllPendingInRequest(requestId) {
+async function cancelAllPendingInRequest(requestId, { reopenDetail = true } = {}) {
   const lines = await fetchRequestLines(requestId);
   const pendingLines = lines.filter(line => linePendingQty(line) > 0);
   if (!pendingLines.length) return;
 
-  if (!confirm(`¿Cancelar todas las cantidades pendientes de esta solicitud?\n\nSe afectarán ${pendingLines.length} líneas.`)) return;
+  if (!confirm(`¿Cancelar ${pendingLines.length === lines.length ? "la solicitud completa" : "todas las cantidades pendientes de esta solicitud"}?\n\nSe liberará del presupuesto el importe estimado de todo lo que aún no se ha recibido. Se afectarán ${pendingLines.length} líneas.`)) return;
 
   purchaseUiBusy = true;
   try {
@@ -2502,7 +2601,8 @@ async function cancelAllPendingInRequest(requestId) {
     await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
     renderPurchaseRequestManager();
     queueEnhancements();
-    await openRequestDetail(requestId);
+    if (document.querySelector("#purchaseBudgetsPanel.show")) await refreshBudgetPanel();
+    if (reopenDetail) await openRequestDetail(requestId);
   } catch (error) {
     console.error(error);
     alert(`No se pudo cancelar la solicitud: ${error.message}`);
@@ -2645,7 +2745,7 @@ function requestLineCardsHtml(lines) {
             ${line.purchaseUrl ? `<a href="${reportEscape(line.purchaseUrl)}" target="_blank">Info Compra</a>` : ""}
           </div>
           <div class="status-band">
-            Solicitado: <strong>${num(line.quantityRequested)}</strong> · Recibido: <strong>${num(line.quantityReceived)}</strong> · Cancelado: <strong>${num(line.quantityCancelled)}</strong> · Pendiente: <strong>${pending}</strong>
+            Solicitado: <strong>${num(line.quantityRequested)}</strong> · Recibido: <strong>${num(line.quantityReceived)}</strong> · Cancelado: <strong>${num(line.quantityCancelled)}</strong> · Pendiente: <strong>${pending}</strong> · Gasto real recibido: <strong>${reportEscape(formatCurrencyWithCode(lineActualSpent(line), line.currency || "MXN"))}</strong>
           </div>
         </div>
       </article>`;
@@ -2765,7 +2865,7 @@ async function exportRequestXlsx(requestId, providedLines = null) {
   const header = [
     "Solicitud", "Estado", "Zona", "Subzona", "Área", "SKU", "Tipo", "Nombre", "Prioridad",
     "Solicitado", "Recibido", "Cancelado", "Pendiente", "Precio unitario", "Moneda", "Subtotal solicitado",
-    "Más info", "Info compra"
+    "Gasto real recibido", "Comprometido pendiente", "Más info", "Info compra"
   ];
   const folio = request?.folio || "BORRADOR";
   const rows = lines.map(line => [
@@ -2785,6 +2885,8 @@ async function exportRequestXlsx(requestId, providedLines = null) {
     num(line.unitPrice),
     line.currency || "MXN",
     num(line.quantityRequested) * num(line.unitPrice),
+    lineActualSpent(line),
+    linePendingQty(line) * num(line.unitPrice),
     line.infoUrl || "",
     line.purchaseUrl || "",
   ]);
@@ -2792,16 +2894,18 @@ async function exportRequestXlsx(requestId, providedLines = null) {
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
   ws["!cols"] = [
     {wch:18},{wch:14},{wch:20},{wch:24},{wch:28},{wch:12},{wch:16},{wch:36},{wch:10},
-    {wch:12},{wch:12},{wch:12},{wch:12},{wch:15},{wch:10},{wch:18},{wch:40},{wch:40}
+    {wch:12},{wch:12},{wch:12},{wch:12},{wch:15},{wch:10},{wch:18},{wch:18},{wch:20},{wch:40},{wch:40}
   ];
   for (let r = 2; r <= rows.length + 1; r++) {
-    ["I","J","K","L","M","N","P"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
+    ["I","J","K","L","M","N","P","Q","R"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
     const currency = ws[`O${r}`]?.v || "MXN";
     const fmt = xlsxMoneyFormat(currency);
     if (ws[`N${r}`]) ws[`N${r}`].z = fmt;
     if (ws[`P${r}`]) ws[`P${r}`].z = fmt;
+    if (ws[`Q${r}`]) ws[`Q${r}`].z = fmt;
+    if (ws[`R${r}`]) ws[`R${r}`].z = fmt;
   }
-  ws["!autofilter"] = { ref: `A1:R${rows.length + 1}` };
+  ws["!autofilter"] = { ref: `A1:T${rows.length + 1}` };
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Solicitud");
@@ -2872,6 +2976,12 @@ function bindPurchaseRequestManagerActions() {
     const xlsx = target.closest(".request-history-xlsx");
     if (xlsx) {
       await exportRequestXlsx(xlsx.dataset.requestId);
+      return;
+    }
+
+    const historyCancel = target.closest(".request-history-cancel");
+    if (historyCancel) {
+      await cancelAllPendingInRequest(historyCancel.dataset.requestId, { reopenDetail: false });
       return;
     }
 
@@ -3135,6 +3245,502 @@ function exportPurchaseReportXlsx(rows) {
   XLSX.writeFile(wb, `reporte_compras_fablab_${date}.xlsx`, { bookType: "xlsx", compression: true });
 }
 
+function lineActualSpent(line) {
+  if (Object.prototype.hasOwnProperty.call(line || {}, "actualCostTotal")) {
+    return Math.max(num(line.actualCostTotal), 0);
+  }
+  return Math.max(num(line?.quantityReceived) * num(line?.unitPrice), 0);
+}
+
+function requestYear(request) {
+  const sent = requestDateValue(request?.sentAt || request?.createdAt);
+  if (sent) return sent.getFullYear();
+  const match = String(request?.folio || "").match(/SC-(\d{4})-/i);
+  return match ? Number(match[1]) : new Date().getFullYear();
+}
+
+function budgetDocId(year, zoneId) {
+  return `${year}__${String(zoneId || "sin-zona").replaceAll("/", "_")}`;
+}
+
+function budgetZoneKey(zoneId) {
+  return String(zoneId || "");
+}
+
+function zoneCatalog() {
+  const map = new Map();
+  for (const zone of budgetZonesById.values()) map.set(zone.zoneId, { ...zone });
+  const add = source => {
+    const zoneId = budgetZoneKey(source?.zoneId);
+    if (!zoneId) return;
+    const zoneName = source?.zoneName || `Zona ${zoneId}`;
+    if (!map.has(zoneId) || map.get(zoneId).zoneName === `Zona ${zoneId}`) {
+      map.set(zoneId, { zoneId, zoneName });
+    }
+  };
+  for (const item of itemsById.values()) add(item);
+  for (const budget of purchaseBudgetsByZone.values()) add(budget);
+  for (const line of budgetFinancialLines) add(line);
+  return [...map.values()].sort((a, b) => String(a.zoneId).localeCompare(String(b.zoneId), "es", { numeric: true }));
+}
+
+
+async function loadBudgetZones() {
+  const snapshot = await getDocs(collection(db, "zones"));
+  budgetZonesById.clear();
+  snapshot.docs.forEach(zoneDoc => {
+    const data = zoneDoc.data();
+    const zoneId = String(data.code ?? zoneDoc.id ?? "");
+    if (!zoneId) return;
+    budgetZonesById.set(zoneId, {
+      zoneId,
+      zoneName: data.name || data.nombre || `Zona ${zoneId}`,
+    });
+  });
+}
+
+async function loadBudgetAllocations(year = budgetReportYear) {
+  const snapshot = await getDocs(query(collection(db, "purchaseBudgets"), where("year", "==", Number(year))));
+  purchaseBudgetsByZone.clear();
+  snapshot.docs.forEach(budgetDoc => {
+    const data = { id: budgetDoc.id, ...budgetDoc.data() };
+    purchaseBudgetsByZone.set(budgetZoneKey(data.zoneId), data);
+  });
+}
+
+async function loadBudgetFinancialLines(year = budgetReportYear) {
+  const requests = requestHistoryArray().filter(request => requestYear(request) === Number(year));
+  const lines = [];
+  const chunkSize = 8;
+  for (let index = 0; index < requests.length; index += chunkSize) {
+    const chunk = requests.slice(index, index + chunkSize);
+    const groups = await Promise.all(chunk.map(async request => {
+      const requestLines = await fetchRequestLines(request.id);
+      return requestLines.map(line => ({
+        ...line,
+        requestId: request.id,
+        requestFolio: request.folio || request.id,
+        requestStatus: request.status,
+        requestSentAt: request.sentAt || request.createdAt,
+      }));
+    }));
+    groups.forEach(group => lines.push(...group));
+  }
+  budgetFinancialLines = lines;
+  return lines;
+}
+
+function budgetLineFinancials(line) {
+  const currency = String(line?.currency || "MXN").toUpperCase();
+  const pendingQty = linePendingQty(line);
+  const expectedUnit = num(line?.unitPrice);
+  const actualSpent = lineActualSpent(line);
+  const committed = pendingQty * expectedUnit;
+  const released = num(line?.quantityCancelled) * expectedUnit;
+  const expectedOriginal = num(line?.quantityRequested) * expectedUnit;
+  return { currency, pendingQty, expectedUnit, actualSpent, committed, released, expectedOriginal };
+}
+
+function budgetUsageByZone(lines = budgetFinancialLines) {
+  const map = new Map();
+  for (const line of lines) {
+    const zoneId = budgetZoneKey(line.zoneId);
+    if (!zoneId) continue;
+    const financial = budgetLineFinancials(line);
+    if (financial.currency !== "MXN") continue;
+    if (!map.has(zoneId)) map.set(zoneId, { committed: 0, spent: 0, expected: 0, released: 0 });
+    const row = map.get(zoneId);
+    row.committed += financial.committed;
+    row.spent += financial.actualSpent;
+    row.expected += financial.expectedOriginal;
+    row.released += financial.released;
+  }
+  return map;
+}
+
+function budgetAllocated(zoneId) {
+  return Math.max(num(purchaseBudgetsByZone.get(budgetZoneKey(zoneId))?.allocatedAmount), 0);
+}
+
+function budgetAvailable(zoneId, usageMap = budgetUsageByZone()) {
+  const usage = usageMap.get(budgetZoneKey(zoneId)) || { committed: 0, spent: 0 };
+  return budgetAllocated(zoneId) - usage.committed - usage.spent;
+}
+
+async function validateDraftBudget(lines) {
+  const year = new Date().getFullYear();
+  // Refrescamos primero las solicitudes para no validar contra un historial
+  // desactualizado si otro usuario acaba de enviar o cancelar una compra.
+  await loadPurchaseRequests();
+  await Promise.all([loadBudgetZones(), loadBudgetAllocations(year), loadBudgetFinancialLines(year)]);
+  const usage = budgetUsageByZone();
+  const draftByZone = new Map();
+  const errors = [];
+
+  for (const line of lines) {
+    const zoneId = budgetZoneKey(line.zoneId);
+    if (!zoneId) {
+      errors.push(`${line.nombre || line.sku || "Item"}: no tiene zona asignada.`);
+      continue;
+    }
+    const currency = String(line.currency || "MXN").toUpperCase();
+    if (currency !== "MXN") {
+      errors.push(`${line.nombre || line.sku || "Item"}: está en ${currency}. El presupuesto se controla en MXN; ajusta el precio del item a MXN antes de enviarlo.`);
+      continue;
+    }
+    const amount = num(line.quantityRequested) * num(line.unitPrice);
+    draftByZone.set(zoneId, num(draftByZone.get(zoneId)) + amount);
+  }
+
+  for (const [zoneId, required] of draftByZone.entries()) {
+    const zone = zoneCatalog().find(entry => entry.zoneId === zoneId);
+    const available = budgetAvailable(zoneId, usage);
+    if (required > available + 0.005) {
+      const missing = required - available;
+      errors.push(`${zone?.zoneName || `Zona ${zoneId}`}: requiere ${formatCurrencyWithCode(required, "MXN")}, disponible ${formatCurrencyWithCode(Math.max(available, 0), "MXN")}; faltan ${formatCurrencyWithCode(missing, "MXN")}.`);
+    }
+  }
+
+  return { ok: errors.length === 0, message: errors.join("\n") };
+}
+
+async function budgetDeficitMessageForLine(line) {
+  if (String(line?.currency || "MXN").toUpperCase() !== "MXN") return "";
+  const zoneId = budgetZoneKey(line?.zoneId);
+  if (!zoneId) return "";
+  const year = new Date().getFullYear();
+  await loadPurchaseRequests();
+  await Promise.all([loadBudgetZones(), loadBudgetAllocations(year), loadBudgetFinancialLines(year)]);
+  const usage = budgetUsageByZone();
+  const available = budgetAvailable(zoneId, usage);
+  if (available >= -0.005) return "";
+  const zone = zoneCatalog().find(entry => entry.zoneId === zoneId);
+  return `${zone?.zoneName || `Zona ${zoneId}`} quedó por encima del presupuesto por ${formatCurrencyWithCode(Math.abs(available), "MXN")} después de registrar el costo real. El Administrador debe incrementar el presupuesto de la zona.`;
+}
+
+function injectBudgetManager() {
+  const launcher = document.querySelector("#purchaseRequestLauncher");
+  if (!launcher) return;
+
+  if (!document.querySelector("#purchaseBudgetLauncher")) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "purchaseBudgetLauncher";
+    button.className = "btn btn-outline-dark";
+    button.setAttribute("data-bs-toggle", "offcanvas");
+    button.setAttribute("data-bs-target", "#purchaseBudgetsPanel");
+    button.setAttribute("aria-controls", "purchaseBudgetsPanel");
+    button.innerHTML = `<span>Presupuestos</span>`;
+    launcher.appendChild(button);
+  }
+
+  if (!document.querySelector("#purchaseBudgetsPanel")) {
+    const panel = document.createElement("div");
+    panel.id = "purchaseBudgetsPanel";
+    panel.className = "offcanvas offcanvas-top purchase-requests-offcanvas purchase-budget-offcanvas";
+    panel.tabIndex = -1;
+    panel.setAttribute("aria-labelledby", "purchaseBudgetsPanelLabel");
+    panel.innerHTML = `
+      <div class="offcanvas-header">
+        <div>
+          <h2 class="offcanvas-title h4 mb-1" id="purchaseBudgetsPanelLabel">Presupuestos de compras</h2>
+          <div class="text-muted small">Asignación por zona, compromisos pendientes y gasto real recibido.</div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+      </div>
+      <div class="offcanvas-body" id="purchaseBudgetsPanelBody">
+        <div class="text-center text-muted py-5">Abre o actualiza el panel para consultar presupuestos.</div>
+      </div>`;
+    document.body.appendChild(panel);
+  }
+}
+
+function budgetStatusClass(allocated, available) {
+  if (available < -0.005) return "purchase-budget-negative";
+  if (allocated > 0 && available <= allocated * 0.1) return "purchase-budget-warning";
+  return "";
+}
+
+function uniqueBudgetValues(lines, field, labelField) {
+  const map = new Map();
+  lines.forEach(line => {
+    const value = String(line?.[field] || "");
+    if (!value) return;
+    if (!map.has(value)) map.set(value, String(line?.[labelField] || value));
+  });
+  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0], "es", { numeric: true }));
+}
+
+function filteredBudgetLines() {
+  return budgetFinancialLines.filter(line => {
+    if (budgetFilterZone !== "all" && String(line.zoneId || "") !== budgetFilterZone) return false;
+    if (budgetFilterSubzone !== "all" && String(line.subzoneId || "") !== budgetFilterSubzone) return false;
+    const area = String(line.locationCode || line.locationId || "");
+    if (budgetFilterArea !== "all" && area !== budgetFilterArea) return false;
+    return true;
+  });
+}
+
+function budgetBreakdownRows(lines = filteredBudgetLines()) {
+  const map = new Map();
+  for (const line of lines) {
+    const f = budgetLineFinancials(line);
+    if (f.currency !== "MXN") continue;
+    const zoneId = String(line.zoneId || "");
+    const subzoneId = String(line.subzoneId || "");
+    const areaId = String(line.locationCode || line.locationId || "");
+    const key = `${zoneId}|${subzoneId}|${areaId}`;
+    if (!map.has(key)) map.set(key, {
+      zoneId,
+      zoneName: line.zoneName || "Sin zona",
+      subzoneId,
+      subzoneName: line.subzoneName || "Sin subzona",
+      areaId,
+      areaName: line.locationName || "Sin área",
+      committed: 0,
+      spent: 0,
+      expected: 0,
+      released: 0,
+    });
+    const row = map.get(key);
+    row.committed += f.committed;
+    row.spent += f.actualSpent;
+    row.expected += f.expectedOriginal;
+    row.released += f.released;
+  }
+  return [...map.values()].sort((a, b) =>
+    a.zoneId.localeCompare(b.zoneId, "es", { numeric: true })
+    || a.subzoneId.localeCompare(b.subzoneId, "es", { numeric: true })
+    || a.areaId.localeCompare(b.areaId, "es", { numeric: true })
+  );
+}
+
+function renderBudgetReport() {
+  const target = document.querySelector("#purchaseBudgetReport");
+  if (!target) return;
+  const rows = budgetBreakdownRows();
+  if (!rows.length) {
+    target.innerHTML = `<div class="text-muted py-3">No hay movimientos de compras para los filtros seleccionados.</div>`;
+    return;
+  }
+  target.innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-sm purchase-budget-report-table">
+        <thead><tr><th>Zona</th><th>Subzona</th><th>Área</th><th class="text-end">Comprometido</th><th class="text-end">Gasto real</th><th class="text-end">Cancelado/liberado</th><th class="text-end">Carga actual</th></tr></thead>
+        <tbody>
+          ${rows.map(row => `
+            <tr>
+              <td>${reportEscape(`${row.zoneId} · ${row.zoneName}`)}</td>
+              <td>${reportEscape(`${row.subzoneId} · ${row.subzoneName}`)}</td>
+              <td>${reportEscape(`${row.areaId} ${row.areaName}`.trim())}</td>
+              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.committed, "MXN"))}</td>
+              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.spent, "MXN"))}</td>
+              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.released, "MXN"))}</td>
+              <td class="text-end fw-semibold">${reportEscape(formatCurrencyWithCode(row.committed + row.spent, "MXN"))}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function renderBudgetPanel() {
+  const body = document.querySelector("#purchaseBudgetsPanelBody");
+  if (!body) return;
+  const zones = zoneCatalog();
+  const usage = budgetUsageByZone();
+  const totalAllocated = zones.reduce((sum, zone) => sum + budgetAllocated(zone.zoneId), 0);
+  const totalCommitted = [...usage.values()].reduce((sum, row) => sum + row.committed, 0);
+  const totalSpent = [...usage.values()].reduce((sum, row) => sum + row.spent, 0);
+  const totalAvailable = totalAllocated - totalCommitted - totalSpent;
+  const foreignLines = budgetFinancialLines.filter(line => budgetLineFinancials(line).currency !== "MXN");
+  const subzones = uniqueBudgetValues(budgetFinancialLines, "subzoneId", "subzoneName");
+  const areas = uniqueBudgetValues(budgetFinancialLines, "locationCode", "locationName");
+
+  body.innerHTML = `
+    <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
+      <div>
+        <label class="form-label small mb-1" for="purchaseBudgetYear">Ejercicio</label>
+        <input id="purchaseBudgetYear" class="form-control" type="number" min="2020" max="2100" value="${budgetReportYear}" style="max-width:140px">
+      </div>
+      <button type="button" class="btn btn-outline-dark btn-sm" id="refreshPurchaseBudgets">Actualizar presupuestos</button>
+    </div>
+
+    <div class="purchase-budget-summary-grid">
+      <div class="purchase-budget-summary-card"><div class="purchase-budget-summary-label">Asignado</div><div class="purchase-budget-summary-value">${reportEscape(formatCurrencyWithCode(totalAllocated, "MXN"))}</div></div>
+      <div class="purchase-budget-summary-card"><div class="purchase-budget-summary-label">Comprometido</div><div class="purchase-budget-summary-value">${reportEscape(formatCurrencyWithCode(totalCommitted, "MXN"))}</div></div>
+      <div class="purchase-budget-summary-card"><div class="purchase-budget-summary-label">Gasto real</div><div class="purchase-budget-summary-value">${reportEscape(formatCurrencyWithCode(totalSpent, "MXN"))}</div></div>
+      <div class="purchase-budget-summary-card"><div class="purchase-budget-summary-label">Disponible</div><div class="purchase-budget-summary-value ${totalAvailable < 0 ? "purchase-budget-negative" : ""}">${reportEscape(formatCurrencyWithCode(totalAvailable, "MXN"))}</div></div>
+    </div>
+
+    ${foreignLines.length ? `<div class="purchase-budget-foreign-warning"><strong>Atención:</strong> hay ${foreignLines.length} línea${foreignLines.length === 1 ? "" : "s"} de compra en moneda distinta de MXN. No se incluyen en el consumo presupuestal hasta que el precio esperado esté expresado en MXN.</div>` : ""}
+
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+      <h3 class="h6 mb-0">Asignación por zona</h3>
+      <span class="small text-muted">Sólo Administrador puede modificar la asignación.</span>
+    </div>
+    <div class="table-responsive mb-4">
+      <table class="table table-sm purchase-budget-zone-table">
+        <thead><tr><th>Zona</th><th class="text-end">Asignado</th><th class="text-end">Comprometido</th><th class="text-end">Gasto real</th><th class="text-end">Disponible</th><th class="text-end">Asignación</th></tr></thead>
+        <tbody>
+          ${zones.map(zone => {
+            const row = usage.get(zone.zoneId) || { committed: 0, spent: 0 };
+            const allocated = budgetAllocated(zone.zoneId);
+            const available = allocated - row.committed - row.spent;
+            const cls = budgetStatusClass(allocated, available);
+            return `<tr>
+              <td><strong>${reportEscape(zone.zoneId)}</strong> · ${reportEscape(zone.zoneName)}</td>
+              <td class="text-end">${reportEscape(formatCurrencyWithCode(allocated, "MXN"))}</td>
+              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.committed, "MXN"))}</td>
+              <td class="text-end">${reportEscape(formatCurrencyWithCode(row.spent, "MXN"))}</td>
+              <td class="text-end ${cls}">${reportEscape(formatCurrencyWithCode(available, "MXN"))}</td>
+              <td class="text-end">
+                ${currentAccessRole === "admin" ? `<div class="d-inline-flex gap-1 align-items-center"><input class="form-control form-control-sm purchase-budget-zone-input" type="number" min="0" step="0.01" value="${allocated}" data-zone-id="${reportEscape(zone.zoneId)}" data-zone-name="${reportEscape(zone.zoneName)}"><button type="button" class="btn btn-dark btn-sm budget-save-zone" data-zone-id="${reportEscape(zone.zoneId)}">Guardar</button></div>` : `<span class="text-muted">Sólo lectura</span>`}
+              </td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+      <h3 class="h6 mb-0">Reporte de gastos y compromisos</h3>
+      <button type="button" class="btn btn-outline-success btn-sm" id="exportBudgetReportXlsx">Exportar Excel</button>
+    </div>
+    <div class="row g-2 mb-3">
+      <div class="col-lg-4"><label class="form-label small mb-1">Zona</label><select id="budgetFilterZone" class="form-select form-select-sm"><option value="all">Todas las zonas</option>${zones.map(zone => `<option value="${reportEscape(zone.zoneId)}" ${budgetFilterZone === zone.zoneId ? "selected" : ""}>${reportEscape(`${zone.zoneId} · ${zone.zoneName}`)}</option>`).join("")}</select></div>
+      <div class="col-lg-4"><label class="form-label small mb-1">Subzona</label><select id="budgetFilterSubzone" class="form-select form-select-sm"><option value="all">Todas las subzonas</option>${subzones.map(([id,name]) => `<option value="${reportEscape(id)}" ${budgetFilterSubzone === id ? "selected" : ""}>${reportEscape(`${id} · ${name}`)}</option>`).join("")}</select></div>
+      <div class="col-lg-4"><label class="form-label small mb-1">Área</label><select id="budgetFilterArea" class="form-select form-select-sm"><option value="all">Todas las áreas</option>${areas.map(([id,name]) => `<option value="${reportEscape(id)}" ${budgetFilterArea === id ? "selected" : ""}>${reportEscape(`${id} · ${name}`)}</option>`).join("")}</select></div>
+    </div>
+    <div id="purchaseBudgetReport"></div>`;
+  renderBudgetReport();
+}
+
+async function refreshBudgetPanel() {
+  if (budgetUiBusy) return;
+  budgetUiBusy = true;
+  const body = document.querySelector("#purchaseBudgetsPanelBody");
+  if (body) body.innerHTML = `<div class="text-center text-muted py-5">Calculando presupuesto y gastos…</div>`;
+  try {
+    await Promise.all([loadBudgetZones(), loadBudgetAllocations(budgetReportYear), loadBudgetFinancialLines(budgetReportYear)]);
+    renderBudgetPanel();
+  } catch (error) {
+    console.error(error);
+    if (body) body.innerHTML = `<div class="alert alert-danger">No se pudo cargar Presupuestos: ${reportEscape(error.message)}</div>`;
+  } finally {
+    budgetUiBusy = false;
+  }
+}
+
+async function saveZoneBudget(zoneId) {
+  if (currentAccessRole !== "admin") return;
+  const input = document.querySelector(`.purchase-budget-zone-input[data-zone-id="${CSS.escape(String(zoneId))}"]`);
+  if (!input) return;
+  const allocatedAmount = Number(input.value);
+  if (!Number.isFinite(allocatedAmount) || allocatedAmount < 0) {
+    alert("El presupuesto asignado debe ser un número mayor o igual a cero.");
+    return;
+  }
+  const zone = zoneCatalog().find(entry => entry.zoneId === String(zoneId));
+  await setDoc(doc(db, "purchaseBudgets", budgetDocId(budgetReportYear, zoneId)), {
+    year: Number(budgetReportYear),
+    zoneId: String(zoneId),
+    zoneName: zone?.zoneName || input.dataset.zoneName || `Zona ${zoneId}`,
+    allocatedAmount,
+    currency: "MXN",
+    updatedBy: currentUser.uid,
+    updatedByName: currentProfile?.nombre || currentUser.email || "",
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+  await refreshBudgetPanel();
+}
+
+function exportBudgetReportXlsx() {
+  if (!window.XLSX) {
+    alert("No se pudo cargar la librería XLSX.");
+    return;
+  }
+  const rows = budgetBreakdownRows();
+  const usage = budgetUsageByZone();
+  const zones = zoneCatalog();
+  if (!rows.length && !zones.length) {
+    alert("No hay información presupuestal para exportar.");
+    return;
+  }
+
+  const summaryAoa = [["Ejercicio", "Zona", "Nombre zona", "Presupuesto asignado", "Comprometido", "Gasto real", "Disponible"],
+    ...zones.map(zone => {
+      const row = usage.get(zone.zoneId) || { committed: 0, spent: 0 };
+      const allocated = budgetAllocated(zone.zoneId);
+      return [budgetReportYear, zone.zoneId, zone.zoneName, allocated, row.committed, row.spent, allocated - row.committed - row.spent];
+    })];
+
+  const detailAoa = [["Ejercicio", "Zona", "Nombre zona", "Subzona", "Nombre subzona", "Área", "Nombre área", "Comprometido", "Gasto real", "Cancelado/liberado", "Carga actual"],
+    ...rows.map(row => [budgetReportYear, row.zoneId, row.zoneName, row.subzoneId, row.subzoneName, row.areaId, row.areaName, row.committed, row.spent, row.released, row.committed + row.spent])];
+
+  const filterAoa = [
+    ["Filtro", "Valor"],
+    ["Ejercicio", budgetReportYear],
+    ["Zona", budgetFilterZone === "all" ? "Todas" : budgetFilterZone],
+    ["Subzona", budgetFilterSubzone === "all" ? "Todas" : budgetFilterSubzone],
+    ["Área", budgetFilterArea === "all" ? "Todas" : budgetFilterArea],
+  ];
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoa);
+  wsSummary["!cols"] = [{wch:10},{wch:10},{wch:28},{wch:20},{wch:16},{wch:16},{wch:16}];
+  for (let r=2; r<=summaryAoa.length; r++) ["D","E","F","G"].forEach(col => setXlsxNumericCell(wsSummary, `${col}${r}`, '"$"#,##0.00'));
+
+  const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
+  wsDetail["!cols"] = [{wch:10},{wch:10},{wch:24},{wch:12},{wch:28},{wch:14},{wch:30},{wch:16},{wch:16},{wch:18},{wch:16}];
+  for (let r=2; r<=detailAoa.length; r++) ["H","I","J","K"].forEach(col => setXlsxNumericCell(wsDetail, `${col}${r}`, '"$"#,##0.00'));
+
+  const wsFilters = XLSX.utils.aoa_to_sheet(filterAoa);
+  wsFilters["!cols"] = [{wch:18},{wch:30}];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsSummary, "Resumen zonas");
+  XLSX.utils.book_append_sheet(wb, wsDetail, "Zona subzona area");
+  XLSX.utils.book_append_sheet(wb, wsFilters, "Filtros");
+  XLSX.writeFile(wb, `presupuesto_compras_${budgetReportYear}.xlsx`, { bookType: "xlsx", compression: true });
+}
+
+function bindBudgetActions() {
+  const panel = document.querySelector("#purchaseBudgetsPanel");
+  panel?.addEventListener("show.bs.offcanvas", () => refreshBudgetPanel());
+
+  document.addEventListener("click", async event => {
+    const save = event.target.closest(".budget-save-zone");
+    if (save) {
+      try { await saveZoneBudget(save.dataset.zoneId); }
+      catch (error) { console.error(error); alert(`No se pudo guardar el presupuesto: ${error.message}`); }
+      return;
+    }
+    if (event.target.closest("#refreshPurchaseBudgets")) {
+      await refreshBudgetPanel();
+      return;
+    }
+    if (event.target.closest("#exportBudgetReportXlsx")) {
+      exportBudgetReportXlsx();
+    }
+  });
+
+  document.addEventListener("change", async event => {
+    if (event.target.matches("#purchaseBudgetYear")) {
+      const year = Number(event.target.value);
+      if (Number.isInteger(year) && year >= 2020 && year <= 2100) {
+        budgetReportYear = year;
+        budgetFilterZone = budgetFilterSubzone = budgetFilterArea = "all";
+        await refreshBudgetPanel();
+      }
+      return;
+    }
+    if (event.target.matches("#budgetFilterZone")) budgetFilterZone = event.target.value;
+    else if (event.target.matches("#budgetFilterSubzone")) budgetFilterSubzone = event.target.value;
+    else if (event.target.matches("#budgetFilterArea")) budgetFilterArea = event.target.value;
+    else return;
+    renderBudgetReport();
+  });
+}
+
 function bindExportOverrides() {
   document.addEventListener("click", event => {
     const exportInventory = event.target.closest("#exportXlsx");
@@ -3214,6 +3820,7 @@ async function initPurchaseWorkflow() {
   bindPurchaseActions();
   bindBulkPurchaseActions();
   bindPurchaseRequestManagerActions();
+  bindBudgetActions();
   bindExportOverrides();
 
   // Datos del inventario y solicitudes se cargan con la página ya visible.
