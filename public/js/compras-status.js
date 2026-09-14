@@ -3729,6 +3729,11 @@ function exportBudgetReportXlsx() {
 }
 
 function bindBudgetActions() {
+  // Asegura que el panel exista ANTES de enlazar el evento de apertura.
+  // Antes, bindBudgetActions() podía ejecutarse cuando #purchaseBudgetsPanel
+  // todavía no había sido creado; en ese caso el offcanvas abría, pero nunca
+  // se disparaba refreshBudgetPanel() y se quedaba mostrando el placeholder.
+  injectBudgetManager();
   const panel = document.querySelector("#purchaseBudgetsPanel");
   panel?.addEventListener("show.bs.offcanvas", () => refreshBudgetPanel());
 
