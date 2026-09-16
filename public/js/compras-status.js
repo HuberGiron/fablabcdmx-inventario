@@ -109,8 +109,28 @@ function injectStyles() {
       padding: .45rem .65rem;
     }
 
-    #purchaseStatusFilterRow .form-select {
+    #purchaseStatusFilterRow .purchase-multi-filter {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .55rem 1rem;
       min-height: 42px;
+      padding: .65rem .8rem;
+      border: 1px solid #dee2e6;
+      border-radius: .375rem;
+      background: #fff;
+    }
+    #purchaseStatusFilterRow .purchase-multi-filter .form-check {
+      margin: 0;
+      min-height: auto;
+    }
+    #purchaseStatusFilterRow .purchase-multi-filter .form-check-input {
+      margin-top: .18rem;
+      cursor: pointer;
+    }
+    #purchaseStatusFilterRow .purchase-multi-filter .form-check-label {
+      cursor: pointer;
+      white-space: nowrap;
     }
 
     .purchase-bulk-toolbar {
@@ -777,7 +797,7 @@ function bindBulkPurchaseActions() {
 }
 
 function addFilters() {
-  if (document.querySelector("#filterPurchaseStatus")) return;
+  if (document.querySelector("#filterPurchaseStatusGroup")) return;
 
   const filterCardBody = document.querySelector(".filter-card .card-body");
   const toolbar = filterCardBody?.querySelector(".filter-toolbar");
@@ -787,38 +807,52 @@ function addFilters() {
   row.id = "purchaseStatusFilterRow";
   row.className = "row g-3 align-items-end mt-1";
   row.innerHTML = `
-    <div class="col-lg-4 col-md-6 ms-lg-auto">
-      <label class="form-label small mb-1" for="filterPurchaseStatus">Estado de compra</label>
-      <select id="filterPurchaseStatus" class="form-select">
-        <option value="all" selected>Todos los estados</option>
-        <option value="missing">Falta comprar</option>
-        <option value="ordered">En compras</option>
-        <option value="complete">Inventario completo / ya llegó</option>
-      </select>
+    <div class="col-lg-6">
+      <div class="form-label small mb-1 fw-semibold">Estado de compra</div>
+      <div id="filterPurchaseStatusGroup" class="purchase-multi-filter" role="group" aria-label="Estado de compra">
+        <div class="form-check">
+          <input class="form-check-input purchase-status-check" type="checkbox" value="missing" id="filterPurchaseStatusMissing" data-label="Falta comprar" checked>
+          <label class="form-check-label" for="filterPurchaseStatusMissing">Falta comprar</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input purchase-status-check" type="checkbox" value="ordered" id="filterPurchaseStatusOrdered" data-label="En compras" checked>
+          <label class="form-check-label" for="filterPurchaseStatusOrdered">En compras</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input purchase-status-check" type="checkbox" value="complete" id="filterPurchaseStatusComplete" data-label="Inventario completo / ya llegó" checked>
+          <label class="form-check-label" for="filterPurchaseStatusComplete">Inventario completo / ya llegó</label>
+        </div>
+      </div>
     </div>
-    <div class="col-lg-4 col-md-6">
-      <label class="form-label small mb-1" for="filterPurchasePriority">Prioridad</label>
-      <select id="filterPurchasePriority" class="form-select">
-        <option value="all" selected>Todas las prioridades</option>
-        <option value="1">Prioridad 1 · Alta</option>
-        <option value="2">Prioridad 2 · Media</option>
-        <option value="3">Prioridad 3 · Normal</option>
-      </select>
+    <div class="col-lg-6">
+      <div class="form-label small mb-1 fw-semibold">Prioridad</div>
+      <div id="filterPurchasePriorityGroup" class="purchase-multi-filter" role="group" aria-label="Prioridad">
+        <div class="form-check">
+          <input class="form-check-input purchase-priority-check" type="checkbox" value="1" id="filterPurchasePriority1" data-label="Prioridad 1 · Alta" checked>
+          <label class="form-check-label" for="filterPurchasePriority1">Prioridad 1 · Alta</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input purchase-priority-check" type="checkbox" value="2" id="filterPurchasePriority2" data-label="Prioridad 2 · Media" checked>
+          <label class="form-check-label" for="filterPurchasePriority2">Prioridad 2 · Media</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input purchase-priority-check" type="checkbox" value="3" id="filterPurchasePriority3" data-label="Prioridad 3 · Normal" checked>
+          <label class="form-check-label" for="filterPurchasePriority3">Prioridad 3 · Normal</label>
+        </div>
+      </div>
     </div>`;
 
   toolbar.parentNode.insertBefore(row, toolbar);
 
-  row.querySelectorAll("select").forEach(select => {
-    select.addEventListener("input", () => queueEnhancements());
-    select.addEventListener("change", () => queueEnhancements());
+  row.querySelectorAll(".purchase-multi-filter input[type='checkbox']").forEach(check => {
+    check.addEventListener("change", () => queueEnhancements());
   });
 
   document.querySelector("#clearFilters")?.addEventListener("click", () => {
     setTimeout(() => {
-      const status = document.querySelector("#filterPurchaseStatus");
-      const priority = document.querySelector("#filterPurchasePriority");
-      if (status) status.value = "all";
-      if (priority) priority.value = "all";
+      row.querySelectorAll(".purchase-multi-filter input[type='checkbox']").forEach(check => {
+        check.checked = true;
+      });
       queueEnhancements();
     }, 0);
   });
@@ -883,6 +917,20 @@ function selectedOptionText(selector, fallback = "") {
   return select.selectedOptions?.[0]?.textContent?.trim() || fallback;
 }
 
+function selectedCheckboxGroupText(selector, fallback = "") {
+  const checks = [...document.querySelectorAll(`${selector} input[type="checkbox"]`)];
+  if (!checks.length) return fallback;
+
+  const selected = checks.filter(check => check.checked);
+  if (selected.length === checks.length) return fallback;
+  if (!selected.length) return "Ninguna opción";
+
+  return selected
+    .map(check => check.dataset.label || check.value)
+    .filter(Boolean)
+    .join(", ");
+}
+
 function selectedTypesText() {
   const checks = [...document.querySelectorAll(".tipo-check")];
   if (!checks.length) return "Todas las categorías";
@@ -901,8 +949,8 @@ function appliedFiltersForReport() {
     ["Tipo", selectedTypesText()],
     ["FabAcademy", selectedOptionText("#filterWeek", "Todas las semanas FabAcademy")],
     ["Buscar", document.querySelector("#search")?.value?.trim() || "Sin búsqueda"],
-    ["Estado de compra", selectedOptionText("#filterPurchaseStatus", "Todos los estados")],
-    ["Prioridad", selectedOptionText("#filterPurchasePriority", "Todas las prioridades")],
+    ["Estado de compra", selectedCheckboxGroupText("#filterPurchaseStatusGroup", "Todos los estados")],
+    ["Prioridad", selectedCheckboxGroupText("#filterPurchasePriorityGroup", "Todas las prioridades")],
     ["Orden", selectedOptionText("#sortMode", "Zona / subzona")],
   ];
 }
@@ -995,7 +1043,7 @@ function exportPurchaseReportPdf() {
 
   const totalText = document.querySelector("#purchaseSummaryTotals")?.textContent?.trim() || "";
   const metaText = document.querySelector("#purchaseSummaryMeta")?.textContent?.trim() || `${cards.length} elementos`;
-  const statusText = selectedOptionText("#filterPurchaseStatus", "Todos los estados")
+  const statusText = selectedCheckboxGroupText("#filterPurchaseStatusGroup", "Todos los estados")
     .replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]+/g, "_")
     .replace(/^_+|_+$/g, "");
   const documentTitle = `Reporte_Compras_FabLab_${dateIso}${statusText ? `_${statusText}` : ""}`;
@@ -1231,19 +1279,23 @@ function exportPurchaseReportPdf() {
 }
 
 function currentStatusFilter() {
-  return document.querySelector("#filterPurchaseStatus")?.value || "all";
+  const checks = [...document.querySelectorAll("#filterPurchaseStatusGroup .purchase-status-check")];
+  if (!checks.length) return new Set(["missing", "ordered", "complete"]);
+  return new Set(checks.filter(check => check.checked).map(check => String(check.value)));
 }
 
 function currentPriorityFilter() {
-  return document.querySelector("#filterPurchasePriority")?.value || "all";
+  const checks = [...document.querySelectorAll("#filterPurchasePriorityGroup .purchase-priority-check")];
+  if (!checks.length) return new Set(["1", "2", "3"]);
+  return new Set(checks.filter(check => check.checked).map(check => String(check.value)));
 }
 
 function matchesExtraFilters(item) {
-  const statusFilter = currentStatusFilter();
-  const priorityFilter = currentPriorityFilter();
+  const statusFilters = currentStatusFilter();
+  const priorityFilters = currentPriorityFilter();
 
-  if (statusFilter !== "all" && purchaseVisualState(item).key !== statusFilter) return false;
-  if (priorityFilter !== "all" && String(itemPriority(item)) !== String(priorityFilter)) return false;
+  if (!statusFilters.has(purchaseVisualState(item).key)) return false;
+  if (!priorityFilters.has(String(itemPriority(item)))) return false;
   return true;
 }
 
