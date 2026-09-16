@@ -10,7 +10,9 @@ export const db = getFirestore(app);
 // Flujo administrativo específico de la página de Compras.
 // La carga es condicional para no afectar al resto de vistas del inventario.
 if (window.location.pathname.endsWith("compras.html")) {
-  import("./compras-status.js").catch(err => {
-    console.error("No se pudo cargar el módulo de estados de compra:", err);
-  });
+  import("./compras-status.js")
+    .then(() => import("./compras-budget-ui-fix.js"))
+    .catch(err => {
+      console.error("No se pudo cargar el módulo de Compras:", err);
+    });
 }
