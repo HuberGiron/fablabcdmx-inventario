@@ -462,6 +462,12 @@ async function enhanceRequestDetailModal(modalEl) {
   const requestId = String(pdfButton?.dataset?.requestId || "");
   if (!body || !requestId) return;
 
+  // Si el modal sólo vuelve a mostrarse después de cerrar el cuadro de
+  // recepción/cancelación, no volvemos a envolver la vista sobre sí misma.
+  if (body.querySelector("#requestGroupingToolbar") && body.querySelector("#requestGroupingContent")) {
+    return;
+  }
+
   let bundle;
   try {
     bundle = await fetchRequestBundle(requestId, { force: true });
@@ -514,24 +520,40 @@ function decorateHistoryPdfButtons() {
   if (!history) return;
 
   history.querySelectorAll(".request-history-pdf").forEach(button => {
-    button.textContent = "PDF extendido";
     const requestId = String(button.dataset.requestId || "");
     if (!requestId) return;
+
+    // Importante: no tocar repetidamente textContent. Cada asignación crea
+    // mutaciones DOM y, si el MutationObserver las vuelve a observar, puede
+    // generarse un ciclo infinito que congela compras.html.
+    if (button.dataset.groupingDecorated === "1") return;
+    button.dataset.groupingDecorated = "1";
+
+    if (button.textContent !== "PDF extendido") {
+      button.textContent = "PDF extendido";
+    }
 
     const actions = button.parentElement;
     if (!actions) return;
 
-    let grouped = actions.querySelector(
+    const existing = actions.querySelector(
       `.request-history-pdf-grouped[data-request-id="${CSS.escape(requestId)}"]`
     );
-    if (!grouped) {
-      grouped = document.createElement("button");
-      grouped.type = "button";
-      grouped.className = "btn btn-outline-danger btn-sm request-history-pdf-grouped";
-      grouped.dataset.requestId = requestId;
-      grouped.textContent = "PDF agrupado";
-      button.insertAdjacentElement("afterend", grouped);
-    }
+    if (existing) return;
+
+    const grouped = document.createElement("button");
+    grouped.type = "button";
+    grouped.className = "btn btn-outline-danger btn-sm request-history-pdf-grouped";
+    grouped.dataset.requestId = requestId;
+    grouped.textContent = "PDF agrupado";
+    button.insertAdjacentElement("afterend", grouped);
+  });
+}
+
+function mutationContainsPurchasePdf(mutation) {
+  return [...mutation.addedNodes].some(node => {
+    if (!(node instanceof Element)) return false;
+    return node.matches?.(".request-history-pdf") || Boolean(node.querySelector?.(".request-history-pdf"));
   });
 }
 
@@ -543,7 +565,13 @@ function startHistoryDecoration() {
     decorateHistoryPdfButtons();
 
     if (!historyObserver) {
-      historyObserver = new MutationObserver(() => decorateHistoryPdfButtons());
+      historyObserver = new MutationObserver(mutations => {
+        // Sólo reaccionamos cuando el render base agrega nuevos botones PDF.
+        // La inserción de nuestro propio botón "PDF agrupado" se ignora.
+        if (mutations.some(mutationContainsPurchasePdf)) {
+          decorateHistoryPdfButtons();
+        }
+      });
       historyObserver.observe(history, { childList: true, subtree: true });
     }
     return true;
