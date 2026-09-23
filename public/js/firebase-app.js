@@ -13,6 +13,7 @@ if (window.location.pathname.endsWith("compras.html")) {
   import("./compras-status.js")
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))
+    .then(() => import("./compras-request-progress.js"))
     .catch(err => {
       console.error("No se pudo cargar el módulo de Compras:", err);
     });
