@@ -975,8 +975,9 @@ async function renderIndividualReport(
 
     const summary = summarizeLines(lines);
 
+    const requestAlias = String(request.alias || "").trim();
     title.textContent =
-      `Avance · ${request.folio || request.id}`;
+      `Avance · ${request.folio || request.id}${requestAlias ? ` · ${requestAlias}` : ""}`;
 
     subtitle.textContent =
       `${requestStatusLabel(request.status)} · ${
@@ -1567,11 +1568,12 @@ function globalTableHtml(
           ${rows
             .map(
               ({ request, summary }) => {
-                const name =
-                  request.nombre ||
-                  request.name ||
+                const folio =
                   request.folio ||
                   request.id;
+
+                const requestAlias =
+                  String(request.alias || "").trim();
 
                 const requestDate =
                   dateText(
@@ -1583,8 +1585,10 @@ function globalTableHtml(
                   <tr>
                     <td>
                       <strong>
-                        ${escapeHtml(name)}
+                        ${escapeHtml(folio)}
                       </strong>
+
+                      ${requestAlias ? `<div class="small fw-semibold text-primary mt-1">${escapeHtml(requestAlias)}</div>` : `<div class="small text-muted mt-1">Sin alias</div>`}
 
                       <div class="small text-muted">
                         ${escapeHtml(

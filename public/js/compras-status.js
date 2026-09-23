@@ -259,6 +259,25 @@ function injectStyles() {
     .request-history-table th {
       vertical-align: middle;
     }
+    .request-history-alias {
+      color: #495057;
+      font-size: .82rem;
+      margin-top: .15rem;
+      line-height: 1.2;
+    }
+    .request-history-alias.is-empty {
+      color: #adb5bd;
+      font-style: italic;
+    }
+    .request-history-alias-edit {
+      padding: 0;
+      margin-top: .15rem;
+      font-size: .76rem;
+      text-decoration: none;
+    }
+    .request-history-search-wrap {
+      max-width: 560px;
+    }
     .request-status-badge {
       min-width: 92px;
       text-align: center;
@@ -2231,10 +2250,84 @@ function injectPurchaseRequestManager() {
       <h3 class="h6 mb-0">Historial de solicitudes</h3>
       <span class="small text-muted" id="purchaseRequestHistoryCount"></span>
     </div>
+    <div class="request-history-search-wrap mb-3">
+      <label class="form-label small mb-1" for="purchaseRequestHistorySearch">Buscar solicitud</label>
+      <input id="purchaseRequestHistorySearch" class="form-control form-control-sm" type="search" placeholder="Buscar por folio o alias…" autocomplete="off">
+    </div>
     <div id="purchaseRequestHistory"></div>`;
   panelBody.appendChild(section);
 
   updatePurchaseRequestLauncher();
+}
+
+function filterPurchaseRequestHistory() {
+  const search = document.querySelector("#purchaseRequestHistorySearch");
+  const history = document.querySelector("#purchaseRequestHistory");
+  const count = document.querySelector("#purchaseRequestHistoryCount");
+  if (!history) return;
+
+  const term = String(search?.value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es-MX")
+    .trim();
+
+  const rows = [...history.querySelectorAll("tbody tr[data-request-search]")];
+  let visible = 0;
+  rows.forEach(row => {
+    const haystack = String(row.dataset.requestSearch || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase("es-MX");
+    const show = !term || haystack.includes(term);
+    row.classList.toggle("d-none", !show);
+    if (show) visible += 1;
+  });
+
+  if (count) {
+    count.textContent = term
+      ? `${visible} de ${rows.length} solicitud${rows.length === 1 ? "" : "es"}`
+      : `${rows.length} solicitud${rows.length === 1 ? "" : "es"}`;
+  }
+}
+
+async function editPurchaseRequestAlias(requestId) {
+  if (currentAccessRole !== "admin") {
+    alert("Sólo el Administrador puede modificar el alias de una solicitud.");
+    return;
+  }
+
+  const request = purchaseRequestsById.get(String(requestId));
+  if (!request) {
+    alert("No se encontró la solicitud.");
+    return;
+  }
+
+  const currentAlias = String(request.alias || "").trim();
+  const value = prompt(
+    `Alias para ${request.folio || request.id}\n\nPuedes dejarlo vacío para quitar el alias.`,
+    currentAlias
+  );
+  if (value === null) return;
+
+  const alias = String(value).trim().slice(0, 120);
+
+  try {
+    await updateDoc(doc(db, "purchaseRequests", request.id), {
+      alias,
+      aliasUpdatedAt: serverTimestamp(),
+      aliasUpdatedBy: currentUser?.uid || "",
+      aliasUpdatedByName: currentProfile?.nombre || currentUser?.email || "",
+      updatedAt: serverTimestamp(),
+    });
+
+    purchaseRequestsById.set(request.id, { ...request, alias });
+    renderPurchaseRequestManager();
+    filterPurchaseRequestHistory();
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo guardar el alias: ${error.message}`);
+  }
 }
 
 function renderPurchaseRequestManager() {
@@ -2316,9 +2409,16 @@ function renderPurchaseRequestManager() {
           </tr>
         </thead>
         <tbody>
-          ${requests.map(request => `
-            <tr>
-              <td><strong>${reportEscape(request.folio || request.id)}</strong></td>
+          ${requests.map(request => {
+            const requestAlias = String(request.alias || "").trim();
+            const searchText = `${request.folio || request.id} ${requestAlias}`.trim();
+            return `
+            <tr data-request-search="${reportEscape(searchText)}">
+              <td>
+                <strong>${reportEscape(request.folio || request.id)}</strong>
+                <div class="request-history-alias ${requestAlias ? "" : "is-empty"}">${requestAlias ? reportEscape(requestAlias) : "Sin alias"}</div>
+                ${currentAccessRole === "admin" ? `<button type="button" class="btn btn-link request-history-alias-edit" data-request-id="${request.id}">${requestAlias ? "Editar alias" : "Agregar alias"}</button>` : ""}
+              </td>
               <td>${reportEscape(requestDateText(request.sentAt || request.createdAt))}</td>
               <td><span class="badge request-status-badge ${requestStatusBadgeClass(request.status)}">${reportEscape(requestStatusLabel(request.status))}</span></td>
               <td>${num(request.itemCount)}</td>
@@ -2333,10 +2433,13 @@ function renderPurchaseRequestManager() {
                   ${currentAccessRole === "admin" && [REQUEST_STATUS_COMPLETED, REQUEST_STATUS_CANCELLED].includes(request.status) ? `<button type="button" class="btn btn-danger btn-sm request-history-delete" data-request-id="${request.id}">Eliminar</button>` : ""}
                 </div>
               </td>
-            </tr>`).join("")}
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
     </div>`;
+
+  filterPurchaseRequestHistory();
 }
 
 async function fetchRequestLines(requestId) {
@@ -2540,8 +2643,9 @@ async function openRequestDetail(requestId) {
   const pdf = document.querySelector("#purchaseRequestDetailPdf");
   const xlsx = document.querySelector("#purchaseRequestDetailXlsx");
 
+  const requestAlias = String(request.alias || "").trim();
   title.textContent = request.folio || "Solicitud de compra";
-  subtitle.textContent = `${requestStatusLabel(request.status)} · ${requestDateText(request.sentAt || request.createdAt)}`;
+  subtitle.textContent = `${requestAlias ? `${requestAlias} · ` : ""}${requestStatusLabel(request.status)} · ${requestDateText(request.sentAt || request.createdAt)}`;
   pdf.dataset.requestId = requestId;
   xlsx.dataset.requestId = requestId;
   cancelAll.dataset.requestId = requestId;
@@ -3074,6 +3178,7 @@ async function exportRequestPdf(requestId, providedLines = null) {
   }
 
   const folio = request?.folio || "BORRADOR";
+  const requestAlias = String(request?.alias || "").trim();
   const status = request?.status || REQUEST_STATUS_DRAFT;
   const filters = Array.isArray(request?.filtersSnapshot) && request.filtersSnapshot.length
     ? request.filtersSnapshot
@@ -3131,7 +3236,7 @@ h1{font-size:23pt;margin:1mm 0}
 <header>
 <div class="kicker">Universidad Iberoamericana Ciudad de México · FabLab</div>
 <h1>Solicitud de compra ${reportEscape(folio)}</h1>
-<div class="meta"><span><strong>Estado:</strong> ${reportEscape(requestStatusLabel(status))}</span><span><strong>Fecha:</strong> ${reportEscape(created)}</span><span><strong>Generado por:</strong> ${reportEscape(request?.createdByName || currentProfile?.nombre || currentUser?.email || "")}</span></div>
+<div class="meta">${requestAlias ? `<span><strong>Alias:</strong> ${reportEscape(requestAlias)}</span>` : ""}<span><strong>Estado:</strong> ${reportEscape(requestStatusLabel(status))}</span><span><strong>Fecha:</strong> ${reportEscape(created)}</span><span><strong>Generado por:</strong> ${reportEscape(request?.createdByName || currentProfile?.nombre || currentUser?.email || "")}</span></div>
 </header>
 <section class="summary">
 <div><div class="muted">Artículos</div><div class="big">${lines.length}</div></div>
@@ -3167,14 +3272,16 @@ async function exportRequestXlsx(requestId, providedLines = null) {
   }
 
   const header = [
-    "Solicitud", "Estado", "Zona", "Subzona", "Área", "SKU", "Tipo", "Nombre", "Prioridad",
+    "Solicitud", "Alias", "Estado", "Zona", "Subzona", "Área", "SKU", "Tipo", "Nombre", "Prioridad",
     "Solicitado", "Recibido", "Cancelado", "Pendiente", "Precio unitario", "Moneda", "Subtotal solicitado",
     "Gasto real recibido", "Comprometido pendiente", "Más info", "Info compra",
     "Estado requisición", "Costo estimado inicial", "Costo requisición"
   ];
   const folio = request?.folio || "BORRADOR";
+  const requestAlias = String(request?.alias || "").trim();
   const rows = lines.map(line => [
     folio,
+    requestAlias,
     requestStatusLabel(request?.status || REQUEST_STATUS_DRAFT),
     line.zoneName || "",
     line.subzoneName || "",
@@ -3201,22 +3308,22 @@ async function exportRequestXlsx(requestId, providedLines = null) {
 
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
   ws["!cols"] = [
-    {wch:18},{wch:14},{wch:20},{wch:24},{wch:28},{wch:12},{wch:16},{wch:36},{wch:10},
+    {wch:18},{wch:30},{wch:14},{wch:20},{wch:24},{wch:28},{wch:12},{wch:16},{wch:36},{wch:10},
     {wch:12},{wch:12},{wch:12},{wch:12},{wch:15},{wch:10},{wch:18},{wch:18},{wch:20},{wch:40},{wch:40},
     {wch:22},{wch:20},{wch:18}
   ];
   for (let r = 2; r <= rows.length + 1; r++) {
-    ["I","J","K","L","M","N","P","Q","R"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
-    const currency = ws[`O${r}`]?.v || "MXN";
+    ["J","K","L","M","N","O","Q","R","S"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
+    const currency = ws[`P${r}`]?.v || "MXN";
     const fmt = xlsxMoneyFormat(currency);
-    if (ws[`N${r}`]) ws[`N${r}`].z = fmt;
-    if (ws[`P${r}`]) ws[`P${r}`].z = fmt;
+    if (ws[`O${r}`]) ws[`O${r}`].z = fmt;
     if (ws[`Q${r}`]) ws[`Q${r}`].z = fmt;
     if (ws[`R${r}`]) ws[`R${r}`].z = fmt;
-    if (ws[`V${r}`]) { setXlsxNumericCell(ws, `V${r}`); ws[`V${r}`].z = fmt; }
+    if (ws[`S${r}`]) ws[`S${r}`].z = fmt;
     if (ws[`W${r}`]) { setXlsxNumericCell(ws, `W${r}`); ws[`W${r}`].z = fmt; }
+    if (ws[`X${r}`]) { setXlsxNumericCell(ws, `X${r}`); ws[`X${r}`].z = fmt; }
   }
-  ws["!autofilter"] = { ref: `A1:W${rows.length + 1}` };
+  ws["!autofilter"] = { ref: `A1:X${rows.length + 1}` };
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Solicitud");
@@ -3320,6 +3427,12 @@ async function deleteFinishedPurchaseRequest(requestId) {
 }
 
 function bindPurchaseRequestManagerActions() {
+  document.addEventListener("input", event => {
+    if (event.target.matches("#purchaseRequestHistorySearch")) {
+      filterPurchaseRequestHistory();
+    }
+  });
+
   document.addEventListener("change", event => {
     const sortSelect = event.target.closest("#requestDraftSortMode");
     if (!sortSelect) return;
@@ -3365,6 +3478,12 @@ function bindPurchaseRequestManagerActions() {
 
     if (target.closest(".request-draft-xlsx")) {
       await exportRequestXlsx(currentDraftRequest?.id || "", draftLinesArray());
+      return;
+    }
+
+    const aliasEdit = target.closest(".request-history-alias-edit");
+    if (aliasEdit) {
+      await editPurchaseRequestAlias(aliasEdit.dataset.requestId);
       return;
     }
 

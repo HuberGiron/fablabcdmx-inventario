@@ -766,6 +766,7 @@ async function exportGroupedPdf(requestId) {
       : [];
     const created = requestDateText(request.sentAt || request.createdAt);
     const folio = request.folio || request.id;
+    const requestAlias = String(request.alias || "").trim();
 
     popup.document.open();
     popup.document.write(`<!doctype html>
@@ -826,6 +827,7 @@ h3{font-size:9.5pt;margin:3mm 0 1mm}
   <div class="kicker">Universidad Iberoamericana Ciudad de México · FabLab</div>
   <h1>Solicitud de compra ${escapeHtml(folio)} · Vista agrupada</h1>
   <div class="meta">
+    ${requestAlias ? `<span><strong>Alias:</strong> ${escapeHtml(requestAlias)}</span>` : ""}
     <span><strong>Estado:</strong> ${escapeHtml(
       requestStatusLabel(request.status)
     )}</span>
