@@ -8,6 +8,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const detailState = new WeakMap();
+const enhancingBodies = new WeakSet();
 const requestCache = new Map();
 let historyObserver = null;
 let historyWaitTimer = null;
@@ -212,6 +213,8 @@ function groupRequestLines(lines) {
         pending: 0,
         expectedTotal: 0,
         actualSpent: 0,
+        requisitionedPending: 0,
+        requisitionedLines: 0,
         priorities: new Set(),
         currencies: new Set(),
         unitPrices: new Set(),
@@ -226,7 +229,12 @@ function groupRequestLines(lines) {
     group.quantityRequested += num(line.quantityRequested);
     group.quantityReceived += num(line.quantityReceived);
     group.quantityCancelled += num(line.quantityCancelled);
-    group.pending += linePendingQty(line);
+    const pendingQty = linePendingQty(line);
+    group.pending += pendingQty;
+    if (line.requisitionStatus === "requisitioned") {
+      group.requisitionedLines += 1;
+      group.requisitionedPending += pendingQty;
+    }
     group.expectedTotal += num(line.quantityRequested) * num(line.unitPrice);
     group.actualSpent += lineActualSpent(line);
     group.priorities.add(num(line.priority) || 3);
@@ -296,6 +304,7 @@ function breakdownTableHtml(group, { pdf = false } = {}) {
             <th>Zona</th>
             <th>Subzona</th>
             <th>Área solicitante</th>
+            <th>Etapa</th>
             <th class="text-end">Solicitado</th>
             <th class="text-end">Recibido</th>
             <th class="text-end">Cancelado</th>
@@ -321,6 +330,7 @@ function breakdownTableHtml(group, { pdf = false } = {}) {
                   line.locationName ? ` · ${line.locationName}` : ""
                 }`
               )}</td>
+              <td>${line.requisitionStatus === "requisitioned" ? `<span class="badge text-bg-primary">${linePendingQty(line) > 0 ? "En requisición" : "Requisición registrada"}</span>` : `<span class="text-muted">En compras</span>`}</td>
               <td class="text-end">${num(line.quantityRequested)}</td>
               <td class="text-end">${num(line.quantityReceived)}</td>
               <td class="text-end">${num(line.quantityCancelled)}</td>
@@ -351,13 +361,14 @@ function groupedDetailHtml(request, lines) {
         const currencyText =
           currencies.length === 1 ? currencies[0] : "varias monedas";
         return `
-          <article class="request-line-row grouped-request-card">
+          <article class="request-line-row grouped-request-card ${group.requisitionedPending > 0 ? "border-primary bg-primary-subtle" : ""}">
             <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
               <div class="flex-grow-1">
                 <div class="request-line-title fs-5">${escapeHtml(group.nombre)}</div>
                 <div class="request-line-meta mt-1">
                   ${group.lines.length} registro${group.lines.length === 1 ? "" : "s"} ·
                   ${escapeHtml(groupPriorityText(group))}
+                  ${group.requisitionedPending > 0 ? `<span class="badge text-bg-primary ms-2">En requisición: ${group.requisitionedPending}</span>` : (group.requisitionedLines > 0 ? `<span class="badge text-bg-primary ms-2">Requisición registrada</span>` : "")}
                 </div>
               </div>
               <div class="text-end">
@@ -418,22 +429,64 @@ function groupedDetailHtml(request, lines) {
       .join("")}`;
 }
 
-function requestViewToolbarHtml(mode) {
+function requestViewToolbarHtml(mode, search = "") {
   return `
-    <div id="requestGroupingToolbar" class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-      <div>
-        <div class="fw-semibold">Visualización de la solicitud</div>
-        <div class="small text-muted">La vista agrupada consolida registros con el mismo nombre.</div>
+    <div id="requestGroupingToolbar" class="mb-3">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+          <div class="fw-semibold">Visualización de la solicitud</div>
+          <div class="small text-muted">La vista agrupada consolida registros con el mismo nombre.</div>
+        </div>
+        <div class="btn-group" role="group" aria-label="Vista de solicitud">
+          <button type="button" class="btn btn-sm ${
+            mode === "extended" ? "btn-dark" : "btn-outline-dark"
+          } request-view-mode" data-mode="extended">Vista extendida</button>
+          <button type="button" class="btn btn-sm ${
+            mode === "grouped" ? "btn-dark" : "btn-outline-dark"
+          } request-view-mode" data-mode="grouped">Vista agrupada</button>
+        </div>
       </div>
-      <div class="btn-group" role="group" aria-label="Vista de solicitud">
-        <button type="button" class="btn btn-sm ${
-          mode === "extended" ? "btn-dark" : "btn-outline-dark"
-        } request-view-mode" data-mode="extended">Vista extendida</button>
-        <button type="button" class="btn btn-sm ${
-          mode === "grouped" ? "btn-dark" : "btn-outline-dark"
-        } request-view-mode" data-mode="grouped">Vista agrupada</button>
+      <div class="row g-2 align-items-end mt-2">
+        <div class="col-lg-8 col-md-9">
+          <label class="form-label small mb-1" for="requestDetailSearch">Buscar dentro de esta solicitud</label>
+          <input id="requestDetailSearch" class="form-control" type="search" value="${escapeHtml(search)}" placeholder="Nombre o SKU del artículo" autocomplete="off">
+        </div>
+        <div class="col-lg-4 col-md-3">
+          <div id="requestDetailSearchCount" class="small text-muted pb-2"></div>
+        </div>
       </div>
     </div>`;
+}
+
+function requestCardSearchText(card) {
+  const title = card.querySelector(".request-line-title")?.textContent || "";
+  const meta = card.querySelector(".request-line-meta")?.textContent || "";
+  return normalizeName(`${title} ${meta}`);
+}
+
+function applyDetailSearch(body) {
+  const state = detailState.get(body);
+  const content = body.querySelector("#requestGroupingContent");
+  if (!state || !content) return;
+
+  const query = normalizeName(state.search || "");
+  const tokens = query.split(/\s+/).filter(Boolean);
+  const cards = [...content.querySelectorAll(".request-line-row")];
+  let visible = 0;
+
+  cards.forEach(card => {
+    const haystack = requestCardSearchText(card);
+    const show = !tokens.length || tokens.every(token => haystack.includes(token));
+    card.classList.toggle("d-none", !show);
+    if (show) visible += 1;
+  });
+
+  const count = body.querySelector("#requestDetailSearchCount");
+  if (count) {
+    count.textContent = query
+      ? `${visible} coincidencia${visible === 1 ? "" : "s"} de ${cards.length}`
+      : `${cards.length} elemento${cards.length === 1 ? "" : "s"} en esta vista`;
+  }
 }
 
 function renderDetailMode(body, mode) {
@@ -444,7 +497,7 @@ function renderDetailMode(body, mode) {
   localStorage.setItem("purchaseRequestViewMode", mode);
 
   const toolbar = body.querySelector("#requestGroupingToolbar");
-  if (toolbar) toolbar.outerHTML = requestViewToolbarHtml(mode);
+  if (toolbar) toolbar.outerHTML = requestViewToolbarHtml(mode, state.search || "");
 
   const content = body.querySelector("#requestGroupingContent");
   if (!content) return;
@@ -454,6 +507,8 @@ function renderDetailMode(body, mode) {
   } else {
     content.innerHTML = state.extendedHtml;
   }
+
+  applyDetailSearch(body);
 }
 
 async function enhanceRequestDetailModal(modalEl) {
@@ -467,17 +522,22 @@ async function enhanceRequestDetailModal(modalEl) {
   if (body.querySelector("#requestGroupingToolbar") && body.querySelector("#requestGroupingContent")) {
     return;
   }
+  if (enhancingBodies.has(body)) return;
+  enhancingBodies.add(body);
 
   let bundle;
   try {
     bundle = await fetchRequestBundle(requestId, { force: true });
   } catch (error) {
     console.error("No se pudo preparar la vista agrupada:", error);
+    enhancingBodies.delete(body);
     return;
   }
 
   // openRequestDetail() acaba de generar el HTML extendido. Lo conservamos
   // íntegro para que sus botones operativos sigan funcionando al volver.
+  const previousState = detailState.get(body);
+  const previousSearch = previousState?.requestId === requestId ? String(previousState.search || "") : "";
   const extendedHtml = body.innerHTML;
   const savedMode =
     localStorage.getItem("purchaseRequestViewMode") === "grouped"
@@ -490,10 +550,11 @@ async function enhanceRequestDetailModal(modalEl) {
     lines: bundle.lines,
     extendedHtml,
     mode: savedMode,
+    search: previousSearch,
   });
 
   body.innerHTML = `
-    ${requestViewToolbarHtml(savedMode)}
+    ${requestViewToolbarHtml(savedMode, previousSearch)}
     <div id="requestGroupingContent"></div>`;
 
   renderDetailMode(body, savedMode);
@@ -513,6 +574,8 @@ async function enhanceRequestDetailModal(modalEl) {
     const groupedPdf = footer?.querySelector("#purchaseRequestDetailPdfGrouped");
     if (groupedPdf) groupedPdf.dataset.requestId = requestId;
   }
+
+  enhancingBodies.delete(body);
 }
 
 function decorateHistoryPdfButtons() {
@@ -598,7 +661,7 @@ function pdfGroupCardHtml(group) {
   const singleCurrency = currencies.length === 1 ? currencies[0] : null;
 
   return `
-    <article class="group-card">
+    <article class="group-card ${group.requisitionedPending > 0 ? "requisition-active" : ""}">
       <div class="group-image">
         <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(group.nombre)}">
       </div>
@@ -608,7 +671,7 @@ function pdfGroupCardHtml(group) {
             <h2>${escapeHtml(group.nombre)}</h2>
             <div class="muted">${group.lines.length} registro${
               group.lines.length === 1 ? "" : "s"
-            } / SKU · ${escapeHtml(groupPriorityText(group))}</div>
+            } / SKU · ${escapeHtml(groupPriorityText(group))}${group.requisitionedPending > 0 ? ` · En requisición: ${group.requisitionedPending}` : (group.requisitionedLines > 0 ? " · Requisición registrada" : "")}</div>
           </div>
           <div class="qty-box">
             <span>Total solicitado</span>
@@ -729,6 +792,7 @@ h1{font-size:22pt;margin:1mm 0}
 .filters{display:flex;flex-wrap:wrap;gap:2mm;margin-bottom:5mm}
 .filter{border:1px solid #ddd;border-radius:99px;padding:1.5mm 2.5mm;font-size:8pt}
 .group-card{display:grid;grid-template-columns:40mm 1fr;border:1.5px solid #d9dde3;border-left:2mm solid #212529;border-radius:2mm;margin-bottom:5mm;break-inside:avoid;overflow:hidden}
+.group-card.requisition-active{border-color:#0d6efd;border-left-color:#0d6efd;background:#f5f9ff}
 .group-image{display:flex;align-items:flex-start;justify-content:center;border-right:1px solid #eee;padding:3mm}
 .group-image img{max-width:100%;max-height:48mm;object-fit:contain}
 .group-content{padding:3.5mm}
@@ -828,10 +892,25 @@ document.addEventListener("shown.bs.modal", event => {
   }
 });
 
+document.addEventListener("purchase-request-detail-rendered", () => {
+  const modal = document.querySelector("#purchaseRequestDetailModal");
+  if (modal) queueMicrotask(() => enhanceRequestDetailModal(modal));
+});
+
 document.addEventListener("shown.bs.offcanvas", event => {
   if (event.target?.id === "purchaseRequestsPanel") {
     decorateHistoryPdfButtons();
   }
+});
+
+document.addEventListener("input", event => {
+  const search = event.target.closest("#requestDetailSearch");
+  if (!search) return;
+  const body = document.querySelector("#purchaseRequestDetailBody");
+  const state = body ? detailState.get(body) : null;
+  if (!body || !state) return;
+  state.search = search.value || "";
+  applyDetailSearch(body);
 });
 
 document.addEventListener("click", async event => {

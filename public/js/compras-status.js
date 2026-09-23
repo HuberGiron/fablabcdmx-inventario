@@ -76,6 +76,10 @@ function injectStyles() {
       background: #fff3cd;
       border-color: #f0ad00;
     }
+    .purchase-state-requisition {
+      background: #e7f1ff;
+      border-color: #0d6efd;
+    }
     .purchase-state-complete {
       background: #d1e7dd;
       border-color: #198754;
@@ -274,6 +278,16 @@ function injectStyles() {
       margin-bottom: .65rem;
       background: #fff;
     }
+    .request-line-row.is-requisitioned-active {
+      border-color: #0d6efd;
+      background: #e7f1ff;
+      box-shadow: inset 5px 0 0 #0d6efd;
+    }
+    .request-line-requisition-badge {
+      display: inline-block;
+      margin-left: .45rem;
+      vertical-align: middle;
+    }
     .request-line-title {
       font-weight: 700;
       line-height: 1.2;
@@ -329,6 +343,10 @@ function pendingPurchaseQty(item) {
   return Math.max(num(item?.purchasePendingQty), 0);
 }
 
+function requisitionPurchaseQty(item) {
+  return Math.max(num(item?.purchaseRequisitionQty), 0);
+}
+
 function draftQtyForItem(itemId) {
   return Math.max(num(draftLinesByItemId.get(String(itemId))?.quantityRequested), 0);
 }
@@ -365,8 +383,24 @@ function purchaseVisualState(item) {
   const current = currentInventory(item);
   const desired = num(item.inventarioDeseado);
   const pending = pendingPurchaseQty(item);
+  const requisition = Math.min(requisitionPurchaseQty(item), pending);
   const available = quantityToBuy(item);
   const rawMissing = Math.max(desired - current, 0);
+
+  if (pending > 0 && requisition > 0) {
+    return {
+      key: "requisition",
+      cardBorderClass: "border-primary",
+      bandClass: "purchase-state-requisition",
+      badgeClass: "text-bg-primary",
+      label: requisition >= pending ? "En requisición" : "En requisición parcial",
+      missing: rawMissing,
+      pending,
+      requisition,
+      orderedWithoutRequisition: Math.max(pending - requisition, 0),
+      available,
+    };
+  }
 
   if (pending > 0) {
     return {
@@ -377,6 +411,7 @@ function purchaseVisualState(item) {
       label: "En compras",
       missing: rawMissing,
       pending,
+      requisition: 0,
       available,
     };
   }
@@ -429,6 +464,26 @@ function statusControlsHtml(item, state) {
           ${draftQty > 0 ? `<span class="badge text-bg-dark">En borrador: ${pluralPieces(draftQty)}</span>` : ""}
         </div>
         ${draftQty > 0 ? `<button type="button" class="btn btn-dark purchase-add-request-btn" data-id="${item.id}">${addLabel}</button>` : ""}
+      </div>`;
+  }
+
+  if (state.key === "requisition") {
+    return `
+      <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+        <div class="d-flex flex-column gap-1">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <span class="badge ${state.badgeClass}">${state.label}</span>
+            <span class="purchase-status-text">En requisición: <strong>${pluralPieces(state.requisition)}</strong></span>
+            <span class="purchase-status-text">Pendiente total: <strong>${pluralPieces(state.pending)}</strong></span>
+            ${state.orderedWithoutRequisition > 0 ? `<span class="badge text-bg-warning">Sin requisición: ${pluralPieces(state.orderedWithoutRequisition)}</span>` : ""}
+            ${draftQty > 0 ? `<span class="badge text-bg-dark">En borrador: ${pluralPieces(draftQty)}</span>` : ""}
+          </div>
+          ${state.available > 0 ? `<div class="purchase-status-note-danger">Aún disponible para solicitar adicionalmente: ${pluralPieces(state.available)}</div>` : `<div class="purchase-status-note-muted">Las piezas en requisición siguen pendientes de recepción y todavía no aumentan el inventario.</div>`}
+        </div>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <button type="button" class="btn btn-primary purchase-view-requests-btn" data-id="${item.id}">Ver solicitudes</button>
+          ${state.available > 0 || draftQty > 0 ? `<button type="button" class="btn btn-danger purchase-add-request-btn" data-id="${item.id}">${addLabel}</button>` : ""}
+        </div>
       </div>`;
   }
 
@@ -549,13 +604,14 @@ function decorateCard(card) {
     state.key,
     state.missing,
     state.pending || 0,
+    state.requisition || 0,
     state.available || 0,
     currentInventory(item),
     num(item.inventarioDeseado),
     draftQtyForItem(item.id),
   ].join("|");
 
-  card.classList.remove("border-success", "border-warning", "border-danger", "border-2");
+  card.classList.remove("border-success", "border-warning", "border-danger", "border-primary", "border-2");
   card.classList.add("border-2", state.cardBorderClass);
 
   const body = card.querySelector(".card-body");
@@ -570,7 +626,7 @@ function decorateCard(card) {
     else body.appendChild(controls);
   }
 
-  controls.classList.remove("purchase-state-missing", "purchase-state-ordered", "purchase-state-complete");
+  controls.classList.remove("purchase-state-missing", "purchase-state-ordered", "purchase-state-requisition", "purchase-state-complete");
   controls.classList.add(state.bandClass);
 
   if (controls.dataset.signature !== signature) {
@@ -819,6 +875,10 @@ function addFilters() {
           <label class="form-check-label" for="filterPurchaseStatusOrdered">En compras</label>
         </div>
         <div class="form-check">
+          <input class="form-check-input purchase-status-check" type="checkbox" value="requisition" id="filterPurchaseStatusRequisition" data-label="En requisición" checked>
+          <label class="form-check-label" for="filterPurchaseStatusRequisition">En requisición</label>
+        </div>
+        <div class="form-check">
           <input class="form-check-input purchase-status-check" type="checkbox" value="complete" id="filterPurchaseStatusComplete" data-label="Inventario completo / ya llegó" checked>
           <label class="form-check-label" for="filterPurchaseStatusComplete">Inventario completo / ya llegó</label>
         </div>
@@ -881,6 +941,7 @@ function addLegend() {
     <span class="fw-semibold me-1">Estado de compra:</span>
     <span class="badge text-bg-danger">Falta comprar</span>
     <span class="badge text-bg-warning">En compras</span>
+    <span class="badge text-bg-primary">En requisición</span>
     <span class="badge text-bg-success">Inventario completo / ya llegó</span>
     <span class="text-muted ms-md-2">Prioridad: 1 alta · 2 media · 3 normal</span>`;
   itemsList.parentNode.insertBefore(legend, itemsList);
@@ -1169,6 +1230,7 @@ function exportPurchaseReportPdf() {
     }
     .purchase-state-missing { background: #f8d7da !important; border-color: #dc3545 !important; }
     .purchase-state-ordered { background: #fff3cd !important; border-color: #f0ad00 !important; }
+    .purchase-state-requisition { background: #e7f1ff !important; border-color: #0d6efd !important; }
     .purchase-state-complete { background: #d1e7dd !important; border-color: #198754 !important; }
     .purchase-priority-box {
       min-width: 36mm;
@@ -1280,7 +1342,7 @@ function exportPurchaseReportPdf() {
 
 function currentStatusFilter() {
   const checks = [...document.querySelectorAll("#filterPurchaseStatusGroup .purchase-status-check")];
-  if (!checks.length) return new Set(["missing", "ordered", "complete"]);
+  if (!checks.length) return new Set(["missing", "ordered", "requisition", "complete"]);
   return new Set(checks.filter(check => check.checked).map(check => String(check.value)));
 }
 
@@ -1659,6 +1721,18 @@ function normalizePendingRefs(value) {
     .filter(ref => ref.requestId && ref.lineId && ref.pendingQty > 0);
 }
 
+function normalizeRequisitionRefs(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(ref => ({
+      requestId: String(ref?.requestId || ""),
+      lineId: String(ref?.lineId || ref?.itemId || ""),
+      folio: String(ref?.folio || ""),
+      requisitionQty: Math.max(num(ref?.requisitionQty), 0),
+    }))
+    .filter(ref => ref.requestId && ref.lineId && ref.requisitionQty > 0);
+}
+
 function snapshotLineFromItem(item, quantityRequested) {
   const qty = Math.max(num(quantityRequested), 0);
   return {
@@ -1894,7 +1968,7 @@ function ensureQuantityModal() {
   document.body.appendChild(wrapper.firstElementChild);
 }
 
-async function askQuantity({ title, message, max, value, allowZero = true, includeCost = false, costValue = 0, costEditable = false, currency = "MXN" }) {
+async function askQuantity({ title, message, max, value, allowZero = true, includeCost = false, costValue = 0, costEditable = false, currency = "MXN", fixedQuantity = false, costHelpText = "" }) {
   ensureQuantityModal();
 
   const modalEl = document.querySelector("#purchaseQuantityModal");
@@ -1913,16 +1987,19 @@ async function askQuantity({ title, message, max, value, allowZero = true, inclu
   input.min = allowZero ? "0" : "1";
   input.max = String(Math.max(num(max), allowZero ? 0 : 1));
   input.value = String(Math.max(num(value), allowZero ? 0 : 1));
-  help.textContent = `Máximo permitido: ${Math.max(num(max), 0)}.`;
+  input.disabled = fixedQuantity;
+  help.textContent = fixedQuantity
+    ? `Cantidad fija de esta operación: ${Math.max(num(value), 0)}.`
+    : `Máximo permitido: ${Math.max(num(max), 0)}.`;
   costGroup?.classList.toggle("d-none", !includeCost);
   if (includeCost && costInput) {
     costInput.value = String(Math.max(num(costValue), 0));
     costInput.disabled = !costEditable;
     if (costCurrency) costCurrency.textContent = String(currency || "MXN").toUpperCase();
     if (costHelp) {
-      costHelp.textContent = costEditable
+      costHelp.textContent = costHelpText || (costEditable
         ? "Por defecto se usa el costo esperado. Ajústalo si la factura fue diferente."
-        : "El Supervisor registra la recepción con el costo esperado; sólo el Administrador puede ajustar el costo real.";
+        : "El Supervisor registra la recepción con el costo esperado; sólo el Administrador puede ajustar el costo real.");
     }
   }
 
@@ -1996,7 +2073,10 @@ async function askQuantity({ title, message, max, value, allowZero = true, inclu
     save.addEventListener("click", onSave);
     modalEl.addEventListener("hidden.bs.modal", onHidden);
     modal.show();
-    setTimeout(() => input.select(), 150);
+    setTimeout(() => {
+      if (fixedQuantity && includeCost && costInput && !costInput.disabled) costInput.select();
+      else if (!input.disabled) input.select();
+    }, 150);
   });
 }
 
@@ -2478,24 +2558,38 @@ async function openRequestDetail(requestId) {
     ${filterHtml}
     ${lines.map(line => {
       const pending = linePendingQty(line);
+      const requisitioned = line.requisitionStatus === "requisitioned";
+      const requisitionActive = requisitioned && pending > 0;
+      const canRegisterRequisition = pending > 0
+        && !requisitioned
+        && num(line.quantityReceived) === 0
+        && num(line.quantityCancelled) === 0;
+      const originalUnitPrice = Object.prototype.hasOwnProperty.call(line, "originalUnitPrice")
+        ? num(line.originalUnitPrice)
+        : null;
       return `
-        <div class="request-line-row">
+        <div class="request-line-row ${requisitionActive ? "is-requisitioned-active" : ""}">
           <div class="d-flex flex-wrap justify-content-between gap-3">
             <div>
               <div class="request-line-title">${reportEscape(line.nombre || line.sku || "Item")}</div>
-              <div class="request-line-meta">${reportEscape(line.sku || "")} · Prioridad ${itemPriority({ purchasePriority: line.priority })}</div>
+              <div class="request-line-meta">
+                ${reportEscape(line.sku || "")} · Prioridad ${itemPriority({ purchasePriority: line.priority })}
+                ${requisitioned ? `<span class="badge text-bg-primary request-line-requisition-badge">${requisitionActive ? "En requisición" : "Requisición registrada"}</span>` : ""}
+              </div>
             </div>
             <div class="text-end">
               <div><strong>Solicitado:</strong> ${num(line.quantityRequested)}</div>
               <div><strong>Recibido:</strong> ${num(line.quantityReceived)}</div>
               <div><strong>Cancelado:</strong> ${num(line.quantityCancelled)}</div>
               <div><strong>Pendiente:</strong> ${pending}</div>
-              <div><strong>Costo esperado:</strong> ${reportEscape(formatCurrencyWithCode(line.unitPrice, line.currency || "MXN"))}</div>
+              <div><strong>${requisitioned ? "Costo de requisición" : "Costo esperado"}:</strong> ${reportEscape(formatCurrencyWithCode(line.unitPrice, line.currency || "MXN"))}</div>
+              ${originalUnitPrice !== null && Math.abs(originalUnitPrice - num(line.unitPrice)) > 0.005 ? `<div class="small text-muted"><strong>Estimado inicial:</strong> ${reportEscape(formatCurrencyWithCode(originalUnitPrice, line.currency || "MXN"))}</div>` : ""}
               <div><strong>Gasto real recibido:</strong> ${reportEscape(formatCurrencyWithCode(lineActualSpent(line), line.currency || "MXN"))}</div>
             </div>
           </div>
           ${pending > 0 ? `
             <div class="d-flex flex-wrap gap-2 mt-3">
+              ${canRegisterRequisition ? `<button type="button" class="btn btn-primary btn-sm request-line-requisition" data-request-id="${requestId}" data-line-id="${reportEscape(line.id)}" data-pending="${pending}">Registrar requisición</button>` : ""}
               <button type="button" class="btn btn-success btn-sm request-line-receive" data-request-id="${requestId}" data-line-id="${reportEscape(line.id)}" data-pending="${pending}">Registrar recepción</button>
               <button type="button" class="btn btn-dark btn-sm request-line-cancel" data-request-id="${requestId}" data-line-id="${reportEscape(line.id)}" data-pending="${pending}">Cancelar pendiente</button>
             </div>` : ""}
@@ -2513,6 +2607,7 @@ async function openRequestDetail(requestId) {
   deleteRequestButton.classList.toggle("d-none", !canDeleteRequest);
 
   bootstrap.Modal.getOrCreateInstance(document.querySelector("#purchaseRequestDetailModal")).show();
+  document.dispatchEvent(new CustomEvent("purchase-request-detail-rendered", { detail: { requestId } }));
 }
 
 async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = true, unitCost = null } = {}) {
@@ -2564,6 +2659,21 @@ async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = 
       purchasePendingRefs: refs,
       updatedAt: serverTimestamp(),
     };
+
+    if (line.requisitionStatus === "requisitioned") {
+      const currentRequisition = requisitionPurchaseQty(item);
+      const nextRequisition = Math.max(currentRequisition - qty, 0);
+      const requisitionRefs = normalizeRequisitionRefs(item.purchaseRequisitionRefs)
+        .map(ref => {
+          if (ref.requestId !== requestId || ref.lineId !== String(line.itemId || lineId)) return ref;
+          return { ...ref, requisitionQty: Math.max(ref.requisitionQty - qty, 0) };
+        })
+        .filter(ref => ref.requisitionQty > 0);
+
+      itemUpdate.purchaseRequisitionQty = nextRequisition;
+      itemUpdate.purchaseRequisitionRefs = requisitionRefs;
+    }
+
     if (mode === "receive") {
       itemUpdate.stockAlmacen = num(item.stockAlmacen) + qty;
     }
@@ -2592,6 +2702,128 @@ async function applyLineMovement(requestId, lineId, mode, quantity, { refresh = 
     if (document.querySelector("#purchaseBudgetsPanel.show")) {
       await refreshBudgetPanel();
     }
+  }
+}
+
+async function registerLineRequisition(requestId, lineId, pending) {
+  const lineRef = doc(db, "purchaseRequests", requestId, "items", lineId);
+  const lineSnap = await getDoc(lineRef);
+  if (!lineSnap.exists()) {
+    alert("La línea de compra ya no existe.");
+    return;
+  }
+
+  const line = { id: lineSnap.id, ...lineSnap.data() };
+  const remaining = linePendingQty(line);
+  if (remaining <= 0) {
+    alert("Este artículo ya no tiene piezas pendientes.");
+    return;
+  }
+  if (line.requisitionStatus === "requisitioned") {
+    alert("Este artículo ya tiene una requisición registrada.");
+    return;
+  }
+  if (num(line.quantityReceived) > 0 || num(line.quantityCancelled) > 0) {
+    alert("La requisición se registra para la línea completa antes de recibir o cancelar piezas. Esta línea ya tiene movimientos parciales.");
+    return;
+  }
+
+  const expectedUnitCost = num(line.unitPrice);
+  const currency = line.currency || "MXN";
+  const result = await askQuantity({
+    title: "Registrar requisición",
+    message: `Se registrará la requisición completa de ${remaining} pieza${remaining === 1 ? "" : "s"}. Esta acción NO aumenta el inventario.`,
+    max: remaining,
+    value: remaining,
+    allowZero: false,
+    fixedQuantity: true,
+    includeCost: true,
+    costValue: expectedUnitCost,
+    costEditable: currentAccessRole === "admin",
+    currency,
+    costHelpText: currentAccessRole === "admin"
+      ? "Captura el costo unitario oficial de la requisición. Este valor reemplazará el estimado para el presupuesto comprometido."
+      : "Sólo el Administrador puede ajustar el costo presupuestal. La requisición se registrará con el costo esperado actual.",
+  });
+  if (result === null) return;
+
+  const officialUnitCost = currentAccessRole === "admin"
+    ? Math.max(num(result.unitCost), 0)
+    : expectedUnitCost;
+
+  try {
+    const requestRef = doc(db, "purchaseRequests", requestId);
+
+    await runTransaction(db, async transaction => {
+      const freshLineSnap = await transaction.get(lineRef);
+      if (!freshLineSnap.exists()) throw new Error("La línea de compra ya no existe.");
+      const freshLine = { id: freshLineSnap.id, ...freshLineSnap.data() };
+
+      if (freshLine.requisitionStatus === "requisitioned") {
+        throw new Error("La requisición ya fue registrada por otro usuario.");
+      }
+      if (num(freshLine.quantityReceived) > 0 || num(freshLine.quantityCancelled) > 0) {
+        throw new Error("La línea ya tiene recepciones o cancelaciones y no puede registrarse como requisición completa.");
+      }
+
+      const requisitionQty = linePendingQty(freshLine);
+      if (requisitionQty <= 0) throw new Error("La línea ya no tiene piezas pendientes.");
+
+      const itemRef = doc(db, "items", String(freshLine.itemId || lineId));
+      const itemSnap = await transaction.get(itemRef);
+      if (!itemSnap.exists()) throw new Error("El item asociado ya no existe.");
+      const item = { id: itemSnap.id, ...itemSnap.data() };
+
+      const requestSnap = await transaction.get(requestRef);
+      const folio = requestSnap.exists() ? String(requestSnap.data().folio || requestId) : requestId;
+
+      const requisitionRefs = normalizeRequisitionRefs(item.purchaseRequisitionRefs)
+        .filter(ref => !(ref.requestId === requestId && ref.lineId === String(freshLine.itemId || lineId)));
+      requisitionRefs.push({
+        requestId,
+        lineId: String(freshLine.itemId || lineId),
+        folio,
+        requisitionQty,
+      });
+
+      transaction.update(itemRef, {
+        purchaseRequisitionQty: requisitionPurchaseQty(item) + requisitionQty,
+        purchaseRequisitionRefs: requisitionRefs,
+        updatedAt: serverTimestamp(),
+      });
+
+      const lineUpdate = {
+        requisitionStatus: "requisitioned",
+        requisitionedAt: serverTimestamp(),
+        requisitionedBy: currentUser.uid,
+        requisitionedByName: currentProfile?.nombre || currentUser.email || "",
+        requisitionUnitCost: officialUnitCost,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (currentAccessRole === "admin" && Math.abs(officialUnitCost - num(freshLine.unitPrice)) > 0.005) {
+        lineUpdate.originalUnitPrice = Object.prototype.hasOwnProperty.call(freshLine, "originalUnitPrice")
+          ? num(freshLine.originalUnitPrice)
+          : num(freshLine.unitPrice);
+        lineUpdate.unitPrice = officialUnitCost;
+      }
+
+      transaction.update(lineRef, lineUpdate);
+      transaction.update(requestRef, { updatedAt: serverTimestamp() });
+    });
+
+    await refreshRequestAggregate(requestId);
+    await Promise.all([loadPurchaseItems(), loadPurchaseRequests()]);
+    renderPurchaseRequestManager();
+    queueEnhancements();
+    if (document.querySelector("#purchaseBudgetsPanel.show")) await refreshBudgetPanel();
+
+    const budgetAlert = await budgetDeficitMessageForLine(line);
+    if (budgetAlert) alert(budgetAlert);
+    await openRequestDetail(requestId);
+  } catch (error) {
+    console.error(error);
+    alert(`No se pudo registrar la requisición: ${error.message}`);
   }
 }
 
@@ -2787,28 +3019,34 @@ async function migrateLegacyOrdersIfNeeded() {
 function requestLineCardsHtml(lines) {
   return lines.map(line => {
     const pending = linePendingQty(line);
+    const requisitioned = line.requisitionStatus === "requisitioned";
+    const requisitionActive = requisitioned && pending > 0;
     const subtotal = num(line.quantityRequested) * num(line.unitPrice);
     const imageSrc = line.imageFileId ? fileViewUrl(line.imageFileId) : "assets/placeholder.svg";
+    const originalUnitPrice = Object.prototype.hasOwnProperty.call(line, "originalUnitPrice")
+      ? num(line.originalUnitPrice)
+      : null;
     return `
-      <article class="request-report-card">
+      <article class="request-report-card ${requisitionActive ? "request-report-requisition" : ""}">
         <div class="request-report-image"><img src="${reportEscape(imageSrc)}" alt="${reportEscape(line.nombre || "")}"></div>
         <div class="request-report-content">
           <div class="request-report-head">
             <div>
               <h2>${reportEscape(line.nombre || "Item")}</h2>
               <div class="muted">${reportEscape(line.sku || "")} · ${reportEscape(line.tipo || "")}</div>
+              ${requisitioned ? `<div class="mt-1"><span class="req-badge">${requisitionActive ? "En requisición" : "Requisición registrada"}</span></div>` : ""}
             </div>
             <div class="priority-box"><strong>${reportEscape(priorityLabel(num(line.priority) || 3))}</strong></div>
           </div>
-          <div class="cost-line"><strong>Precio unitario:</strong> ${reportEscape(formatCurrencyWithCode(line.unitPrice, line.currency || "MXN"))} &nbsp; <strong>Solicitado:</strong> ${num(line.quantityRequested)} &nbsp; <strong>Subtotal:</strong> ${reportEscape(formatCurrencyWithCode(subtotal, line.currency || "MXN"))}</div>
+          <div class="cost-line"><strong>${requisitioned ? "Costo de requisición" : "Precio unitario"}:</strong> ${reportEscape(formatCurrencyWithCode(line.unitPrice, line.currency || "MXN"))} &nbsp; <strong>Solicitado:</strong> ${num(line.quantityRequested)} &nbsp; <strong>Subtotal:</strong> ${reportEscape(formatCurrencyWithCode(subtotal, line.currency || "MXN"))}${originalUnitPrice !== null && Math.abs(originalUnitPrice - num(line.unitPrice)) > 0.005 ? ` &nbsp; <strong>Estimado inicial:</strong> ${reportEscape(formatCurrencyWithCode(originalUnitPrice, line.currency || "MXN"))}` : ""}</div>
           <div class="area-line"><strong>Zona:</strong> ${reportEscape(line.zoneId || "")} · ${reportEscape(line.zoneName || "")} &nbsp; <strong>Subzona:</strong> ${reportEscape(line.subzoneId || "")} · ${reportEscape(line.subzoneName || "")} &nbsp; <strong>Área:</strong> ${reportEscape(line.locationCode || "")} ${reportEscape(line.locationName || "")}</div>
           ${line.descripcion ? `<p>${reportEscape(line.descripcion)}</p>` : ""}
           <div class="links">
             ${line.infoUrl ? `<a href="${reportEscape(line.infoUrl)}" target="_blank">Más info</a>` : ""}
             ${line.purchaseUrl ? `<a href="${reportEscape(line.purchaseUrl)}" target="_blank">Info Compra</a>` : ""}
           </div>
-          <div class="status-band">
-            Solicitado: <strong>${num(line.quantityRequested)}</strong> · Recibido: <strong>${num(line.quantityReceived)}</strong> · Cancelado: <strong>${num(line.quantityCancelled)}</strong> · Pendiente: <strong>${pending}</strong> · Gasto real recibido: <strong>${reportEscape(formatCurrencyWithCode(lineActualSpent(line), line.currency || "MXN"))}</strong>
+          <div class="status-band ${requisitionActive ? "status-band-requisition" : ""}">
+            ${requisitioned ? `<strong>Requisición:</strong> registrada · ` : ""}Solicitado: <strong>${num(line.quantityRequested)}</strong> · Recibido: <strong>${num(line.quantityReceived)}</strong> · Cancelado: <strong>${num(line.quantityCancelled)}</strong> · Pendiente: <strong>${pending}</strong> · Gasto real recibido: <strong>${reportEscape(formatCurrencyWithCode(lineActualSpent(line), line.currency || "MXN"))}</strong>
           </div>
         </div>
       </article>`;
@@ -2868,6 +3106,8 @@ h1{font-size:23pt;margin:1mm 0}
 .filters{display:flex;flex-wrap:wrap;gap:2mm;margin-bottom:5mm}
 .filter{border:1px solid #ddd;border-radius:99px;padding:1.5mm 2.5mm;font-size:8pt}
 .request-report-card{display:grid;grid-template-columns:42mm 1fr;border:1.5px solid #e0b12f;border-radius:2mm;margin-bottom:5mm;break-inside:avoid;overflow:hidden}
+.request-report-card.request-report-requisition{border-color:#0d6efd;border-left:2mm solid #0d6efd;background:#f5f9ff}
+.req-badge{display:inline-block;background:#0d6efd;color:#fff;border-radius:99px;padding:1mm 2mm;font-size:7.5pt;font-weight:700}
 .request-report-image{display:flex;align-items:center;justify-content:center;border-right:1px solid #eee;padding:3mm}
 .request-report-image img{max-width:100%;max-height:48mm;object-fit:contain}
 .request-report-content{padding:3.5mm}
@@ -2881,6 +3121,7 @@ h1{font-size:23pt;margin:1mm 0}
 .links{display:flex;gap:2mm;margin:2mm 0}
 .links a{border:1px solid #198754;border-radius:99px;padding:1.5mm 2.5mm;text-decoration:none;color:#176b3a;font-size:8.5pt}
 .status-band{margin-top:2mm;background:#fff3cd;border-left:2mm solid #e0b12f;border-radius:2mm;padding:2.5mm;font-size:9pt}
+.status-band.status-band-requisition{background:#e7f1ff;border-left-color:#0d6efd}
 @media print{.toolbar{display:none!important}}
 </style>
 </head>
@@ -2928,7 +3169,8 @@ async function exportRequestXlsx(requestId, providedLines = null) {
   const header = [
     "Solicitud", "Estado", "Zona", "Subzona", "Área", "SKU", "Tipo", "Nombre", "Prioridad",
     "Solicitado", "Recibido", "Cancelado", "Pendiente", "Precio unitario", "Moneda", "Subtotal solicitado",
-    "Gasto real recibido", "Comprometido pendiente", "Más info", "Info compra"
+    "Gasto real recibido", "Comprometido pendiente", "Más info", "Info compra",
+    "Estado requisición", "Costo estimado inicial", "Costo requisición"
   ];
   const folio = request?.folio || "BORRADOR";
   const rows = lines.map(line => [
@@ -2952,12 +3194,16 @@ async function exportRequestXlsx(requestId, providedLines = null) {
     linePendingQty(line) * num(line.unitPrice),
     line.infoUrl || "",
     line.purchaseUrl || "",
+    line.requisitionStatus === "requisitioned" ? "Requisición registrada" : "",
+    Object.prototype.hasOwnProperty.call(line, "originalUnitPrice") ? num(line.originalUnitPrice) : num(line.unitPrice),
+    line.requisitionStatus === "requisitioned" ? num(line.requisitionUnitCost ?? line.unitPrice) : 0,
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
   ws["!cols"] = [
     {wch:18},{wch:14},{wch:20},{wch:24},{wch:28},{wch:12},{wch:16},{wch:36},{wch:10},
-    {wch:12},{wch:12},{wch:12},{wch:12},{wch:15},{wch:10},{wch:18},{wch:18},{wch:20},{wch:40},{wch:40}
+    {wch:12},{wch:12},{wch:12},{wch:12},{wch:15},{wch:10},{wch:18},{wch:18},{wch:20},{wch:40},{wch:40},
+    {wch:22},{wch:20},{wch:18}
   ];
   for (let r = 2; r <= rows.length + 1; r++) {
     ["I","J","K","L","M","N","P","Q","R"].forEach(col => setXlsxNumericCell(ws, `${col}${r}`));
@@ -2967,8 +3213,10 @@ async function exportRequestXlsx(requestId, providedLines = null) {
     if (ws[`P${r}`]) ws[`P${r}`].z = fmt;
     if (ws[`Q${r}`]) ws[`Q${r}`].z = fmt;
     if (ws[`R${r}`]) ws[`R${r}`].z = fmt;
+    if (ws[`V${r}`]) { setXlsxNumericCell(ws, `V${r}`); ws[`V${r}`].z = fmt; }
+    if (ws[`W${r}`]) { setXlsxNumericCell(ws, `W${r}`); ws[`W${r}`].z = fmt; }
   }
-  ws["!autofilter"] = { ref: `A1:T${rows.length + 1}` };
+  ws["!autofilter"] = { ref: `A1:W${rows.length + 1}` };
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Solicitud");
@@ -3147,6 +3395,12 @@ function bindPurchaseRequestManagerActions() {
     const historyDelete = target.closest(".request-history-delete");
     if (historyDelete) {
       await deleteFinishedPurchaseRequest(historyDelete.dataset.requestId);
+      return;
+    }
+
+    const requisition = target.closest(".request-line-requisition");
+    if (requisition) {
+      await registerLineRequisition(requisition.dataset.requestId, requisition.dataset.lineId, num(requisition.dataset.pending));
       return;
     }
 
