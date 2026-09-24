@@ -2691,6 +2691,13 @@ async function openRequestDetail(requestId) {
               <div><strong>Gasto real recibido:</strong> ${reportEscape(formatCurrencyWithCode(lineActualSpent(line), line.currency || "MXN"))}</div>
             </div>
           </div>
+
+          ${(line.infoUrl || line.purchaseUrl) ? `
+            <div class="d-flex flex-wrap gap-2 mt-3 request-line-links">
+              ${line.infoUrl ? `<a class="btn btn-outline-danger btn-sm" href="${reportEscape(line.infoUrl)}" target="_blank" rel="noopener">Más Info</a>` : ""}
+              ${line.purchaseUrl ? `<a class="btn btn-outline-success btn-sm" href="${reportEscape(line.purchaseUrl)}" target="_blank" rel="noopener">Info Compra</a>` : ""}
+            </div>` : ""}
+
           ${pending > 0 ? `
             <div class="d-flex flex-wrap gap-2 mt-3">
               ${canRegisterRequisition ? `<button type="button" class="btn btn-primary btn-sm request-line-requisition" data-request-id="${requestId}" data-line-id="${reportEscape(line.id)}" data-pending="${pending}">Registrar requisición</button>` : ""}

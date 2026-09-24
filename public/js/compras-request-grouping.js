@@ -294,7 +294,66 @@ function groupDescriptionHtml(group) {
     <div class="small text-muted mb-3">Hay ${descriptions.length} descripciones distintas entre los registros agrupados.</div>`;
 }
 
-function breakdownTableHtml(group, { pdf = false } = {}) {
+function groupedLineActionsHtml(line, requestId) {
+  const pending = linePendingQty(line);
+  const requisitioned = line.requisitionStatus === "requisitioned";
+  const canRegisterRequisition = pending > 0
+    && !requisitioned
+    && num(line.quantityReceived) === 0
+    && num(line.quantityCancelled) === 0;
+
+  const infoLinks = `
+    ${line.infoUrl ? `
+      <a class="btn btn-outline-danger btn-sm"
+         href="${escapeHtml(line.infoUrl)}"
+         target="_blank"
+         rel="noopener">
+        Más Info
+      </a>` : ""}
+
+    ${line.purchaseUrl ? `
+      <a class="btn btn-outline-success btn-sm"
+         href="${escapeHtml(line.purchaseUrl)}"
+         target="_blank"
+         rel="noopener">
+        Info Compra
+      </a>` : ""}`;
+
+  const operational = pending > 0 ? `
+      ${canRegisterRequisition ? `
+        <button type="button"
+                class="btn btn-primary btn-sm request-line-requisition"
+                data-request-id="${escapeHtml(requestId)}"
+                data-line-id="${escapeHtml(line.id)}"
+                data-pending="${pending}">
+          Registrar requisición
+        </button>` : ""}
+
+      <button type="button"
+              class="btn btn-success btn-sm request-line-receive"
+              data-request-id="${escapeHtml(requestId)}"
+              data-line-id="${escapeHtml(line.id)}"
+              data-pending="${pending}">
+        Registrar recepción
+      </button>
+
+      <button type="button"
+              class="btn btn-dark btn-sm request-line-cancel"
+              data-request-id="${escapeHtml(requestId)}"
+              data-line-id="${escapeHtml(line.id)}"
+              data-pending="${pending}">
+        Cancelar pendiente
+      </button>` : `
+      <span class="text-muted small align-self-center">Sin pendientes</span>`;
+
+  return `
+    <div class="d-flex flex-wrap gap-1 justify-content-end grouped-line-actions">
+      ${infoLinks}
+      ${operational}
+    </div>`;
+}
+
+function breakdownTableHtml(group, { pdf = false, requestId = "" } = {}) {
   return `
     <div class="table-responsive mt-3">
       <table class="table table-sm align-middle grouped-breakdown-table ${pdf ? "pdf-breakdown-table" : ""}">
@@ -309,13 +368,15 @@ function breakdownTableHtml(group, { pdf = false } = {}) {
             <th class="text-end">Recibido</th>
             <th class="text-end">Cancelado</th>
             <th class="text-end">Pendiente</th>
+            ${pdf ? "" : `<th class="text-end">Acciones</th>`}
           </tr>
         </thead>
         <tbody>
           ${group.lines
-            .map(
-              line => `
-            <tr>
+            .map(line => {
+              const pending = linePendingQty(line);
+              return `
+            <tr class="${line.requisitionStatus === "requisitioned" && pending > 0 ? "table-primary" : ""}">
               <td><strong>${escapeHtml(line.sku || "")}</strong></td>
               <td>${escapeHtml(
                 `${line.zoneId || ""}${line.zoneName ? ` · ${line.zoneName}` : ""}`
@@ -330,13 +391,14 @@ function breakdownTableHtml(group, { pdf = false } = {}) {
                   line.locationName ? ` · ${line.locationName}` : ""
                 }`
               )}</td>
-              <td>${line.requisitionStatus === "requisitioned" ? `<span class="badge text-bg-primary">${linePendingQty(line) > 0 ? "En requisición" : "Requisición registrada"}</span>` : `<span class="text-muted">En compras</span>`}</td>
+              <td>${line.requisitionStatus === "requisitioned" ? `<span class="badge text-bg-primary">${pending > 0 ? "En requisición" : "Requisición registrada"}</span>` : (pending > 0 ? `<span class="text-muted">En compras</span>` : `<span class="badge text-bg-success">Terminado</span>`)}</td>
               <td class="text-end">${num(line.quantityRequested)}</td>
               <td class="text-end">${num(line.quantityReceived)}</td>
               <td class="text-end">${num(line.quantityCancelled)}</td>
-              <td class="text-end"><strong>${linePendingQty(line)}</strong></td>
-            </tr>`
-            )
+              <td class="text-end"><strong>${pending}</strong></td>
+              ${pdf ? "" : `<td class="text-end grouped-actions-cell">${groupedLineActionsHtml(line, requestId)}</td>`}
+            </tr>`;
+            })
             .join("")}
         </tbody>
       </table>
@@ -351,7 +413,7 @@ function groupedDetailHtml(request, lines) {
       ${groups.length} producto${groups.length === 1 ? "" : "s"} agrupado${
         groups.length === 1 ? "" : "s"
       } a partir de ${lines.length} línea${lines.length === 1 ? "" : "s"} / SKU.
-      Para registrar recepciones o cancelaciones individuales usa <strong>Vista extendida</strong>.
+      Puedes registrar requisiciones, recepciones y cancelaciones directamente en el desglose por SKU y área.
     </div>
 
     ${groups
@@ -415,14 +477,14 @@ function groupedDetailHtml(request, lines) {
             <div class="mt-3">
               ${groupDescriptionHtml(group)}
               <div class="d-flex flex-wrap gap-2">
-                ${uniqueLinksHtml(group.infoUrls, "Más info")}
+                ${uniqueLinksHtml(group.infoUrls, "Más Info")}
                 ${uniqueLinksHtml(group.purchaseUrls, "Info Compra")}
               </div>
             </div>
 
             <div class="mt-3">
               <div class="fw-semibold">Desglose por SKU y área solicitante</div>
-              ${breakdownTableHtml(group)}
+              ${breakdownTableHtml(group, { requestId: request.id })}
             </div>
           </article>`;
       })
@@ -701,7 +763,7 @@ function pdfGroupCardHtml(group) {
         ${groupDescriptionHtml(group)}
 
         <div class="links">
-          ${uniqueLinksHtml(group.infoUrls, "Más info")}
+          ${uniqueLinksHtml(group.infoUrls, "Más Info")}
           ${uniqueLinksHtml(group.purchaseUrls, "Info Compra")}
         </div>
 
