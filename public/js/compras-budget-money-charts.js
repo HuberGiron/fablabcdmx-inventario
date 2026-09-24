@@ -2,20 +2,23 @@ import { db } from "./firebase-app.js";
 import {
   collection,
   getDocs,
-  query,
-  where,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const PANEL_ID = "purchaseBudgetsPanel";
-const REPORT_ID = "purchaseBudgetReport";
-const CHARTS_ID = "purchaseBudgetMoneyCharts";
-const STYLE_ID = "purchaseBudgetMoneyChartsStyles";
+const BODY_ID = "purchaseBudgetsPanelBody";
+const TABS_ID = "purchaseBudgetTabs";
+const CONTENT_ID = "purchaseBudgetTabContent";
+const TAB_ID = "budget-report-tab";
+const PANE_ID = "budget-report-pane";
+const REPORT_BODY_ID = "purchaseBudgetVisualReport";
+const STYLE_ID = "purchaseBudgetVisualReportStyles";
 
-let panelObserver = null;
-let reportObserver = null;
-let observedReport = null;
+let attachObserver = null;
+let bodyObserver = null;
+let boundBody = null;
 let renderBusy = false;
-let renderSeq = 0;
+let renderSequence = 0;
+let reportTabActive = false;
 let scheduledTimer = null;
 
 function num(value) {
@@ -32,7 +35,21 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function formatMoney(value) {
+function normalizeText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseMoney(text) {
+  const cleaned = String(text || "")
+    .replace(/[^0-9.,-]/g, "")
+    .replace(/,/g, "");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function money(value) {
   return `${new Intl.NumberFormat("es-MX", {
     style: "currency",
     currency: "MXN",
@@ -47,15 +64,21 @@ function percent(part, total) {
   return (num(part) / denominator) * 100;
 }
 
-function percentLabel(part, total) {
+function percentText(part, total) {
   if (num(total) <= 0) {
     return num(part) > 0 ? "Sin presupuesto" : "0%";
   }
-
   return `${percent(part, total).toLocaleString("es-MX", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 1,
   })}%`;
+}
+
+function timestampToDate(value) {
+  if (!value) return null;
+  if (typeof value.toDate === "function") return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function linePendingQty(line) {
@@ -71,7 +94,6 @@ function lineActualSpent(line) {
   if (Object.prototype.hasOwnProperty.call(line || {}, "actualCostTotal")) {
     return Math.max(num(line.actualCostTotal), 0);
   }
-
   return Math.max(
     num(line?.quantityReceived) * num(line?.unitPrice),
     0
@@ -85,177 +107,98 @@ function linePendingUnitCost(line) {
       0
     );
   }
-
   return Math.max(num(line?.unitPrice), 0);
 }
 
-function timestampToDate(value) {
-  if (!value) return null;
-  if (typeof value.toDate === "function") return value.toDate();
-
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function budgetYear() {
-  return (
-    Number(document.querySelector("#purchaseBudgetYear")?.value)
-    || new Date().getFullYear()
-  );
-}
-
-function selectedZoneId() {
-  return String(
-    document.querySelector("#budgetFilterZone")?.value || "all"
-  );
-}
-
-function displayMeta(rawCode, rawName) {
-  const code = String(rawCode ?? "").trim();
-  const name = String(rawName ?? "").trim();
-
-  // Respeta la misma convención ya usada por compras-budget-ui-fix.js:
-  // si el nombre comienza con el código público, éste manda sobre el ID técnico.
-  const match = name.match(/^(\d+(?:\.\d+)*)(?:\.)?\s+(.+)$/);
-
-  if (match) {
-    return {
-      rawCode: code,
-      code: match[1],
-      name: match[2].trim(),
-    };
-  }
-
-  return {
-    rawCode: code,
-    code,
-    name,
-  };
-}
-
 function compareCodes(left, right) {
-  const a = String(left || "")
-    .split(".")
-    .map(part => Number(part));
-
-  const b = String(right || "")
-    .split(".")
-    .map(part => Number(part));
-
+  const a = String(left || "").split(".").map(part => Number(part));
+  const b = String(right || "").split(".").map(part => Number(part));
   const length = Math.max(a.length, b.length);
 
   for (let i = 0; i < length; i += 1) {
     const av = Number.isFinite(a[i]) ? a[i] : -1;
     const bv = Number.isFinite(b[i]) ? b[i] : -1;
-
     if (av !== bv) return av - bv;
   }
 
-  return String(left || "").localeCompare(
-    String(right || ""),
-    "es",
-    {
-      numeric: true,
-      sensitivity: "base",
-    }
-  );
+  return String(left || "").localeCompare(String(right || ""), "es", {
+    numeric: true,
+    sensitivity: "base",
+  });
 }
 
-function createZoneState(zoneId, zoneName = "") {
+function currentYear() {
+  return Number(document.querySelector("#purchaseBudgetYear")?.value)
+    || new Date().getFullYear();
+}
+
+function createState(zoneId, code, name, allocated = 0) {
   return {
     zoneId: String(zoneId || ""),
-    zoneName: String(zoneName || ""),
-    allocated: 0,
-    ordered: 0,
+    code: String(code || zoneId || ""),
+    name: String(name || ""),
+    allocated: Math.max(num(allocated), 0),
+    requested: 0,
     requisition: 0,
     received: 0,
   };
 }
 
-function usedAmount(state) {
-  return (
-    num(state.ordered)
-    + num(state.requisition)
-    + num(state.received)
-  );
+function used(state) {
+  return num(state.requested) + num(state.requisition) + num(state.received);
 }
 
-function availableAmount(state) {
-  return num(state.allocated) - usedAmount(state);
+function available(state) {
+  return num(state.allocated) - used(state);
 }
 
-function utilizationPercent(state) {
-  if (num(state.allocated) <= 0) {
-    return usedAmount(state) > 0 ? Infinity : 0;
+function splitZoneDisplay(text) {
+  const value = normalizeText(text);
+  const dot = value.indexOf("·");
+
+  if (dot < 0) {
+    return { code: value, name: "" };
   }
 
-  return (usedAmount(state) / num(state.allocated)) * 100;
+  return {
+    code: value.slice(0, dot).trim(),
+    name: value.slice(dot + 1).trim(),
+  };
 }
 
-function budgetDocYearMatches(data, year) {
-  return Number(data?.year) === Number(year);
-}
+function allocationStatesFromUi() {
+  const table = document.querySelector(".purchase-budget-zone-table");
+  if (!table) return [];
 
-async function loadZoneCatalog() {
-  const snapshot = await getDocs(collection(db, "zones"));
+  return [...table.querySelectorAll("tbody tr")]
+    .map(row => {
+      const cells = row.querySelectorAll("td");
+      if (cells.length < 2) return null;
 
-  const map = new Map();
+      const input = row.querySelector(".purchase-budget-zone-input");
+      const zoneId = String(
+        input?.dataset?.zoneId || row.dataset.rawZoneId || ""
+      ).trim();
 
-  snapshot.docs.forEach(zoneDoc => {
-    const data = zoneDoc.data();
-    const rawId = String(
-      data.zoneId ?? data.code ?? zoneDoc.id ?? ""
+      const display = splitZoneDisplay(cells[0]?.textContent || "");
+      const allocated = parseMoney(cells[1]?.textContent || "");
+
+      return createState(
+        zoneId,
+        display.code || zoneId,
+        display.name,
+        allocated
+      );
+    })
+    .filter(state => state?.zoneId)
+    .sort((a, b) =>
+      compareCodes(a.code, b.code)
+      || a.name.localeCompare(b.name, "es", { sensitivity: "base" })
     );
-
-    const rawName = String(
-      data.name ?? data.nombre ?? data.zoneName ?? ""
-    );
-
-    const meta = displayMeta(rawId, rawName);
-
-    map.set(rawId, {
-      rawId,
-      code: meta.code,
-      name: meta.name,
-    });
-  });
-
-  return map;
 }
 
-async function loadAllocations(year) {
-  const snapshot = await getDocs(
-    query(
-      collection(db, "purchaseBudgets"),
-      where("year", "==", Number(year))
-    )
-  );
-
-  const map = new Map();
-
-  snapshot.docs.forEach(budgetDoc => {
-    const data = budgetDoc.data();
-
-    if (!budgetDocYearMatches(data, year)) return;
-
-    const zoneId = String(data.zoneId || "");
-
-    if (!zoneId) return;
-
-    map.set(zoneId, {
-      zoneId,
-      zoneName: String(data.zoneName || ""),
-      allocated: Math.max(num(data.allocatedAmount), 0),
-    });
-  });
-
-  return map;
-}
-
-async function loadRequestLinesForYear(year) {
-  const requestSnapshot = await getDocs(
-    collection(db, "purchaseRequests")
-  );
+async function loadFinancialLines(year) {
+  const requestSnapshot = await getDocs(collection(db, "purchaseRequests"));
 
   const requests = requestSnapshot.docs
     .map(requestDoc => ({
@@ -269,18 +212,14 @@ async function loadRequestLinesForYear(year) {
         timestampToDate(request.sentAt)
         || timestampToDate(request.createdAt);
 
-      return date
-        ? date.getFullYear() === Number(year)
-        : true;
+      return date ? date.getFullYear() === Number(year) : true;
     });
 
-  const results = [];
+  const allLines = [];
   let cursor = 0;
 
   const runners = Array.from(
-    {
-      length: Math.min(6, Math.max(requests.length, 1)),
-    },
+    { length: Math.min(6, Math.max(1, requests.length)) },
     async () => {
       while (true) {
         const index = cursor++;
@@ -288,21 +227,14 @@ async function loadRequestLinesForYear(year) {
 
         const request = requests[index];
 
-        const linesSnapshot = await getDocs(
-          collection(
-            db,
-            "purchaseRequests",
-            request.id,
-            "items"
-          )
+        const lineSnapshot = await getDocs(
+          collection(db, "purchaseRequests", request.id, "items")
         );
 
-        linesSnapshot.docs.forEach(lineDoc => {
-          results.push({
+        lineSnapshot.docs.forEach(lineDoc => {
+          allLines.push({
             requestId: request.id,
-            requestFolio: request.folio || request.id,
             requestStatus: request.status,
-            id: lineDoc.id,
             ...lineDoc.data(),
           });
         });
@@ -311,60 +243,37 @@ async function loadRequestLinesForYear(year) {
   );
 
   await Promise.all(runners);
-  return results;
+  return allLines;
 }
 
-function summarizeByZone({
-  zoneCatalog,
-  allocations,
-  lines,
-}) {
-  const states = new Map();
-
-  const ensure = (zoneId, zoneName = "") => {
-    const id = String(zoneId || "");
-    if (!id) return null;
-
-    if (!states.has(id)) {
-      const catalog = zoneCatalog.get(id);
-
-      states.set(
-        id,
-        createZoneState(
-          id,
-          catalog?.name || zoneName || `Zona ${id}`
-        )
-      );
-    }
-
-    return states.get(id);
-  };
-
-  for (const [zoneId, allocation] of allocations.entries()) {
-    const state = ensure(
-      zoneId,
-      allocation.zoneName
-    );
-
-    if (!state) continue;
-    state.allocated = Math.max(num(allocation.allocated), 0);
-  }
+function applyFinancialLines(states, lines) {
+  const map = new Map(
+    states.map(state => [String(state.zoneId), state])
+  );
 
   for (const line of lines) {
     const zoneId = String(line.zoneId || "");
     if (!zoneId) continue;
 
-    // El presupuesto actual está expresado en MXN. Igual que el reporte
-    // presupuestal existente, no mezclamos monedas extranjeras.
     const currency = String(line.currency || "MXN").toUpperCase();
     if (currency !== "MXN") continue;
 
-    const state = ensure(zoneId, line.zoneName || "");
-    if (!state) continue;
+    if (!map.has(zoneId)) {
+      map.set(
+        zoneId,
+        createState(
+          zoneId,
+          zoneId,
+          line.zoneName || `Zona ${zoneId}`,
+          0
+        )
+      );
+    }
 
+    const state = map.get(zoneId);
     const pending = linePendingQty(line);
-    const pendingAmount = pending * linePendingUnitCost(line);
     const receivedAmount = lineActualSpent(line);
+    const pendingAmount = pending * linePendingUnitCost(line);
 
     if (receivedAmount > 0) {
       state.received += receivedAmount;
@@ -374,87 +283,92 @@ function summarizeByZone({
       if (line.requisitionStatus === "requisitioned") {
         state.requisition += pendingAmount;
       } else {
-        state.ordered += pendingAmount;
+        state.requested += pendingAmount;
       }
     }
   }
 
-  return states;
+  return [...map.values()]
+    .sort((a, b) =>
+      compareCodes(a.code, b.code)
+      || a.name.localeCompare(b.name, "es", { sensitivity: "base" })
+    );
 }
 
-function totalState(states) {
-  const total = createZoneState("all", "Todas las zonas");
+function globalState(states) {
+  const total = createState("all", "", "Presupuesto global", 0);
 
-  for (const state of states) {
+  states.forEach(state => {
     total.allocated += num(state.allocated);
-    total.ordered += num(state.ordered);
+    total.requested += num(state.requested);
     total.requisition += num(state.requisition);
     total.received += num(state.received);
-  }
+  });
 
   return total;
 }
 
-function visibleStates(states, zoneCatalog) {
-  const selected = selectedZoneId();
-
-  const list = [...states.values()]
-    .filter(state =>
-      num(state.allocated) > 0
-      || usedAmount(state) > 0
-    )
-    .map(state => {
-      const meta =
-        zoneCatalog.get(state.zoneId)
-        || displayMeta(state.zoneId, state.zoneName);
-
-      return {
-        ...state,
-        displayCode: meta.code || state.zoneId,
-        displayName: meta.name || state.zoneName,
-      };
-    })
-    .sort((a, b) =>
-      compareCodes(a.displayCode, b.displayCode)
-      || String(a.displayName).localeCompare(
-        String(b.displayName),
-        "es",
-        { sensitivity: "base" }
-      )
-    );
-
-  if (selected === "all") return list;
-
-  return list.filter(state => state.zoneId === selected);
+function segmentPercent(value, denominator) {
+  if (denominator <= 0) return 0;
+  return Math.max(0, (num(value) / denominator) * 100);
 }
 
-function donutBackground(state) {
+function distributionBarHtml(state, small = false) {
+  const totalUsed = used(state);
+  const free = Math.max(available(state), 0);
+  const denominator = Math.max(num(state.allocated), totalUsed, 0.01);
+
+  const parts = [
+    ["requested", state.requested, "Solicitado / por requisitar"],
+    ["requisition", state.requisition, "En requisición"],
+    ["received", state.received, "Entregado / ejercido"],
+    ["available", free, "Disponible"],
+  ];
+
+  return `
+    <div class="budget-report-stack ${small ? "is-small" : ""}">
+      ${parts
+        .filter(([, value]) => num(value) > 0)
+        .map(([className, value, label]) => `
+          <div class="${className}"
+               style="width:${segmentPercent(value, denominator)}%"
+               title="${escapeHtml(label)}: ${escapeHtml(money(value))}">
+          </div>`)
+        .join("")}
+    </div>`;
+}
+
+function donutStyle(state) {
   const allocated = num(state.allocated);
-  const ordered = num(state.ordered);
-  const requisition = num(state.requisition);
-  const received = num(state.received);
 
   if (allocated <= 0) {
     return "conic-gradient(#e9ecef 0 100%)";
   }
 
-  const requestedPct = Math.max(0, Math.min(100, percent(ordered, allocated)));
-  const requisitionPct = Math.max(
+  const requested = Math.max(
     0,
-    Math.min(100 - requestedPct, percent(requisition, allocated))
+    Math.min(100, percent(state.requested, allocated))
   );
 
-  const receivedPct = Math.max(
+  const requisition = Math.max(
     0,
     Math.min(
-      100 - requestedPct - requisitionPct,
-      percent(received, allocated)
+      100 - requested,
+      percent(state.requisition, allocated)
     )
   );
 
-  const reqEnd = requestedPct;
-  const requisitionEnd = reqEnd + requisitionPct;
-  const receivedEnd = requisitionEnd + receivedPct;
+  const received = Math.max(
+    0,
+    Math.min(
+      100 - requested - requisition,
+      percent(state.received, allocated)
+    )
+  );
+
+  const reqEnd = requested;
+  const requisitionEnd = reqEnd + requisition;
+  const receivedEnd = requisitionEnd + received;
 
   return `conic-gradient(
     #f0ad00 0 ${reqEnd}%,
@@ -464,189 +378,109 @@ function donutBackground(state) {
   )`;
 }
 
-function legendCardHtml(
-  label,
-  amount,
-  allocated,
-  cssClass
-) {
+function metricCardHtml(label, amount, total, cssClass) {
   return `
-    <div class="budget-money-legend-card">
-      <span class="budget-money-dot ${cssClass}"></span>
-
+    <div class="budget-report-metric">
+      <span class="budget-report-dot ${cssClass}"></span>
       <div>
-        <span>${escapeHtml(label)}</span>
-        <strong>${escapeHtml(formatMoney(amount))}</strong>
-        <small>${escapeHtml(percentLabel(amount, allocated))}</small>
+        <div class="budget-report-metric-label">${escapeHtml(label)}</div>
+        <strong>${escapeHtml(money(amount))}</strong>
+        <small>${escapeHtml(percentText(amount, total))} del presupuesto global</small>
       </div>
     </div>`;
 }
 
-function primaryChartHtml(state, title) {
-  const allocated = num(state.allocated);
-  const used = usedAmount(state);
-  const available = availableAmount(state);
-  const utilization = utilizationPercent(state);
-  const over = Math.max(-available, 0);
-
-  const orderedPct =
-    allocated > 0
-      ? Math.max(0, percent(state.ordered, allocated))
-      : 0;
-
-  const requisitionPct =
-    allocated > 0
-      ? Math.max(0, percent(state.requisition, allocated))
-      : 0;
-
-  const receivedPct =
-    allocated > 0
-      ? Math.max(0, percent(state.received, allocated))
-      : 0;
-
-  const availablePct =
-    allocated > 0
-      ? Math.max(0, percent(Math.max(available, 0), allocated))
-      : 0;
-
-  const barScale = Math.max(
-    allocated,
-    used,
-    0.01
-  );
+function globalReportHtml(state) {
+  const totalUsed = used(state);
+  const free = available(state);
+  const over = Math.max(-free, 0);
 
   return `
-    <section class="budget-money-main-card">
-      <div class="budget-money-main-head">
+    <section class="budget-report-global-card">
+      <div class="budget-report-global-head">
         <div>
-          <div class="budget-money-eyebrow">
-            Avance presupuestal · ${escapeHtml(title)}
-          </div>
-
-          <h4>${escapeHtml(formatMoney(allocated))}</h4>
-
+          <div class="budget-report-eyebrow">Presupuesto global autorizado</div>
+          <h3>${escapeHtml(money(state.allocated))}</h3>
           <div class="small text-muted">
-            Presupuesto asignado = 100%.
+            Suma de la columna <strong>Asignado</strong> de todas las zonas.
           </div>
         </div>
 
-        <div class="budget-money-utilization ${over > 0 ? "is-over" : ""}">
-          <span>Presupuesto utilizado</span>
-
-          <strong>
-            ${
-              Number.isFinite(utilization)
-                ? `${utilization.toLocaleString("es-MX", {
-                    minimumFractionDigits: 0,
-                    maximumFractionDigits: 1,
-                  })}%`
-                : "Sin presupuesto"
-            }
-          </strong>
-
+        <div class="budget-report-utilization ${over > 0 ? "is-over" : ""}">
+          <span>Utilizado / comprometido</span>
+          <strong>${escapeHtml(percentText(totalUsed, state.allocated))}</strong>
           <small>
             ${
               over > 0
-                ? `Sobreejercicio: ${escapeHtml(formatMoney(over))}`
-                : `Disponible: ${escapeHtml(formatMoney(Math.max(available, 0)))}`
+                ? `Sobreejercicio: ${escapeHtml(money(over))}`
+                : `Disponible: ${escapeHtml(money(Math.max(free, 0)))}`
             }
           </small>
         </div>
       </div>
 
-      <div class="budget-money-main-grid">
-        <div class="budget-money-donut-wrap">
-          <div class="budget-money-donut"
-               style="background:${donutBackground(state)}">
-            <div class="budget-money-donut-center">
+      <div class="budget-report-global-grid">
+        <div class="budget-report-donut-wrap">
+          <div class="budget-report-donut"
+               style="background:${donutStyle(state)}">
+            <div class="budget-report-donut-center">
               <span>Asignado</span>
               <strong>100%</strong>
               <small>
-                Ejercido ${escapeHtml(percentLabel(state.received, allocated))}
+                Ejercido ${escapeHtml(percentText(state.received, state.allocated))}
               </small>
             </div>
           </div>
         </div>
 
         <div>
-          <div class="budget-money-legend">
-            ${legendCardHtml(
+          <div class="budget-report-metrics">
+            ${metricCardHtml(
               "Solicitado / por requisitar",
-              state.ordered,
-              allocated,
-              "ordered"
+              state.requested,
+              state.allocated,
+              "requested"
             )}
 
-            ${legendCardHtml(
+            ${metricCardHtml(
               "En requisición",
               state.requisition,
-              allocated,
+              state.allocated,
               "requisition"
             )}
 
-            ${legendCardHtml(
+            ${metricCardHtml(
               "Entregado / ejercido",
               state.received,
-              allocated,
+              state.allocated,
               "received"
             )}
 
-            ${legendCardHtml(
+            ${metricCardHtml(
               over > 0 ? "Sobreejercicio" : "Disponible",
-              over > 0 ? over : Math.max(available, 0),
-              allocated,
+              over > 0 ? over : Math.max(free, 0),
+              state.allocated,
               over > 0 ? "over" : "available"
             )}
           </div>
 
-          <div class="budget-money-bar-title">
-            <span>Distribución del presupuesto asignado</span>
+          <div class="budget-report-bar-caption">
+            <span>Distribución del presupuesto global</span>
             <strong>
-              ${escapeHtml(formatMoney(used))}
-              usados de
-              ${escapeHtml(formatMoney(allocated))}
+              ${escapeHtml(money(totalUsed))}
+              de
+              ${escapeHtml(money(state.allocated))}
             </strong>
           </div>
 
-          <div class="budget-money-stack">
-            ${
-              state.ordered > 0
-                ? `<div class="budget-money-segment ordered"
-                        style="width:${(state.ordered / barScale) * 100}%"
-                        title="Solicitado: ${formatMoney(state.ordered)}"></div>`
-                : ""
-            }
-
-            ${
-              state.requisition > 0
-                ? `<div class="budget-money-segment requisition"
-                        style="width:${(state.requisition / barScale) * 100}%"
-                        title="En requisición: ${formatMoney(state.requisition)}"></div>`
-                : ""
-            }
-
-            ${
-              state.received > 0
-                ? `<div class="budget-money-segment received"
-                        style="width:${(state.received / barScale) * 100}%"
-                        title="Recibido: ${formatMoney(state.received)}"></div>`
-                : ""
-            }
-
-            ${
-              available > 0
-                ? `<div class="budget-money-segment available"
-                        style="width:${(available / barScale) * 100}%"
-                        title="Disponible: ${formatMoney(available)}"></div>`
-                : ""
-            }
-          </div>
+          ${distributionBarHtml(state)}
 
           ${
             over > 0
-              ? `<div class="budget-money-over-warning">
-                   El compromiso + gasto supera el presupuesto asignado por
-                   <strong>${escapeHtml(formatMoney(over))}</strong>.
+              ? `<div class="budget-report-over-alert">
+                   El monto comprometido + ejercido supera el presupuesto
+                   autorizado en
+                   <strong>${escapeHtml(money(over))}</strong>.
                  </div>`
               : ""
           }
@@ -655,114 +489,62 @@ function primaryChartHtml(state, title) {
     </section>`;
 }
 
-function zoneRowHtml(state) {
-  const allocated = num(state.allocated);
-  const used = usedAmount(state);
-  const available = availableAmount(state);
-  const over = Math.max(-available, 0);
-
-  const denominator = Math.max(
-    allocated,
-    used,
-    0.01
-  );
+function zoneReportHtml(state) {
+  const totalUsed = used(state);
+  const free = available(state);
+  const over = Math.max(-free, 0);
 
   return `
-    <article class="budget-money-zone-row">
-      <div class="budget-money-zone-head">
+    <article class="budget-report-zone-card">
+      <div class="budget-report-zone-head">
         <div>
-          <strong>
-            Zona ${escapeHtml(state.displayCode)}
-            ·
-            ${escapeHtml(state.displayName)}
-          </strong>
+          <div class="budget-report-zone-title">
+            Zona ${escapeHtml(state.code)} · ${escapeHtml(state.name)}
+          </div>
 
           <div class="small text-muted">
-            Asignado:
-            ${escapeHtml(formatMoney(allocated))}
+            Presupuesto asignado:
+            <strong>${escapeHtml(money(state.allocated))}</strong>
           </div>
         </div>
 
         <div class="text-end">
-          <strong>
-            ${
-              allocated > 0
-                ? `${percent(used, allocated).toLocaleString("es-MX", {
-                    minimumFractionDigits: 0,
-                    maximumFractionDigits: 1,
-                  })}% utilizado`
-                : (
-                    used > 0
-                      ? "Sin presupuesto asignado"
-                      : "0% utilizado"
-                  )
-            }
+          <strong class="${over > 0 ? "text-danger" : ""}">
+            ${escapeHtml(percentText(totalUsed, state.allocated))} utilizado
           </strong>
 
           <div class="small ${over > 0 ? "text-danger fw-semibold" : "text-muted"}">
             ${
               over > 0
-                ? `Faltan ${escapeHtml(formatMoney(over))}`
-                : `Disponible ${escapeHtml(formatMoney(Math.max(available, 0)))}`
+                ? `Sobreejercicio ${escapeHtml(money(over))}`
+                : `Disponible ${escapeHtml(money(Math.max(free, 0)))}`
             }
           </div>
         </div>
       </div>
 
-      <div class="budget-money-zone-stack">
-        ${
-          state.ordered > 0
-            ? `<div class="ordered"
-                    style="width:${(state.ordered / denominator) * 100}%"
-                    title="Solicitado: ${formatMoney(state.ordered)}"></div>`
-            : ""
-        }
+      ${distributionBarHtml(state, true)}
 
-        ${
-          state.requisition > 0
-            ? `<div class="requisition"
-                    style="width:${(state.requisition / denominator) * 100}%"
-                    title="En requisición: ${formatMoney(state.requisition)}"></div>`
-            : ""
-        }
-
-        ${
-          state.received > 0
-            ? `<div class="received"
-                    style="width:${(state.received / denominator) * 100}%"
-                    title="Recibido: ${formatMoney(state.received)}"></div>`
-            : ""
-        }
-
-        ${
-          available > 0
-            ? `<div class="available"
-                    style="width:${(available / denominator) * 100}%"
-                    title="Disponible: ${formatMoney(available)}"></div>`
-            : ""
-        }
-      </div>
-
-      <div class="budget-money-zone-values">
+      <div class="budget-report-zone-values">
         <span>
-          <i class="ordered"></i>
+          <i class="requested"></i>
           Solicitado
-          <strong>${escapeHtml(formatMoney(state.ordered))}</strong>
-          (${escapeHtml(percentLabel(state.ordered, allocated))})
+          <strong>${escapeHtml(money(state.requested))}</strong>
+          (${escapeHtml(percentText(state.requested, state.allocated))})
         </span>
 
         <span>
           <i class="requisition"></i>
-          Requisición
-          <strong>${escapeHtml(formatMoney(state.requisition))}</strong>
-          (${escapeHtml(percentLabel(state.requisition, allocated))})
+          En requisición
+          <strong>${escapeHtml(money(state.requisition))}</strong>
+          (${escapeHtml(percentText(state.requisition, state.allocated))})
         </span>
 
         <span>
           <i class="received"></i>
           Entregado
-          <strong>${escapeHtml(formatMoney(state.received))}</strong>
-          (${escapeHtml(percentLabel(state.received, allocated))})
+          <strong>${escapeHtml(money(state.received))}</strong>
+          (${escapeHtml(percentText(state.received, state.allocated))})
         </span>
 
         <span>
@@ -770,11 +552,7 @@ function zoneRowHtml(state) {
           ${over > 0 ? "Sobreejercicio" : "Disponible"}
           <strong>
             ${escapeHtml(
-              formatMoney(
-                over > 0
-                  ? over
-                  : Math.max(available, 0)
-              )
+              money(over > 0 ? over : Math.max(free, 0))
             )}
           </strong>
         </span>
@@ -782,60 +560,63 @@ function zoneRowHtml(state) {
     </article>`;
 }
 
-function chartsHtml({
-  focusState,
-  focusTitle,
-  zoneStates,
-  year,
-}) {
-  return `
-    <section id="${CHARTS_ID}" class="budget-money-charts">
-      <div class="budget-money-section-title">
-        <div>
-          <h5 class="mb-1">Avance real del presupuesto · ${year}</h5>
+function reportHtml(states, year) {
+  const global = globalState(states);
 
-          <div class="small text-muted">
-            El presupuesto asignado es la base. Se separa en solicitado,
-            requisición, entregado/ejercido y disponible.
-          </div>
+  return `
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+      <div>
+        <h3 class="h6 mb-1">Reporte presupuestal · ${year}</h3>
+        <div class="small text-muted">
+          El presupuesto autorizado por Zona es la referencia.
+          El reporte muestra su avance real desde solicitud hasta entrega.
         </div>
       </div>
 
-      ${primaryChartHtml(
-        focusState,
-        focusTitle
-      )}
+      <div class="d-flex flex-wrap gap-2">
+        <button type="button"
+                class="btn btn-outline-dark btn-sm"
+                id="refreshBudgetVisualReport">
+          Actualizar reporte
+        </button>
 
-      <section class="budget-money-zones-card">
-        <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mb-3">
-          <div>
-            <h6 class="mb-1">
-              Avance por zona
-            </h6>
+        <button type="button"
+                class="btn btn-outline-danger btn-sm"
+                id="printBudgetVisualReport">
+          Imprimir / PDF
+        </button>
+      </div>
+    </div>
 
-            <div class="small text-muted">
-              Cada barra usa como referencia el presupuesto asignado a esa zona.
-            </div>
-          </div>
+    ${globalReportHtml(global)}
 
-          <div class="budget-money-mini-legend">
-            <span><i class="ordered"></i>Solicitado</span>
-            <span><i class="requisition"></i>Requisición</span>
-            <span><i class="received"></i>Entregado</span>
-            <span><i class="available"></i>Disponible</span>
+    <section class="budget-report-zones-section">
+      <div class="budget-report-zones-head">
+        <div>
+          <h4 class="h6 mb-1">Avance por zona</h4>
+          <div class="small text-muted">
+            Cada zona se mide contra SU PROPIO presupuesto asignado,
+            no contra su participación en el presupuesto global.
           </div>
         </div>
 
-        <div class="budget-money-zone-list">
-          ${
-            zoneStates.length
-              ? zoneStates.map(zoneRowHtml).join("")
-              : `<div class="text-muted small">
-                   No hay presupuesto ni movimientos para las zonas seleccionadas.
-                 </div>`
-          }
+        <div class="budget-report-legend">
+          <span><i class="requested"></i>Solicitado</span>
+          <span><i class="requisition"></i>Requisición</span>
+          <span><i class="received"></i>Entregado</span>
+          <span><i class="available"></i>Disponible</span>
         </div>
-      </section>
+      </div>
+
+      <div class="budget-report-zone-list">
+        ${
+          states.length
+            ? states.map(zoneReportHtml).join("")
+            : `<div class="text-muted">
+                 No hay presupuestos por zona para este ejercicio.
+               </div>`
+        }
+      </div>
     </section>`;
 }
 
@@ -846,25 +627,16 @@ function injectStyles() {
   style.id = STYLE_ID;
 
   style.textContent = `
-    .budget-money-charts {
-      margin:1rem 0 1.25rem;
-    }
-
-    .budget-money-section-title {
-      margin-bottom:.8rem;
-    }
-
-    .budget-money-main-card,
-    .budget-money-zones-card {
+    .budget-report-global-card,
+    .budget-report-zones-section {
       border:1px solid #d9dde3;
       border-radius:.85rem;
       background:#fff;
       padding:1rem;
       margin-bottom:1rem;
-      box-shadow:0 1px 2px rgba(0,0,0,.03);
     }
 
-    .budget-money-main-head {
+    .budget-report-global-head {
       display:flex;
       flex-wrap:wrap;
       justify-content:space-between;
@@ -873,67 +645,67 @@ function injectStyles() {
       margin-bottom:1rem;
     }
 
-    .budget-money-eyebrow {
+    .budget-report-eyebrow {
       color:#6c757d;
-      font-size:.74rem;
+      font-size:.75rem;
       font-weight:700;
-      text-transform:uppercase;
       letter-spacing:.035em;
+      text-transform:uppercase;
     }
 
-    .budget-money-main-head h4 {
-      margin:.15rem 0 .15rem;
-      font-size:1.6rem;
+    .budget-report-global-head h3 {
+      margin:.15rem 0;
+      font-size:1.65rem;
       font-weight:750;
     }
 
-    .budget-money-utilization {
+    .budget-report-utilization {
       min-width:220px;
       border:1px solid #b6d4fe;
       border-left:5px solid #0d6efd;
       border-radius:.65rem;
-      padding:.6rem .75rem;
       background:#f4f8ff;
+      padding:.6rem .75rem;
       text-align:right;
     }
 
-    .budget-money-utilization.is-over {
+    .budget-report-utilization.is-over {
       border-color:#f1aeb5;
       border-left-color:#dc3545;
       background:#fff5f5;
     }
 
-    .budget-money-utilization span,
-    .budget-money-utilization small {
+    .budget-report-utilization span,
+    .budget-report-utilization small {
       display:block;
       color:#6c757d;
-      font-size:.73rem;
+      font-size:.74rem;
     }
 
-    .budget-money-utilization strong {
+    .budget-report-utilization strong {
       display:block;
-      font-size:1.35rem;
+      font-size:1.4rem;
     }
 
-    .budget-money-utilization.is-over strong,
-    .budget-money-utilization.is-over small {
+    .budget-report-utilization.is-over strong,
+    .budget-report-utilization.is-over small {
       color:#b02a37;
     }
 
-    .budget-money-main-grid {
+    .budget-report-global-grid {
       display:grid;
-      grid-template-columns:225px 1fr;
+      grid-template-columns:230px 1fr;
       gap:1rem 1.25rem;
       align-items:center;
     }
 
-    .budget-money-donut-wrap {
+    .budget-report-donut-wrap {
       display:flex;
       justify-content:center;
       align-items:center;
     }
 
-    .budget-money-donut {
+    .budget-report-donut {
       width:190px;
       height:190px;
       border-radius:50%;
@@ -942,7 +714,7 @@ function injectStyles() {
       position:relative;
     }
 
-    .budget-money-donut::after {
+    .budget-report-donut::after {
       content:"";
       width:118px;
       height:118px;
@@ -955,34 +727,34 @@ function injectStyles() {
       box-shadow:0 0 0 1px rgba(0,0,0,.04);
     }
 
-    .budget-money-donut-center {
+    .budget-report-donut-center {
       position:relative;
       z-index:1;
-      width:104px;
+      width:106px;
       text-align:center;
     }
 
-    .budget-money-donut-center span,
-    .budget-money-donut-center small {
+    .budget-report-donut-center span,
+    .budget-report-donut-center small {
       display:block;
       color:#6c757d;
       font-size:.7rem;
     }
 
-    .budget-money-donut-center strong {
+    .budget-report-donut-center strong {
       display:block;
-      font-size:1.4rem;
+      font-size:1.42rem;
       line-height:1.1;
       margin:.12rem 0;
     }
 
-    .budget-money-legend {
+    .budget-report-metrics {
       display:grid;
       grid-template-columns:repeat(4,minmax(0,1fr));
       gap:.6rem;
     }
 
-    .budget-money-legend-card {
+    .budget-report-metric {
       display:grid;
       grid-template-columns:12px 1fr;
       gap:.5rem;
@@ -992,137 +764,140 @@ function injectStyles() {
       padding:.6rem;
     }
 
-    .budget-money-legend-card > div > span {
-      display:block;
+    .budget-report-metric-label {
       color:#6c757d;
       font-size:.7rem;
     }
 
-    .budget-money-legend-card strong {
+    .budget-report-metric strong {
       display:block;
       margin:.08rem 0;
-      font-size:.82rem;
+      font-size:.85rem;
     }
 
-    .budget-money-legend-card small {
+    .budget-report-metric small {
       color:#6c757d;
+      font-size:.7rem;
       font-weight:700;
     }
 
-    .budget-money-dot {
+    .budget-report-dot {
       width:10px;
       height:10px;
       border-radius:50%;
       margin-top:.22rem;
     }
 
-    .budget-money-dot.ordered,
-    .budget-money-zone-values i.ordered,
-    .budget-money-mini-legend i.ordered {
+    .budget-report-dot.requested,
+    .budget-report-zone-values i.requested,
+    .budget-report-legend i.requested {
       background:#f0ad00;
     }
 
-    .budget-money-dot.requisition,
-    .budget-money-zone-values i.requisition,
-    .budget-money-mini-legend i.requisition {
+    .budget-report-dot.requisition,
+    .budget-report-zone-values i.requisition,
+    .budget-report-legend i.requisition {
       background:#0d6efd;
     }
 
-    .budget-money-dot.received,
-    .budget-money-zone-values i.received,
-    .budget-money-mini-legend i.received {
+    .budget-report-dot.received,
+    .budget-report-zone-values i.received,
+    .budget-report-legend i.received {
       background:#198754;
     }
 
-    .budget-money-dot.available,
-    .budget-money-zone-values i.available,
-    .budget-money-mini-legend i.available {
+    .budget-report-dot.available,
+    .budget-report-zone-values i.available,
+    .budget-report-legend i.available {
       background:#dfe3e8;
     }
 
-    .budget-money-dot.over,
-    .budget-money-zone-values i.over {
+    .budget-report-dot.over,
+    .budget-report-zone-values i.over {
       background:#dc3545;
     }
 
-    .budget-money-bar-title {
+    .budget-report-bar-caption {
       display:flex;
       flex-wrap:wrap;
       justify-content:space-between;
       gap:.5rem;
-      margin:.85rem 0 .35rem;
+      margin:.9rem 0 .35rem;
       font-size:.78rem;
     }
 
-    .budget-money-stack,
-    .budget-money-zone-stack {
+    .budget-report-stack {
       display:flex;
       width:100%;
+      min-height:25px;
       overflow:hidden;
       border-radius:999px;
-      background:#e9ecef;
-      box-shadow:inset 0 0 0 1px rgba(0,0,0,.035);
+      background:#eef0f2;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.04);
     }
 
-    .budget-money-stack {
-      min-height:24px;
-    }
-
-    .budget-money-zone-stack {
+    .budget-report-stack.is-small {
       min-height:16px;
+      margin-top:.5rem;
     }
 
-    .budget-money-segment,
-    .budget-money-zone-stack > div {
+    .budget-report-stack > div {
       min-width:0;
     }
 
-    .budget-money-segment.ordered,
-    .budget-money-zone-stack > .ordered {
+    .budget-report-stack > .requested {
       background:#f0ad00;
     }
 
-    .budget-money-segment.requisition,
-    .budget-money-zone-stack > .requisition {
+    .budget-report-stack > .requisition {
       background:#0d6efd;
     }
 
-    .budget-money-segment.received,
-    .budget-money-zone-stack > .received {
+    .budget-report-stack > .received {
       background:#198754;
     }
 
-    .budget-money-segment.available,
-    .budget-money-zone-stack > .available {
+    .budget-report-stack > .available {
       background:#dfe3e8;
     }
 
-    .budget-money-over-warning {
+    .budget-report-over-alert {
       margin-top:.6rem;
-      padding:.55rem .7rem;
       border:1px solid #f1aeb5;
       border-radius:.55rem;
       background:#fff5f5;
       color:#b02a37;
+      padding:.55rem .7rem;
       font-size:.8rem;
     }
 
-    .budget-money-mini-legend {
+    .budget-report-zones-head {
       display:flex;
       flex-wrap:wrap;
-      gap:.35rem .8rem;
+      justify-content:space-between;
+      gap:.6rem 1rem;
+      align-items:flex-end;
+      margin-bottom:.8rem;
+    }
+
+    .budget-report-legend {
+      display:flex;
+      flex-wrap:wrap;
+      gap:.4rem .85rem;
       color:#6c757d;
       font-size:.72rem;
     }
 
-    .budget-money-mini-legend span {
+    .budget-report-legend span,
+    .budget-report-zone-values span {
       display:inline-flex;
+      flex-wrap:wrap;
       align-items:center;
-      gap:.28rem;
+      gap:.25rem;
     }
 
-    .budget-money-mini-legend i,
-    .budget-money-zone-values i {
+    .budget-report-legend i,
+    .budget-report-zone-values i {
       display:inline-block;
       width:8px;
       height:8px;
@@ -1130,89 +905,110 @@ function injectStyles() {
       flex:0 0 auto;
     }
 
-    .budget-money-zone-list {
+    .budget-report-zone-list {
       display:flex;
       flex-direction:column;
       gap:.65rem;
     }
 
-    .budget-money-zone-row {
+    .budget-report-zone-card {
       border:1px solid #e2e5e9;
       border-radius:.7rem;
-      padding:.7rem .8rem;
+      padding:.72rem .82rem;
       break-inside:avoid;
     }
 
-    .budget-money-zone-head {
+    .budget-report-zone-head {
       display:flex;
       flex-wrap:wrap;
       justify-content:space-between;
       gap:.5rem 1rem;
       align-items:flex-start;
-      margin-bottom:.45rem;
     }
 
-    .budget-money-zone-values {
+    .budget-report-zone-title {
+      font-weight:700;
+    }
+
+    .budget-report-zone-values {
       display:flex;
       flex-wrap:wrap;
       gap:.3rem 1rem;
-      margin-top:.42rem;
+      margin-top:.45rem;
       color:#6c757d;
-      font-size:.71rem;
+      font-size:.72rem;
     }
 
-    .budget-money-zone-values span {
-      display:inline-flex;
-      flex-wrap:wrap;
-      align-items:center;
-      gap:.25rem;
-    }
-
-    .budget-money-zone-values strong {
+    .budget-report-zone-values strong {
       color:#343a40;
     }
 
     @media (max-width:1199.98px) {
-      .budget-money-legend {
+      .budget-report-metrics {
         grid-template-columns:repeat(2,minmax(0,1fr));
       }
     }
 
     @media (max-width:991.98px) {
-      .budget-money-main-grid {
+      .budget-report-global-grid {
         grid-template-columns:1fr;
       }
     }
 
     @media (max-width:575.98px) {
-      .budget-money-legend {
+      .budget-report-metrics {
         grid-template-columns:1fr;
       }
 
-      .budget-money-utilization {
+      .budget-report-utilization {
         width:100%;
         text-align:left;
-      }
-
-      .budget-money-main-head h4 {
-        font-size:1.3rem;
       }
     }
 
     @media print {
-      .budget-money-main-card,
-      .budget-money-zones-card,
-      .budget-money-zone-row {
-        box-shadow:none !important;
-        break-inside:avoid;
+      body.purchase-budget-report-print > *:not(#${PANEL_ID}) {
+        display:none !important;
       }
 
-      .budget-money-donut,
-      .budget-money-segment,
-      .budget-money-zone-stack > div,
-      .budget-money-dot,
-      .budget-money-zone-values i,
-      .budget-money-mini-legend i {
+      body.purchase-budget-report-print #${PANEL_ID} {
+        position:static !important;
+        display:block !important;
+        visibility:visible !important;
+        transform:none !important;
+        height:auto !important;
+        max-height:none !important;
+        border:0 !important;
+      }
+
+      body.purchase-budget-report-print #${PANEL_ID} .offcanvas-header,
+      body.purchase-budget-report-print #${PANEL_ID} #purchaseBudgetTabs,
+      body.purchase-budget-report-print #${PANEL_ID} #purchaseBudgetYear,
+      body.purchase-budget-report-print #${PANEL_ID} #refreshPurchaseBudgets,
+      body.purchase-budget-report-print #${PANEL_ID} #refreshBudgetVisualReport,
+      body.purchase-budget-report-print #${PANEL_ID} #printBudgetVisualReport,
+      body.purchase-budget-report-print #${PANEL_ID} .purchase-budget-summary-grid,
+      body.purchase-budget-report-print #${PANEL_ID} .purchase-budget-foreign-warning {
+        display:none !important;
+      }
+
+      body.purchase-budget-report-print #${PANE_ID} {
+        display:block !important;
+        opacity:1 !important;
+      }
+
+      .budget-report-global-card,
+      .budget-report-zones-section,
+      .budget-report-zone-card {
+        break-inside:avoid;
+        box-shadow:none !important;
+      }
+
+      .budget-report-donut,
+      .budget-report-stack > div,
+      .budget-report-dot,
+      .budget-report-zone-values i,
+      .budget-report-legend i {
         -webkit-print-color-adjust:exact !important;
         print-color-adjust:exact !important;
       }
@@ -1222,243 +1018,212 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-function reportReady() {
-  const report = document.querySelector(`#${REPORT_ID}`);
-  if (!report) return false;
+function ensureReportTab() {
+  const tabs = document.querySelector(`#${TABS_ID}`);
+  const content = document.querySelector(`#${CONTENT_ID}`);
+  if (!tabs || !content) return false;
 
-  return Boolean(
-    report.querySelector(".purchase-budget-summary-grid")
-    || report.querySelector(".purchase-budget-report-table")
-  );
+  if (!document.querySelector(`#${TAB_ID}`)) {
+    const li = document.createElement("li");
+    li.className = "nav-item";
+    li.setAttribute("role", "presentation");
+
+    li.innerHTML = `
+      <button class="nav-link"
+              id="${TAB_ID}"
+              data-bs-toggle="tab"
+              data-bs-target="#${PANE_ID}"
+              type="button"
+              role="tab"
+              aria-controls="${PANE_ID}"
+              aria-selected="false">
+        Reporte presupuestal
+      </button>`;
+
+    tabs.appendChild(li);
+  }
+
+  if (!document.querySelector(`#${PANE_ID}`)) {
+    const pane = document.createElement("div");
+    pane.className = "tab-pane fade";
+    pane.id = PANE_ID;
+    pane.setAttribute("role", "tabpanel");
+    pane.setAttribute("aria-labelledby", TAB_ID);
+    pane.tabIndex = 0;
+
+    pane.innerHTML = `
+      <div id="${REPORT_BODY_ID}">
+        <div class="text-center text-muted py-5">
+          Abre esta pestaña para generar el reporte presupuestal.
+        </div>
+      </div>`;
+
+    content.appendChild(pane);
+  }
+
+  if (reportTabActive) {
+    const tabButton = document.querySelector(`#${TAB_ID}`);
+    if (tabButton) {
+      bootstrap.Tab.getOrCreateInstance(tabButton).show();
+    }
+  }
+
+  return true;
 }
 
-async function renderCharts() {
-  const report = document.querySelector(`#${REPORT_ID}`);
+async function renderReport() {
+  if (renderBusy) return;
 
-  if (
-    !report
-    || !reportReady()
-    || renderBusy
-  ) {
+  const target = document.querySelector(`#${REPORT_BODY_ID}`);
+  if (!target) return;
+
+  const baseStates = allocationStatesFromUi();
+
+  if (!baseStates.length) {
+    target.innerHTML = `
+      <div class="alert alert-warning">
+        No se encontró la tabla de presupuesto autorizado por zona.
+      </div>`;
     return;
   }
 
-  const existing = report.querySelector(`#${CHARTS_ID}`);
-  if (existing) {
-    existing.remove();
-  }
-
   renderBusy = true;
-  const seq = ++renderSeq;
+  const sequence = ++renderSequence;
+
+  target.innerHTML = `
+    <div class="text-center text-muted py-5">
+      <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+      Calculando presupuesto global y avance por zonas…
+    </div>`;
 
   try {
-    const year = budgetYear();
+    const year = currentYear();
+    const lines = await loadFinancialLines(year);
 
-    const [
-      zoneCatalog,
-      allocations,
-      lines,
-    ] = await Promise.all([
-      loadZoneCatalog(),
-      loadAllocations(year),
-      loadRequestLinesForYear(year),
-    ]);
+    if (sequence !== renderSequence) return;
 
-    if (
-      seq !== renderSeq
-      || !document.body.contains(report)
-    ) {
-      return;
-    }
+    const states = applyFinancialLines(baseStates, lines);
 
-    const states = summarizeByZone({
-      zoneCatalog,
-      allocations,
-      lines,
-    });
-
-    const zones = visibleStates(
-      states,
-      zoneCatalog
-    );
-
-    const selected = selectedZoneId();
-
-    let focusState;
-    let focusTitle;
-
-    if (selected === "all") {
-      focusState = totalState(
-        [...states.values()]
-      );
-
-      focusTitle = "Todas las zonas";
-    } else {
-      focusState =
-        states.get(selected)
-        || createZoneState(
-          selected,
-          zoneCatalog.get(selected)?.name || `Zona ${selected}`
-        );
-
-      const meta =
-        zoneCatalog.get(selected)
-        || displayMeta(
-          selected,
-          focusState.zoneName
-        );
-
-      focusTitle =
-        `Zona ${meta.code} · ${meta.name}`;
-    }
-
-    const wrapper = document.createElement("div");
-
-    wrapper.innerHTML = chartsHtml({
-      focusState,
-      focusTitle,
-      zoneStates: zones,
-      year,
-    });
-
-    const charts = wrapper.firstElementChild;
-
-    // Insertamos después del resumen numérico existente y antes del detalle
-    // Zona/Subzona/Área.
-    const summary =
-      report.querySelector(".purchase-budget-summary-grid");
-
-    if (summary) {
-      summary.insertAdjacentElement(
-        "afterend",
-        charts
-      );
-    } else {
-      report.prepend(charts);
-    }
+    target.innerHTML = reportHtml(states, year);
   } catch (error) {
-    console.error(
-      "No se pudieron generar las gráficas de Presupuestos:",
-      error
-    );
+    console.error("No se pudo generar el Reporte presupuestal:", error);
 
-    const warning = document.createElement("div");
-    warning.id = CHARTS_ID;
-    warning.className = "alert alert-warning";
-    warning.textContent =
-      `No se pudieron cargar las gráficas del presupuesto: ${error.message}`;
-
-    report.prepend(warning);
+    target.innerHTML = `
+      <div class="alert alert-danger">
+        No se pudo generar el Reporte presupuestal:
+        ${escapeHtml(error.message)}
+      </div>`;
   } finally {
     renderBusy = false;
   }
 }
 
-function scheduleRender(delay = 160) {
+function printReport() {
+  document.body.classList.add("purchase-budget-report-print");
+
+  const cleanup = () => {
+    document.body.classList.remove("purchase-budget-report-print");
+    window.removeEventListener("afterprint", cleanup);
+  };
+
+  window.addEventListener("afterprint", cleanup);
+  window.print();
+  window.setTimeout(cleanup, 1600);
+}
+
+function scheduleAttach(delay = 0) {
   clearTimeout(scheduledTimer);
 
   scheduledTimer = window.setTimeout(() => {
-    renderCharts();
+    if (ensureReportTab() && reportTabActive) {
+      renderReport();
+    }
   }, delay);
 }
 
-function observeReport() {
-  const report = document.querySelector(`#${REPORT_ID}`);
+function bindBodyObserver() {
+  const body = document.querySelector(`#${BODY_ID}`);
+  if (!body || body === boundBody) return Boolean(body);
 
-  if (!report || report === observedReport) {
-    return Boolean(report);
+  if (bodyObserver) {
+    bodyObserver.disconnect();
   }
 
-  if (reportObserver) {
-    reportObserver.disconnect();
-  }
+  boundBody = body;
 
-  observedReport = report;
-
-  reportObserver = new MutationObserver(mutations => {
-    const meaningful =
-      mutations.some(
-        mutation =>
-          mutation.type === "childList"
-          && (
-            mutation.addedNodes.length
-            || mutation.removedNodes.length
-          )
-      );
-
-    if (!meaningful) return;
-
-    // compras-status.js puede regenerar todo el reporte al cambiar filtros.
-    // Si nuestras gráficas desaparecieron, las volvemos a construir.
-    if (!report.querySelector(`#${CHARTS_ID}`)) {
-      scheduleRender(80);
-    }
+  bodyObserver = new MutationObserver(() => {
+    scheduleAttach(60);
   });
 
-  reportObserver.observe(report, {
+  bodyObserver.observe(body, {
     childList: true,
     subtree: false,
   });
 
-  scheduleRender(80);
-  return true;
-}
-
-function attachPanel() {
-  const panel = document.querySelector(`#${PANEL_ID}`);
-
-  if (!panel) return false;
-
-  if (!panel.dataset.budgetMoneyChartsBound) {
-    panel.dataset.budgetMoneyChartsBound = "1";
-
-    panel.addEventListener("shown.bs.offcanvas", () => {
-      observeReport();
-      scheduleRender(120);
-    });
-  }
-
-  observeReport();
+  scheduleAttach(0);
   return true;
 }
 
 function start() {
   injectStyles();
 
-  if (!attachPanel()) {
-    panelObserver = new MutationObserver(() => {
-      if (attachPanel()) {
-        panelObserver.disconnect();
-        panelObserver = null;
+  if (!bindBodyObserver()) {
+    attachObserver = new MutationObserver(() => {
+      if (bindBodyObserver()) {
+        attachObserver.disconnect();
+        attachObserver = null;
       }
     });
 
-    panelObserver.observe(document.body, {
+    attachObserver.observe(document.body, {
       childList: true,
       subtree: true,
     });
   }
 
-  document.addEventListener("change", event => {
+  document.addEventListener("shown.bs.offcanvas", event => {
+    if (event.target?.id !== PANEL_ID) return;
+    bindBodyObserver();
+    scheduleAttach(50);
+  });
+
+  document.addEventListener("shown.bs.tab", event => {
+    if (event.target?.id === TAB_ID) {
+      reportTabActive = true;
+      renderReport();
+      return;
+    }
+
     if (
-      event.target.matches(
-        "#budgetFilterZone, #budgetFilterSubzone, #budgetFilterArea, #purchaseBudgetYear"
-      )
+      event.target?.id === "budget-allocation-tab"
+      || event.target?.id === "budget-spending-tab"
     ) {
-      // Para las gráficas, Zona define el presupuesto asignado.
-      // Subzona/Área siguen afectando la tabla existente, pero la gráfica
-      // conserva la lectura presupuestal completa de la Zona.
-      scheduleRender(250);
+      reportTabActive = false;
     }
   });
 
   document.addEventListener("click", event => {
+    if (event.target.closest("#refreshBudgetVisualReport")) {
+      renderReport();
+      return;
+    }
+
+    if (event.target.closest("#printBudgetVisualReport")) {
+      printReport();
+      return;
+    }
+
     if (
-      event.target.closest(
-        "#refreshPurchaseBudgets, .budget-save-zone, [data-bs-target='#purchaseBudgetSpendingPane']"
-      )
+      event.target.closest("#refreshPurchaseBudgets, .budget-save-zone")
     ) {
-      scheduleRender(650);
+      scheduleAttach(700);
+    }
+  });
+
+  document.addEventListener("change", event => {
+    if (event.target.matches("#purchaseBudgetYear")) {
+      reportTabActive = false;
+      scheduleAttach(700);
     }
   });
 }
