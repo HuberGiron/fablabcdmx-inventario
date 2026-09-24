@@ -15,6 +15,7 @@ if (window.location.pathname.endsWith("compras.html")) {
     .then(() => import("./compras-request-grouping.js"))
     .then(() => import("./compras-request-progress.js"))
     .then(() => import("./compras-group-batch-actions.js"))
+    .then(() => import("./compras-request-stage-tools.js"))
     .catch(err => {
       console.error("No se pudo cargar el módulo de Compras:", err);
     });
