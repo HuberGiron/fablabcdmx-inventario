@@ -7,15 +7,29 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
-// En Compras instalamos primero la capa de rendimiento.
-// El "await" es intencional: evita que compras.js llegue a renderizar miles
-// de tarjetas antes de que el render progresivo esté preparado.
-if (window.location.pathname.endsWith("compras.html")) {
+const currentPath = window.location.pathname;
+
+// Inventario general.
+// Se instala antes de que catalogo.js llegue a renderizar todas las tarjetas.
+const isInventoryHome =
+  currentPath.endsWith("/index.html")
+  || /\/inventario\/?$/.test(currentPath);
+
+if (isInventoryHome) {
+  try {
+    await import("./inventario-performance.js");
+  } catch (err) {
+    // Fallback seguro: si la optimización falla, catalogo.js conserva
+    // el comportamiento anterior y el inventario sigue siendo utilizable.
+    console.error("No se pudo cargar la optimización del Inventario:", err);
+  }
+}
+
+// Flujo administrativo específico de la página de Compras.
+if (currentPath.endsWith("compras.html")) {
   try {
     await import("./compras-performance.js");
   } catch (err) {
-    // Si por cualquier motivo fallara la optimización, la página conserva
-    // el flujo funcional anterior en vez de quedar inutilizable.
     console.error("No se pudo cargar la optimización de Compras:", err);
   }
 
