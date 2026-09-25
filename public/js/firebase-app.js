@@ -7,9 +7,18 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
-// Flujo administrativo específico de la página de Compras.
-// La carga es condicional para no afectar al resto de vistas del inventario.
+// En Compras instalamos primero la capa de rendimiento.
+// El "await" es intencional: evita que compras.js llegue a renderizar miles
+// de tarjetas antes de que el render progresivo esté preparado.
 if (window.location.pathname.endsWith("compras.html")) {
+  try {
+    await import("./compras-performance.js");
+  } catch (err) {
+    // Si por cualquier motivo fallara la optimización, la página conserva
+    // el flujo funcional anterior en vez de quedar inutilizable.
+    console.error("No se pudo cargar la optimización de Compras:", err);
+  }
+
   import("./compras-status.js")
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))

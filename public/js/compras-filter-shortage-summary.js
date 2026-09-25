@@ -6,18 +6,34 @@ import {
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
-const MODULE_ID = "purchaseFilteredShortageSummaryModule";
-const NOTE_MARK = "purchase-shortage-summary-note";
+/*
+ * ============================================================================
+ * RESUMEN DEL FALTANTE FILTRADO
+ * ============================================================================
+ *
+ * Con render progresivo NO se calculan totales leyendo las tarjetas del DOM.
+ * La fuente es el conjunto lógico completo expuesto por compras-performance.js.
+ *
+ * Así 36 tarjetas renderizadas pueden representar, por ejemplo, 616 resultados
+ * reales sin alterar totales, zonas, subzonas ni presupuesto estimado.
+ * ============================================================================
+ */
+
+const PURCHASE_CATEGORIES = [
+  "Mobiliario",
+  "Cómputo",
+  "Máquinas",
+  "Consumibles, accesorios, equipo auxiliar, otros",
+];
 
 const itemsById = new Map();
 
-let itemsLoadedAt = 0;
-let loadPromise = null;
+let fallbackLoaded = false;
+let fallbackPromise = null;
 let scheduleTimer = null;
-let itemsObserver = null;
-let observedItemsList = null;
-let recomputeBusy = false;
-let rerunRequested = false;
+let summaryObserver = null;
+let reportObserver = null;
+let writing = false;
 
 function num(value) {
   const parsed = Number(value);
@@ -37,18 +53,6 @@ function currentInventory(item) {
   return num(item?.stockAlmacen) + num(item?.stockPrestadoTemporal);
 }
 
-/*
- * CLAVE DEL AJUSTE:
- *
- * No usamos "cantidad todavía disponible para solicitar".
- * Usamos el faltante físico real contra el inventario deseado.
- *
- * Mientras una pieza siga sin llegar físicamente al inventario,
- * continúa formando parte del faltante aunque:
- * - ya esté en compras;
- * - ya tenga requisición;
- * - esté dentro de una solicitud.
- */
 function physicalShortageQty(item) {
   return Math.max(
     num(item?.inventarioDeseado) - currentInventory(item),
@@ -89,13 +93,6 @@ function purchaseCategory(tipo) {
   return "Consumibles, accesorios, equipo auxiliar, otros";
 }
 
-const PURCHASE_CATEGORIES = [
-  "Mobiliario",
-  "Cómputo",
-  "Máquinas",
-  "Consumibles, accesorios, equipo auxiliar, otros",
-];
-
 function addMoneyTotal(totals, currency, amount) {
   const code = String(currency || "MXN").toUpperCase();
   totals[code] = num(totals[code]) + num(amount);
@@ -118,19 +115,15 @@ function formatMoneyTotals(totals) {
     .join(" · ");
 }
 
-async function loadItems({ force = false } = {}) {
-  const now = Date.now();
+async function loadFallbackItems() {
+  if (fallbackLoaded) return;
 
-  if (!force && itemsById.size && now - itemsLoadedAt < 10000) {
+  if (fallbackPromise) {
+    await fallbackPromise;
     return;
   }
 
-  if (loadPromise) {
-    await loadPromise;
-    return;
-  }
-
-  loadPromise = (async () => {
+  fallbackPromise = (async () => {
     const snapshot = await getDocs(
       query(
         collection(db, "items"),
@@ -150,42 +143,65 @@ async function loadItems({ force = false } = {}) {
       );
     });
 
-    itemsLoadedAt = Date.now();
+    fallbackLoaded = true;
   })();
 
   try {
-    await loadPromise;
+    await fallbackPromise;
   } finally {
-    loadPromise = null;
+    fallbackPromise = null;
   }
 }
 
-function visibleCards() {
-  return [
+async function logicalRows() {
+  const perf = window.__purchasePerformance;
+
+  if (perf?.getLogicalItems) {
+    const rows = perf
+      .getLogicalItems()
+      .filter(Boolean);
+
+    if (
+      rows.length
+      || perf.getLogicalCount?.() === 0
+    ) {
+      return rows;
+    }
+  }
+
+  // Fallback seguro si el navegador no pudo activar la optimización.
+  await loadFallbackItems();
+
+  const visibleIds = [
     ...document.querySelectorAll(
       "#itemsList .item-card[data-item-id]"
     ),
-  ].filter(card => !card.classList.contains("d-none"));
-}
+  ]
+    .filter(card => !card.classList.contains("d-none"))
+    .map(card => String(card.dataset.itemId || ""));
 
-function visibleRows() {
-  return visibleCards()
-    .map(card => itemsById.get(String(card.dataset.itemId || "")))
+  return visibleIds
+    .map(id => itemsById.get(id))
     .filter(Boolean);
 }
 
 function createCategoryGroups() {
   const map = new Map();
 
-  PURCHASE_CATEGORIES.forEach((category, index) => {
-    map.set(category, {
-      category,
-      sort: index,
-      totals: {},
-      qty: 0,
-      items: 0,
-    });
-  });
+  PURCHASE_CATEGORIES.forEach(
+    (category, index) => {
+      map.set(
+        category,
+        {
+          category,
+          sort: index,
+          totals: {},
+          qty: 0,
+          items: 0,
+        }
+      );
+    }
+  );
 
   return map;
 }
@@ -199,11 +215,15 @@ function buildCategorySummary(rows) {
 
     const qty = physicalShortageQty(item);
     const currency = item.moneda || "MXN";
-    const subtotal = qty * num(item.precioUnitario);
 
     group.items += 1;
     group.qty += qty;
-    addMoneyTotal(group.totals, currency, subtotal);
+
+    addMoneyTotal(
+      group.totals,
+      currency,
+      qty * num(item.precioUnitario)
+    );
   }
 
   return [...groups.values()]
@@ -270,6 +290,7 @@ function buildBreakdown(rows) {
     for (const group of [zone, subzone, cat]) {
       group.items += 1;
       group.qty += qty;
+
       addMoneyTotal(
         group.totals,
         currency,
@@ -283,7 +304,9 @@ function buildBreakdown(rows) {
       String(a.zoneId).localeCompare(
         String(b.zoneId),
         "es",
-        { numeric: true }
+        {
+          numeric: true,
+        }
       )
     )
     .map(zone => ({
@@ -293,7 +316,9 @@ function buildBreakdown(rows) {
           String(a.subzoneId).localeCompare(
             String(b.subzoneId),
             "es",
-            { numeric: true }
+            {
+              numeric: true,
+            }
           )
         )
         .map(subzone => ({
@@ -307,47 +332,43 @@ function buildBreakdown(rows) {
     }));
 }
 
-function updateExplanation() {
-  const label = document.querySelector(".purchase-summary-label");
+function summaryValues(rows) {
+  const totals = {};
+  let totalQty = 0;
+  let shortageItems = 0;
 
-  if (label) {
-    label.textContent =
-      "Presupuesto estimado del faltante filtrado";
+  for (const item of rows) {
+    const qty = physicalShortageQty(item);
+
+    if (qty > 0) {
+      shortageItems += 1;
+    }
+
+    totalQty += qty;
+
+    addMoneyTotal(
+      totals,
+      item.moneda || "MXN",
+      qty * num(item.precioUnitario)
+    );
   }
 
-  const note = document.querySelector(".purchase-summary-note");
-
-  if (note && note.dataset.shortageSummaryPatched !== "1") {
-    note.dataset.shortageSummaryPatched = "1";
-    note.classList.add(NOTE_MARK);
-
-    note.innerHTML = `
-      Moneda de trabajo: <strong>MXN</strong>.
-      El total se calcula con
-      <strong>faltante físico de inventario × precio unitario</strong>:
-      <strong>máx(deseado − actual, 0)</strong>.
-      Los filtros de estado determinan qué artículos se suman;
-      lo que ya está en compras o requisición continúa contando
-      hasta que sea recibido físicamente en inventario.
-      Si hay más de una moneda, se muestra un total separado por moneda,
-      sin conversión cambiaria.`;
-  }
+  return {
+    totals,
+    totalQty,
+    shortageItems,
+  };
 }
 
-function renderBreakdown(rows) {
-  const report = document.querySelector("#purchaseBreakdownReport");
-  if (!report) return;
-
+function reportHtml(rows) {
   if (!rows.length) {
-    report.innerHTML =
-      '<p class="purchase-report-empty">No hay elementos dentro del filtro actual.</p>';
-    return;
+    return '<p class="purchase-report-empty">No hay elementos dentro del filtro actual.</p>';
   }
 
   const categories = buildCategorySummary(rows);
   const breakdown = buildBreakdown(rows);
 
-  report.innerHTML = `
+  return `
     <div class="purchase-category-summary"
          aria-label="Totales por categoría">
 
@@ -431,147 +452,213 @@ function renderBreakdown(rows) {
     </div>`;
 }
 
-async function recompute({ forceLoad = false } = {}) {
-  if (recomputeBusy) {
-    rerunRequested = true;
-    return;
+function updateExplanation() {
+  const label =
+    document.querySelector(
+      ".purchase-summary-label"
+    );
+
+  if (
+    label
+    && label.textContent !==
+      "Presupuesto estimado del faltante filtrado"
+  ) {
+    label.textContent =
+      "Presupuesto estimado del faltante filtrado";
   }
 
-  recomputeBusy = true;
-  rerunRequested = false;
-
-  try {
-    await loadItems({ force: forceLoad });
-
-    const rows = visibleRows();
-    const totals = {};
-    let totalQty = 0;
-    let shortageItems = 0;
-
-    for (const item of rows) {
-      const qty = physicalShortageQty(item);
-
-      if (qty > 0) {
-        shortageItems += 1;
-      }
-
-      totalQty += qty;
-
-      addMoneyTotal(
-        totals,
-        item.moneda || "MXN",
-        qty * num(item.precioUnitario)
-      );
-    }
-
-    const totalsEl =
-      document.querySelector("#purchaseSummaryTotals");
-
-    const metaEl =
-      document.querySelector("#purchaseSummaryMeta");
-
-    if (totalsEl) {
-      totalsEl.textContent =
-        formatMoneyTotals(totals);
-    }
-
-    if (metaEl) {
-      metaEl.textContent =
-        `${rows.length} elemento${rows.length === 1 ? "" : "s"} en el filtro`
-        + ` · ${shortageItems} con faltante`
-        + ` · ${totalQty} pieza${totalQty === 1 ? "" : "s"} faltante${totalQty === 1 ? "" : "s"} en inventario`;
-    }
-
-    updateExplanation();
-    renderBreakdown(rows);
-  } catch (error) {
-    console.error(
-      "No se pudo recalcular el faltante filtrado:",
-      error
+  const note =
+    document.querySelector(
+      ".purchase-summary-note"
     );
-  } finally {
-    recomputeBusy = false;
 
-    if (rerunRequested) {
-      rerunRequested = false;
-      scheduleRecompute(20);
-    }
+  if (!note) return;
+
+  const html = `
+    Moneda de trabajo: <strong>MXN</strong>.
+    El total se calcula con
+    <strong>faltante físico de inventario × precio unitario</strong>:
+    <strong>máx(deseado − actual, 0)</strong>.
+    Los filtros de estado determinan qué artículos se suman;
+    lo que ya está en compras o requisición continúa contando
+    hasta que sea recibido físicamente en inventario.
+    Si hay más de una moneda, se muestra un total separado por moneda,
+    sin conversión cambiaria.`;
+
+  if (note.innerHTML !== html) {
+    note.innerHTML = html;
   }
 }
 
-function scheduleRecompute(delay = 80, options = {}) {
+async function recompute() {
+  if (writing) return;
+
+  const rows = await logicalRows();
+
+  const {
+    totals,
+    totalQty,
+    shortageItems,
+  } = summaryValues(rows);
+
+  const totalsText =
+    formatMoneyTotals(totals);
+
+  const metaText =
+    `${rows.length} elemento${rows.length === 1 ? "" : "s"} en el filtro`
+    + ` · ${shortageItems} con faltante`
+    + ` · ${totalQty} pieza${totalQty === 1 ? "" : "s"}`
+    + ` faltante${totalQty === 1 ? "" : "s"} en inventario`;
+
+  const reportText = reportHtml(rows);
+
+  const totalsEl =
+    document.querySelector(
+      "#purchaseSummaryTotals"
+    );
+
+  const metaEl =
+    document.querySelector(
+      "#purchaseSummaryMeta"
+    );
+
+  const reportEl =
+    document.querySelector(
+      "#purchaseBreakdownReport"
+    );
+
+  writing = true;
+
+  try {
+    if (
+      totalsEl
+      && totalsEl.textContent !== totalsText
+    ) {
+      totalsEl.textContent = totalsText;
+    }
+
+    if (
+      metaEl
+      && metaEl.textContent !== metaText
+    ) {
+      metaEl.textContent = metaText;
+    }
+
+    if (
+      reportEl
+      && reportEl.innerHTML !== reportText
+    ) {
+      reportEl.innerHTML = reportText;
+    }
+
+    updateExplanation();
+  } finally {
+    writing = false;
+  }
+}
+
+function scheduleRecompute(delay = 55) {
   clearTimeout(scheduleTimer);
 
   scheduleTimer = window.setTimeout(
-    () => recompute(options),
+    () => {
+      void recompute();
+    },
     delay
   );
 }
 
-function observeItemsList() {
-  const itemsList = document.querySelector("#itemsList");
+function observeCompetingWriters() {
+  const totalsEl =
+    document.querySelector(
+      "#purchaseSummaryTotals"
+    );
 
-  if (!itemsList || itemsList === observedItemsList) {
-    return Boolean(itemsList);
+  const reportEl =
+    document.querySelector(
+      "#purchaseBreakdownReport"
+    );
+
+  if (
+    totalsEl
+    && !summaryObserver
+  ) {
+    summaryObserver = new MutationObserver(
+      () => {
+        if (!writing) {
+          scheduleRecompute(25);
+        }
+      }
+    );
+
+    summaryObserver.observe(
+      totalsEl,
+      {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      }
+    );
   }
 
-  if (itemsObserver) {
-    itemsObserver.disconnect();
+  if (
+    reportEl
+    && !reportObserver
+  ) {
+    reportObserver = new MutationObserver(
+      () => {
+        if (!writing) {
+          scheduleRecompute(25);
+        }
+      }
+    );
+
+    reportObserver.observe(
+      reportEl,
+      {
+        childList: true,
+        subtree: false,
+      }
+    );
   }
+}
 
-  observedItemsList = itemsList;
-
-  itemsObserver = new MutationObserver(mutations => {
-    const relevant = mutations.some(mutation => {
-      if (mutation.type === "childList") {
-        return (
-          mutation.addedNodes.length > 0
-          || mutation.removedNodes.length > 0
-        );
-      }
-
-      if (
-        mutation.type === "attributes"
-        && mutation.attributeName === "class"
-      ) {
-        return mutation.target.classList?.contains("item-card");
-      }
-
-      return false;
-    });
-
-    if (relevant) {
-      scheduleRecompute(100);
-    }
-  });
-
-  itemsObserver.observe(
-    itemsList,
-    {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class"],
+function start() {
+  document.addEventListener(
+    "purchase:logical-filter-changed",
+    () => {
+      scheduleRecompute(35);
     }
   );
 
-  scheduleRecompute(100);
-  return true;
-}
+  document.addEventListener(
+    "purchase:item-cache-ready",
+    () => {
+      scheduleRecompute(35);
+    }
+  );
 
-function bindEvents() {
+  document.addEventListener(
+    "purchase:render-batch",
+    () => {
+      // Renderizar más tarjetas NO cambia el total lógico.
+      // Sólo verificamos que otro módulo no lo haya sobrescrito.
+      scheduleRecompute(80);
+    }
+  );
+
   document.addEventListener(
     "change",
     event => {
       if (
-        event.target.matches(
+        event.target.matches?.(
           "#filterPurchaseStatusGroup input, "
           + "#filterPurchasePriorityGroup input, "
           + "#filterZone, #filterSubzone, #filterLocation, "
           + "#filterWeek, #sortMode, .tipo-check"
         )
       ) {
-        scheduleRecompute(180);
+        scheduleRecompute(110);
       }
     }
   );
@@ -579,64 +666,33 @@ function bindEvents() {
   document.addEventListener(
     "input",
     event => {
-      if (
-        event.target.matches("#search")
-      ) {
-        scheduleRecompute(220);
+      if (event.target?.id === "search") {
+        scheduleRecompute(280);
       }
     }
   );
 
-  document.addEventListener(
-    "click",
-    event => {
-      if (
-        event.target.closest("#clearFilters")
-      ) {
-        scheduleRecompute(250);
-      }
+  const timer = window.setInterval(
+    () => {
+      observeCompetingWriters();
 
-      // Al terminar operaciones que pueden haber cambiado el stock,
-      // refrescamos también la fuente de Firestore.
       if (
-        event.target.closest(
-          ".request-line-receive, "
-          + ".group-batch-receive, "
-          + "#purchaseGroupBatchSave, "
-          + "#purchaseWideReceiptSave, "
-          + ".purchase-received-btn"
+        window.__purchasePerformance
+        && document.querySelector(
+          "#purchaseSummaryTotals"
         )
       ) {
-        scheduleRecompute(
-          900,
-          { forceLoad: true }
-        );
-      }
-    }
-  );
-}
-
-function start() {
-  if (document.documentElement.dataset[MODULE_ID] === "1") {
-    return;
-  }
-
-  document.documentElement.dataset[MODULE_ID] = "1";
-
-  bindEvents();
-
-  if (!observeItemsList()) {
-    const timer = window.setInterval(() => {
-      if (observeItemsList()) {
+        scheduleRecompute(20);
         clearInterval(timer);
       }
-    }, 250);
+    },
+    250
+  );
 
-    window.setTimeout(
-      () => clearInterval(timer),
-      15000
-    );
-  }
+  window.setTimeout(
+    () => clearInterval(timer),
+    15000
+  );
 }
 
 start();
