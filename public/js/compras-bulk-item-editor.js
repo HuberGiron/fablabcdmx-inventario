@@ -134,11 +134,15 @@ function currentMachineForItem(item) {
 
 function getLogicalIds() {
   const perfIds = window.__purchasePerformance?.getLogicalItemIds?.();
-  if (Array.isArray(perfIds)) return perfIds.map(String);
-  return [...document.querySelectorAll("#itemsList .item-card[data-item-id]")]
+  if (Array.isArray(perfIds) && perfIds.length) return perfIds.map(String);
+
+  const domIds = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")]
     .filter(card => !card.classList.contains("d-none"))
     .map(card => String(card.dataset.itemId || ""))
     .filter(Boolean);
+
+  if (domIds.length) return domIds;
+  return Array.isArray(perfIds) ? perfIds.map(String) : [];
 }
 
 function selectedItems() {
@@ -338,9 +342,20 @@ function decorateCard(card) {
   }
 
   const item = itemsById.get(itemId);
-  wrapper.innerHTML = `
-    <input class="form-check-input bulk-item-edit-check" type="checkbox" id="bulk-edit-${esc(itemId)}" data-id="${esc(itemId)}" ${selectedItemIds.has(itemId) ? "checked" : ""}>
-    <label for="bulk-edit-${esc(itemId)}">Edición masiva${item?.sku ? ` · ${esc(item.sku)}` : ""}</label>`;
+  const sku = String(item?.sku || "");
+  const signature = `${itemId}|${sku}`;
+
+  // Importante: no reescribir innerHTML en cada pasada. Hacerlo dispara
+  // mutaciones del DOM y puede provocar un ciclo de renderizado continuo.
+  if (wrapper.dataset.signature !== signature || !wrapper.querySelector(".bulk-item-edit-check")) {
+    wrapper.dataset.signature = signature;
+    wrapper.innerHTML = `
+      <input class="form-check-input bulk-item-edit-check" type="checkbox" id="bulk-edit-${esc(itemId)}" data-id="${esc(itemId)}">
+      <label for="bulk-edit-${esc(itemId)}">Edición masiva${sku ? ` · ${esc(sku)}` : ""}</label>`;
+  }
+
+  const checkbox = wrapper.querySelector(".bulk-item-edit-check");
+  if (checkbox) checkbox.checked = selectedItemIds.has(itemId);
   card.classList.toggle("bulk-edit-selected", selectedItemIds.has(itemId));
 }
 
@@ -888,11 +903,9 @@ function bindEvents() {
     window.setTimeout(() => syncLogicalIds(), 0);
   });
 
-  const list = document.querySelector("#itemsList");
-  if (list) {
-    const observer = new MutationObserver(() => decorateCards());
-    observer.observe(list, { childList: true, subtree: true });
-  }
+  // No usamos MutationObserver sobre todo el subárbol de #itemsList.
+  // El editor ya recibe los eventos del render progresivo de Compras; observar
+  // nuestras propias inserciones creaba un bucle de mutaciones y congelaba Chrome.
 }
 
 async function init() {
@@ -912,6 +925,15 @@ async function init() {
   bindEvents();
   syncLogicalIds();
   decorateCards();
+
+  // compras.js y el render progresivo pueden terminar de materializar el filtro
+  // después de que este módulo ya arrancó. Reintentamos unas veces para tomar
+  // el conjunto lógico completo (no solo las primeras tarjetas visibles).
+  [120, 450, 1000, 2200].forEach(delay => {
+    window.setTimeout(() => {
+      if (!saving) syncLogicalIds();
+    }, delay);
+  });
 }
 
 init().catch(error => {
