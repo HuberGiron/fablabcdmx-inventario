@@ -1,9 +1,10 @@
 import { db } from "./firebase-app.js";
-import { waitForUser, getUserProfile, uploadItemAsset } from "./common.js";
+import { waitForUser, getUserProfile, uploadItemAsset, fileViewUrl } from "./common.js";
 import {
   collection,
   doc,
   getDocs,
+  getDocFromServer,
   query,
   serverTimestamp,
   where,
@@ -38,6 +39,7 @@ const ITEM_TYPES = [
 
 const selectedItemIds = new Set();
 const itemsById = new Map();
+const livePatchedItemIds = new Set();
 let logicalItemIds = [];
 let zones = [];
 let subzones = [];
@@ -380,6 +382,175 @@ function decorateCard(card) {
 
 function decorateCards() {
   document.querySelectorAll("#itemsList .item-card[data-item-id]").forEach(decorateCard);
+}
+
+function liveFormatCurrency(value, currency = "MXN") {
+  const code = String(currency || "MXN").toUpperCase();
+  try {
+    return `${new Intl.NumberFormat("es-MX", {
+      style: "currency",
+      currency: code,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(Number(value || 0))} ${code}`;
+  } catch (_) {
+    return `$${Number(value || 0).toFixed(2)} ${code}`;
+  }
+}
+
+function liveCurrentInventory(item) {
+  return asNumber(item?.stockAlmacen) + asNumber(item?.stockPrestadoTemporal);
+}
+
+function liveDraftQty(card) {
+  const text = card?.querySelector(".purchase-status-controls")?.textContent || "";
+  const match = text.match(/En borrador:\s*(\d+)/i);
+  return match ? asNumber(match[1]) : 0;
+}
+
+function liveAvailableToRequest(item, card) {
+  const desired = asNumber(item?.inventarioDeseado);
+  const current = liveCurrentInventory(item);
+  const pending = Math.max(asNumber(item?.purchasePendingQty), 0);
+  const draft = liveDraftQty(card);
+  return Math.max(desired - current - pending - draft, 0);
+}
+
+function liveStatusBadges(item) {
+  const badges = [];
+  if (item.visibleParaAlumno === false) badges.push('<span class="badge text-bg-secondary">Oculto alumno</span>');
+  if (item.prestamoHabilitado === true) badges.push('<span class="badge text-bg-primary">Prestable</span>');
+  else badges.push('<span class="badge text-bg-light border">No prestable</span>');
+  if (item.reservaHabilitada === true) badges.push('<span class="badge text-bg-warning">Reservable/asistencia</span>');
+  if (item.requiereAsistencia === true) badges.push('<span class="badge text-bg-info">Requiere técnico</span>');
+  return badges.join(" ");
+}
+
+function livePathHtml(item) {
+  const zone = `${item.zoneId ?? ""}${item.zoneName ? ` · ${item.zoneName}` : ""}`.trim();
+  const subzone = `${item.subzoneId ?? ""}${item.subzoneName ? ` · ${item.subzoneName}` : ""}`.trim();
+  const areaCode = String(item.locationCode || item.subzoneId || "s/c");
+  const areaName = String(item.locationName || "Sin ubicación");
+  return `
+    <span><strong>Zona:</strong> ${esc(zone || "Sin zona")}</span>
+    <span><strong>Subzona:</strong> ${esc(subzone || "Sin subzona")}</span>
+    <span><strong>Área:</strong> <span class="area-code-chip">${esc(areaCode)}</span> ${esc(areaName)}</span>`;
+}
+
+function refreshRenderedCard(itemId) {
+  const id = String(itemId || "");
+  const item = itemsById.get(id);
+  const card = document.querySelector(`#itemsList .item-card[data-item-id="${CSS.escape(id)}"]`);
+  if (!item || !card) return;
+
+  const body = card.querySelector(".card-body");
+  if (!body) return;
+
+  const title = body.querySelector(".card-title");
+  if (title) title.textContent = item.nombre || "Sin nombre";
+
+  const headerMeta = [...body.querySelectorAll(".text-muted.small")]
+    .find(el => el.textContent.includes("Disponible:") && el.textContent.includes("Deseado:"));
+  if (headerMeta) {
+    headerMeta.innerHTML =
+      `${esc(item.sku || "")} · ${esc(item.tipo || "Otro")} · Disponible: <strong>${asNumber(item.stockAlmacen)}</strong> · Deseado: <strong>${asNumber(item.inventarioDeseado)}</strong>`;
+  }
+
+  const titleWrap = title?.parentElement;
+  const badgeRow = titleWrap?.querySelector(".mt-1");
+  if (badgeRow) badgeRow.innerHTML = liveStatusBadges(item);
+
+  const cost = body.querySelector(".purchase-item-cost");
+  if (cost) {
+    const currency = item.moneda || "MXN";
+    const price = asNumber(item.precioUnitario);
+    const pending = Math.max(asNumber(item.purchasePendingQty), 0);
+    const available = liveAvailableToRequest(item, card);
+    const subtotal = available * price;
+    cost.innerHTML = `
+      <span><strong>Precio unitario:</strong> ${esc(liveFormatCurrency(price, currency))}</span>
+      <span><strong>Pendiente de recibir:</strong> ${pending}</span>
+      <span><strong>Disponible para solicitar:</strong> ${available}</span>
+      <span><strong>Subtotal disponible:</strong> ${esc(liveFormatCurrency(subtotal, currency))}</span>`;
+    cost.dataset.purchaseCostSignature = `live|${currency}|${price}|${pending}|${available}|${subtotal}`;
+  }
+
+  const path = body.querySelector(".path-compact");
+  if (path) path.innerHTML = livePathHtml(item);
+
+  const description = body.querySelector(".card-text.mt-2");
+  if (description) description.textContent = item.descripcion || "";
+
+  const fabBlock = [...body.querySelectorAll(".small.mb-2")]
+    .find(el => el.textContent.trim().startsWith("FabAcademy:"));
+  if (fabBlock) {
+    const names = Array.isArray(item.fabacademyWeekNames) ? item.fabacademyWeekNames : [];
+    fabBlock.innerHTML = `<strong>FabAcademy:</strong> ${esc(names.join(", ") || "Sin clasificación")}`;
+  }
+
+  const relatedBlock = [...body.querySelectorAll(".small.mb-1")]
+    .find(el => el.textContent.trim().startsWith("Máquina relacionada:"));
+  if (item.relatedMachineName) {
+    if (relatedBlock) {
+      relatedBlock.innerHTML = `<strong>Máquina relacionada:</strong> ${esc(item.relatedMachineName)}`;
+    } else if (fabBlock) {
+      fabBlock.insertAdjacentHTML("beforebegin",
+        `<div class="small mb-1"><strong>Máquina relacionada:</strong> ${esc(item.relatedMachineName)}</div>`);
+    }
+  } else {
+    relatedBlock?.remove();
+  }
+
+  const image = card.querySelector(".item-image");
+  if (image && item.imageFileId) {
+    image.src = fileViewUrl(item.imageFileId);
+    image.alt = item.nombre || "";
+  }
+
+  const infoLink = [...body.querySelectorAll("a.btn")].find(a => a.textContent.trim() === "Más info");
+  if (item.infoUrl) {
+    if (infoLink) infoLink.href = item.infoUrl;
+  } else {
+    infoLink?.remove();
+  }
+
+  const purchaseLink = [...body.querySelectorAll("a.btn")].find(a => a.textContent.trim() === "Info Compra");
+  if (item.purchaseUrl) {
+    if (purchaseLink) purchaseLink.href = item.purchaseUrl;
+  } else {
+    purchaseLink?.remove();
+  }
+
+  decorateCard(card);
+}
+
+function refreshRenderedCards(ids = null) {
+  const targets = Array.isArray(ids)
+    ? ids.map(String)
+    : [...livePatchedItemIds];
+
+  targets.forEach(refreshRenderedCard);
+}
+
+function scheduleLiveCardRefresh(ids = null) {
+  [0, 70, 220].forEach(delay => {
+    window.setTimeout(() => refreshRenderedCards(ids), delay);
+  });
+}
+
+async function refreshOneItemFromFirestore(itemId) {
+  const id = String(itemId || "");
+  if (!id) return;
+  try {
+    const snap = await getDocFromServer(doc(db, "items", id));
+    if (!snap.exists()) return;
+    const fresh = { id: snap.id, ...snap.data() };
+    itemsById.set(id, fresh);
+    livePatchedItemIds.add(id);
+    scheduleLiveCardRefresh([id]);
+  } catch (error) {
+    console.warn("No se pudo refrescar el item después de editarlo:", error);
+  }
 }
 
 async function loadData() {
@@ -781,14 +952,21 @@ async function saveFileChanges(def, changes) {
 }
 
 function applyLocalPatches(localPatches) {
+  const changedIds = [];
   Object.entries(localPatches || {}).forEach(([id, patch]) => {
     const current = itemsById.get(String(id));
-    if (current) itemsById.set(String(id), { ...current, ...patch });
+    if (current) {
+      itemsById.set(String(id), { ...current, ...patch });
+      livePatchedItemIds.add(String(id));
+      changedIds.push(String(id));
+    }
   });
 
   if (window.__purchaseCatalog?.patchItems) {
     window.__purchaseCatalog.patchItems(localPatches);
   }
+
+  scheduleLiveCardRefresh(changedIds);
 }
 
 async function refreshAfterSave() {
@@ -797,10 +975,17 @@ async function refreshAfterSave() {
   } catch (error) {
     console.warn("No se pudo refrescar la caché de Compras después de la edición masiva:", error);
   }
-  window.setTimeout(() => {
-    syncLogicalIds();
-    decorateCards();
-  }, 120);
+
+  // El render base y el módulo de estados trabajan con cachés distintas.
+  // Reaplicamos los valores recién guardados después de que ambos terminen
+  // su propio ciclo de render para que la tarjeta cambie sin recargar la página.
+  [80, 220, 520].forEach(delay => {
+    window.setTimeout(() => {
+      syncLogicalIds();
+      decorateCards();
+      refreshRenderedCards();
+    }, delay);
+  });
 }
 
 async function saveEditor() {
@@ -920,10 +1105,32 @@ function bindEvents() {
     const ids = Array.isArray(event.detail?.itemIds) ? event.detail.itemIds : null;
     syncLogicalIds(ids);
   });
-  document.addEventListener("purchase:render-batch", decorateCards);
-  document.addEventListener("purchase:materialized-all", decorateCards);
+  document.addEventListener("purchase:render-batch", () => { decorateCards(); scheduleLiveCardRefresh(); });
+  document.addEventListener("purchase:materialized-all", () => { decorateCards(); scheduleLiveCardRefresh(); });
   document.addEventListener("purchase:item-cache-ready", () => {
-    window.setTimeout(() => syncLogicalIds(), 0);
+    window.setTimeout(() => {
+      // Si otro flujo de Compras cambió uno de los items que ya habíamos
+      // refrescado en vivo, tomamos la copia más reciente de la caché común.
+      livePatchedItemIds.forEach(id => {
+        const fresh = window.__purchasePerformance?.getItem?.(id);
+        if (fresh) itemsById.set(String(id), { ...fresh });
+      });
+      syncLogicalIds();
+      scheduleLiveCardRefresh();
+    }, 0);
+  });
+
+  // También corrige el problema histórico de la edición rápida individual:
+  // compras.js guarda correctamente en Firestore, pero otros módulos pueden
+  // conservar una copia anterior del item. Después del submit releemos ese
+  // documento y actualizamos la tarjeta sin refrescar toda la página.
+  document.addEventListener("submit", event => {
+    const form = event.target.closest?.(".quick-edit-item-form");
+    const itemId = String(form?.dataset?.id || "");
+    if (!itemId) return;
+    [450, 1100].forEach(delay => {
+      window.setTimeout(() => void refreshOneItemFromFirestore(itemId), delay);
+    });
   });
 
   // No usamos MutationObserver sobre todo el subárbol de #itemsList.
@@ -949,6 +1156,7 @@ async function init() {
   bindEvents();
   syncLogicalIds();
   decorateCards();
+  scheduleLiveCardRefresh();
 
   // compras.js y el render progresivo pueden terminar de materializar el filtro
   // después de que este módulo ya arrancó. Reintentamos unas veces para tomar
