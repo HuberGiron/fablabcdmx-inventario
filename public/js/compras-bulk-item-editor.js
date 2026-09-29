@@ -173,6 +173,12 @@ function injectStyles() {
   style.textContent = `
     #bulkItemEditToolbar { border-left: 6px solid #212529; }
     #bulkItemEditToolbar .bulk-item-editor-title { font-weight: 700; font-size: 1.05rem; }
+    #purchaseBulkToolbar .purchase-bulk-section-heading {
+      flex: 0 0 100%; width: 100%; padding-bottom: .65rem; margin-bottom: .1rem;
+      border-bottom: 1px solid #e9ecef;
+    }
+    #purchaseBulkToolbar .purchase-bulk-section-title { font-weight: 700; font-size: 1.05rem; color: #212529; }
+    #purchaseBulkToolbar .purchase-bulk-section-subtitle { color: #6c757d; font-size: .88rem; margin-top: .1rem; }
     #bulkItemEditToolbar .bulk-item-editor-subtitle { color: #6c757d; font-size: .9rem; }
     .bulk-item-card-selector {
       display:flex; align-items:center; gap:.45rem; padding:.45rem .6rem; margin-bottom:.7rem;
@@ -230,6 +236,19 @@ function addToolbar() {
     </div>`;
 
   filterCard.insertAdjacentElement("afterend", section);
+}
+
+function labelPurchaseRequestBulkToolbar() {
+  const toolbar = document.querySelector("#purchaseBulkToolbar");
+  if (!toolbar || toolbar.querySelector(".purchase-bulk-section-heading")) return Boolean(toolbar);
+
+  const heading = document.createElement("div");
+  heading.className = "purchase-bulk-section-heading";
+  heading.innerHTML = `
+    <div class="purchase-bulk-section-title">Agregar a Solicitud de compra</div>
+    <div class="purchase-bulk-section-subtitle">Selecciona los artículos del filtro que quieres agregar al borrador de una Solicitud de compra.</div>`;
+  toolbar.prepend(heading);
+  return true;
 }
 
 function addModal() {
@@ -833,8 +852,12 @@ async function saveEditor() {
     applyLocalPatches(localPatches);
     const progress = document.querySelector("#bulkEditorProgress");
     if (progress) progress.textContent = `Listo: ${changes.length} item${changes.length === 1 ? "" : "s"} actualizado${changes.length === 1 ? "" : "s"}.`;
-    alert(`${def.label}: ${changes.length} item${changes.length === 1 ? "" : "s"} actualizado${changes.length === 1 ? "" : "s"}. La página se recargará para mostrar los datos actualizados.`);
-    window.location.reload();
+
+    // No recargamos ni sacamos al usuario de Compras. Cerramos únicamente
+    // la ventana de edición y conservamos la selección para poder modificar
+    // otra propiedad de los mismos items inmediatamente.
+    modalInstance?.hide();
+    await refreshAfterSave();
   } catch (error) {
     console.error(error);
     alert(`No se pudo completar la edición masiva: ${error.message}`);
@@ -917,6 +940,7 @@ async function init() {
   injectStyles();
   addToolbar();
   addModal();
+  labelPurchaseRequestBulkToolbar();
   const propertySelect = document.querySelector("#bulkEditorProperty");
   if (propertySelect) propertySelect.innerHTML = groupedPropertyOptions();
 
@@ -931,6 +955,7 @@ async function init() {
   // el conjunto lógico completo (no solo las primeras tarjetas visibles).
   [120, 450, 1000, 2200].forEach(delay => {
     window.setTimeout(() => {
+      labelPurchaseRequestBulkToolbar();
       if (!saving) syncLogicalIds();
     }, delay);
   });
