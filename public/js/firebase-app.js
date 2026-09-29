@@ -34,6 +34,7 @@ if (currentPath.endsWith("compras.html")) {
   }
 
   import("./compras-status.js")
+    .then(() => import("./compras-bulk-item-editor.js"))
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))
     .then(() => import("./compras-request-progress.js"))
