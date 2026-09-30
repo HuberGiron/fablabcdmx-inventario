@@ -269,8 +269,8 @@ function addFloatingRefreshButton() {
   button.type = "button";
   button.id = "purchaseLiveRefreshButton";
   button.className = "btn btn-dark";
-  button.title = "Actualizar los datos visibles sin perder filtros ni posición";
-  button.setAttribute("aria-label", "Actualizar datos visibles");
+  button.title = "Actualizar el catálogo completo desde la base de datos sin perder filtros ni posición";
+  button.setAttribute("aria-label", "Actualizar catálogo desde la base de datos");
   button.innerHTML = '<span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Actualizar</span>';
   document.body.appendChild(button);
 }
@@ -549,8 +549,19 @@ function liveStatusBodyHtml(item, state) {
 }
 
 function refreshLivePurchaseStatus(card, item) {
-  const controls = card?.querySelector(".purchase-status-controls");
-  if (!controls || !item) return;
+  if (!card || !item) return;
+
+  const body = card.querySelector(".card-body");
+  if (!body) return;
+
+  let controls = card.querySelector(".purchase-status-controls");
+  if (!controls) {
+    controls = document.createElement("div");
+    controls.className = "purchase-status-controls";
+    const adminActions = body.querySelector(".admin-card-actions");
+    if (adminActions) body.insertBefore(controls, adminActions);
+    else body.appendChild(controls);
+  }
 
   const state = livePurchaseState(item, card);
   const selector = controls.querySelector(".purchase-bulk-selector");
@@ -563,6 +574,10 @@ function refreshLivePurchaseStatus(card, item) {
   controls.dataset.signature = `live|${state.key}|${state.current}|${state.desired}|${state.pending}|${state.requisition}|${state.available}|${state.draft}`;
   controls.innerHTML = liveStatusBodyHtml(item, state);
 
+  // Si Compras ya había creado su selector masivo, lo conservamos. Para un
+  // SKU recién descubierto no inventamos uno aquí: la acción individual
+  // "Agregar a solicitud" funciona inmediatamente y evitamos mostrar una
+  // casilla que todavía no esté registrada en la caché interna de Solicitudes.
   if (selector) {
     const eligible = state.available > 0;
     selector.classList.toggle("is-disabled", !eligible);
@@ -572,8 +587,6 @@ function refreshLivePurchaseStatus(card, item) {
       liveCheckbox.disabled = !eligible;
       liveCheckbox.checked = eligible && wasChecked;
       if (!eligible && wasChecked) {
-        // Ya conectado al DOM: el listener delegado de Compras elimina también
-        // este item de la selección masiva para Solicitud de compra.
         liveCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
       }
     }
@@ -582,7 +595,6 @@ function refreshLivePurchaseStatus(card, item) {
   card.classList.remove("border-success", "border-warning", "border-danger", "border-primary", "border-2");
   card.classList.add("border-2", state.borderClass);
 }
-
 function liveStatusBadges(item) {
   const badges = [];
   if (item.visibleParaAlumno === false) badges.push('<span class="badge text-bg-secondary">Oculto alumno</span>');
@@ -602,6 +614,61 @@ function livePathHtml(item) {
     <span><strong>Zona:</strong> ${esc(zone || "Sin zona")}</span>
     <span><strong>Subzona:</strong> ${esc(subzone || "Sin subzona")}</span>
     <span><strong>Área:</strong> <span class="area-code-chip">${esc(areaCode)}</span> ${esc(areaName)}</span>`;
+}
+
+function ensureLivePriorityControl(card, item) {
+  if (!card || !item) return;
+  const body = card.querySelector(".card-body");
+  const header = body?.querySelector(":scope > .d-flex.justify-content-between");
+  if (!header) return;
+
+  let wrapper = header.querySelector(".purchase-priority-wrapper");
+  if (!wrapper) {
+    wrapper = document.createElement("div");
+    wrapper.className = "purchase-priority-wrapper ms-auto";
+    header.appendChild(wrapper);
+  }
+
+  if (wrapper.querySelector(".purchase-priority-select")) return;
+
+  const priority = [1, 2, 3].includes(Number(item.purchasePriority))
+    ? Number(item.purchasePriority)
+    : 3;
+  wrapper.innerHTML = `
+    <div class="purchase-priority-box">
+      <label class="purchase-priority-label" for="priority-${esc(item.id)}">Prioridad de compra</label>
+      <select id="priority-${esc(item.id)}" class="form-select form-select-sm purchase-priority-select" data-id="${esc(item.id)}" aria-label="Prioridad de compra">
+        <option value="1" ${priority === 1 ? "selected" : ""}>1 · Alta</option>
+        <option value="2" ${priority === 2 ? "selected" : ""}>2 · Media</option>
+        <option value="3" ${priority === 3 ? "selected" : ""}>3 · Normal</option>
+      </select>
+    </div>`;
+}
+
+function captureScrollAnchor() {
+  const cards = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")];
+  const anchor = cards.find(card => card.getBoundingClientRect().bottom > 0);
+  if (!anchor) return null;
+  return {
+    id: String(anchor.dataset.itemId || ""),
+    top: anchor.getBoundingClientRect().top,
+  };
+}
+
+function restoreScrollAnchor(anchor, fallbackX, fallbackY) {
+  const restore = () => {
+    if (anchor?.id) {
+      const card = document.querySelector(`#itemsList .item-card[data-item-id="${CSS.escape(anchor.id)}"]`);
+      if (card) {
+        const delta = card.getBoundingClientRect().top - anchor.top;
+        if (Math.abs(delta) > .5) window.scrollBy(0, delta);
+        return;
+      }
+    }
+    window.scrollTo(fallbackX, fallbackY);
+  };
+
+  [0, 90, 260, 520].forEach(delay => window.setTimeout(restore, delay));
 }
 
 function refreshRenderedCard(itemId) {
@@ -647,6 +714,7 @@ function refreshRenderedCard(itemId) {
   // La franja de Solicitud de compra usa un estado separado; se actualiza aquí
   // con el mismo item para no depender de una recarga completa de la página.
   refreshLivePurchaseStatus(card, item);
+  ensureLivePriorityControl(card, item);
 
   const prioritySelect = body.querySelector(".purchase-priority-select");
   if (prioritySelect && document.activeElement !== prioritySelect) {
@@ -731,6 +799,28 @@ async function refreshOneItemFromFirestore(itemId) {
   }
 }
 
+async function refreshMaterializedItemsFallback() {
+  const ids = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")]
+    .filter(card => !card.classList.contains("d-none"))
+    .map(card => String(card.dataset.itemId || ""))
+    .filter(Boolean);
+
+  for (let i = 0; i < ids.length; i += 10) {
+    const chunk = ids.slice(i, i + 10);
+    const snapshots = await Promise.all(chunk.map(id => getDocFromServer(doc(db, "items", id))));
+    snapshots.forEach(snap => {
+      if (!snap.exists()) return;
+      const fresh = { id: snap.id, ...snap.data() };
+      itemsById.set(String(snap.id), fresh);
+      livePatchedItemIds.add(String(snap.id));
+    });
+  }
+
+  refreshRenderedCards(ids);
+  decorateCards();
+  return { total: ids.length, filtered: ids.length, added: 0, removed: 0, fallback: true };
+}
+
 async function refreshVisibleItemsFromServer() {
   if (refreshingVisible) return;
 
@@ -738,54 +828,71 @@ async function refreshVisibleItemsFromServer() {
   const label = button?.querySelector(".refresh-label");
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
-  const ids = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")]
-    .filter(card => !card.classList.contains("d-none"))
-    .map(card => String(card.dataset.itemId || ""))
-    .filter(Boolean);
-
-  if (!ids.length) return;
+  const anchor = captureScrollAnchor();
 
   refreshingVisible = true;
   if (button) {
     button.disabled = true;
     button.classList.add("is-refreshing");
   }
-  if (label) label.textContent = "Actualizando…";
+  if (label) label.textContent = "Actualizando catálogo…";
 
   try {
-    // Solo releemos las tarjetas materializadas/visibles. Así no se reconstruye
-    // la lista completa de miles de items y se conserva exactamente el scroll.
-    for (let i = 0; i < ids.length; i += 10) {
-      const chunk = ids.slice(i, i + 10);
-      const snapshots = await Promise.all(chunk.map(id => getDocFromServer(doc(db, "items", id))));
-      snapshots.forEach(snap => {
-        if (!snap.exists()) return;
-        const fresh = { id: snap.id, ...snap.data() };
-        itemsById.set(String(snap.id), fresh);
-        livePatchedItemIds.add(String(snap.id));
-      });
+    // El render progresivo mantiene su propia caché. La actualizamos primero
+    // para que un SKU nuevo no sea descartado como desconocido cuando
+    // compras.js reconstruya el resultado del filtro.
+    if (window.__purchasePerformance?.refreshItems) {
+      await window.__purchasePerformance.refreshItems();
     }
 
-    refreshRenderedCards(ids);
-    decorateCards();
-    window.requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
-    if (label) label.textContent = "Actualizado ✓";
-    window.setTimeout(() => { if (label) label.textContent = "Actualizar"; }, 1400);
+    let result = null;
+    if (window.__purchaseCatalog?.refreshItemsFromServer) {
+      result = await window.__purchaseCatalog.refreshItemsFromServer();
+
+      // compras.js acaba de reconstruir #itemsList usando los mismos filtros.
+      // Sincronizamos el editor y decoramos las nuevas tarjetas sin recargar
+      // el documento ni perder la posición del usuario.
+      refreshItemMapFromCatalog(true);
+      const renderedIds = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")]
+        .map(card => String(card.dataset.itemId || ""))
+        .filter(Boolean);
+      renderedIds.forEach(id => livePatchedItemIds.add(id));
+      syncLogicalIds();
+      decorateCards();
+      scheduleLiveCardRefresh(renderedIds);
+    } else {
+      // Compatibilidad defensiva si compras.js todavía no contiene la API v6.
+      result = await refreshMaterializedItemsFallback();
+    }
+
+    restoreScrollAnchor(anchor, scrollX, scrollY);
+
+    if (label) {
+      if (result?.added > 0 && result?.removed > 0) {
+        label.textContent = `+${result.added} / −${result.removed}`;
+      } else if (result?.added > 0) {
+        label.textContent = `+${result.added} nuevo${result.added === 1 ? "" : "s"}`;
+      } else if (result?.removed > 0) {
+        label.textContent = `${result.removed} retirado${result.removed === 1 ? "" : "s"}`;
+      } else {
+        label.textContent = "Actualizado ✓";
+      }
+      window.setTimeout(() => { if (label) label.textContent = "Actualizar"; }, 1800);
+    }
   } catch (error) {
     console.error(error);
     if (label) label.textContent = "Error al actualizar";
-    window.setTimeout(() => { if (label) label.textContent = "Actualizar"; }, 1800);
-    alert(`No se pudieron actualizar los datos visibles: ${error.message}`);
+    window.setTimeout(() => { if (label) label.textContent = "Actualizar"; }, 2000);
+    alert(`No se pudo actualizar el catálogo: ${error.message}`);
+    restoreScrollAnchor(anchor, scrollX, scrollY);
   } finally {
     refreshingVisible = false;
     if (button) {
       button.disabled = false;
       button.classList.remove("is-refreshing");
     }
-    window.requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
   }
 }
-
 async function loadData() {
   const [itemsSnap, zonesSnap, subzonesSnap, locationsSnap, weeksSnap] = await Promise.all([
     getDocs(query(collection(db, "items"), where("activo", "==", true))),
@@ -807,9 +914,10 @@ async function loadData() {
     .sort((a, b) => asNumber(a.weekId) - asNumber(b.weekId));
 }
 
-function refreshItemMapFromCatalog() {
+function refreshItemMapFromCatalog(replace = false) {
   const rows = window.__purchaseCatalog?.getAllItems?.();
   if (!Array.isArray(rows)) return;
+  if (replace) itemsById.clear();
   rows.forEach(item => {
     if (item?.id) itemsById.set(String(item.id), { ...(itemsById.get(String(item.id)) || {}), ...item });
   });
@@ -1333,6 +1441,14 @@ function bindEvents() {
   document.addEventListener("purchase:logical-filter-changed", event => {
     const ids = Array.isArray(event.detail?.itemIds) ? event.detail.itemIds : null;
     syncLogicalIds(ids);
+  });
+  document.addEventListener("purchase:catalog-refreshed", () => {
+    refreshItemMapFromCatalog(true);
+    window.setTimeout(() => {
+      syncLogicalIds();
+      decorateCards();
+      scheduleLiveCardRefresh();
+    }, 0);
   });
   document.addEventListener("purchase:render-batch", () => { decorateCards(); scheduleLiveCardRefresh(); });
   document.addEventListener("purchase:materialized-all", () => { decorateCards(); scheduleLiveCardRefresh(); });

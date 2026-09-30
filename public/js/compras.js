@@ -1,7 +1,7 @@
 import { db } from "./firebase-app.js";
 import { setupNav, $, fileViewUrl, downloadProtectedFile, uploadItemAsset, waitForUser, getUserProfile } from "./common.js";
 import {
-  collection, getDocs, addDoc, serverTimestamp, query, where, doc, updateDoc, deleteDoc
+  collection, getDocs, getDocsFromServer, addDoc, serverTimestamp, query, where, doc, updateDoc, deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 setupNav();
@@ -611,12 +611,72 @@ async function loadCurrentUserContext() {
 
 }
 
+function itemQueryForCurrentAccess() {
+  return isStaff
+    ? query(collection(db, "items"), where("activo", "==", true))
+    : query(collection(db, "items"), where("activo", "==", true), where("visibleParaAlumno", "==", true));
+}
+
+async function refreshCatalogItemsFromServer() {
+  const previousIds = new Set(items.map(item => String(item.id)));
+  const snapshot = await getDocsFromServer(itemQueryForCurrentAccess());
+  const nextItems = sortItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+  const nextIds = new Set(nextItems.map(item => String(item.id)));
+
+  const added = [...nextIds].filter(id => !previousIds.has(id)).length;
+  const removed = [...previousIds].filter(id => !nextIds.has(id)).length;
+
+  items = nextItems;
+
+  // Reaplica exactamente los controles que ya están seleccionados. No toca
+  // filtros, búsqueda ni orden; únicamente reconstruye las tarjetas con el
+  // catálogo recién leído de Firestore.
+  applyFilters();
+
+  const detail = {
+    total: items.length,
+    filtered: filtered.length,
+    added,
+    removed,
+    itemIds: items.map(item => String(item.id)),
+  };
+
+  document.dispatchEvent(new CustomEvent("purchase:catalog-refreshed", { detail }));
+  return detail;
+}
+
+// API pequeña para extensiones de Compras. El editor masivo la usa para
+// sincronizar cambios locales y, cuando el usuario pulsa Actualizar, volver a
+// consultar el catálogo completo sin recargar el documento HTML.
+window.__purchaseCatalog = {
+  getAllItems() {
+    return items;
+  },
+  getFilteredItems() {
+    return filtered;
+  },
+  patchItems(patches = {}) {
+    const patchMap = patches instanceof Map
+      ? patches
+      : new Map(Object.entries(patches || {}));
+
+    const patchRow = item => {
+      const patch = patchMap.get(String(item.id));
+      return patch ? { ...item, ...patch } : item;
+    };
+
+    // No renderizamos aquí: las ediciones puntuales actualizan sólo sus
+    // tarjetas. Así evitamos el efecto de «recarga» tras cada guardado.
+    items = items.map(patchRow).filter(item => item.activo !== false);
+    filtered = filtered.map(patchRow).filter(item => item.activo !== false);
+  },
+  refreshItemsFromServer: refreshCatalogItemsFromServer,
+};
+
 async function loadBase() {
   await loadCurrentUserContext();
 
-  const itemsQuery = isStaff
-    ? query(collection(db, "items"), where("activo", "==", true))
-    : query(collection(db, "items"), where("activo", "==", true), where("visibleParaAlumno", "==", true));
+  const itemsQuery = itemQueryForCurrentAccess();
 
   const [zSnap, sSnap, wSnap, lSnap, iSnap] = await Promise.all([
     getDocs(collection(db, "zones")),
