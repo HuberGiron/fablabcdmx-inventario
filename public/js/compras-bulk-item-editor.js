@@ -779,9 +779,8 @@ function refreshRenderedCards(ids = null) {
 }
 
 function scheduleLiveCardRefresh(ids = null) {
-  [0, 70, 220].forEach(delay => {
-    window.setTimeout(() => refreshRenderedCards(ids), delay);
-  });
+  // Actualización dirigida e inmediata. No dejamos temporizadores pendientes.
+  refreshRenderedCards(ids);
 }
 
 async function refreshOneItemFromFirestore(itemId) {
@@ -860,6 +859,11 @@ async function refreshVisibleItemsFromServer() {
       syncLogicalIds();
       decorateCards();
       scheduleLiveCardRefresh(renderedIds);
+
+      // compras-status mantiene una caché propia. Su botón interno ya sabe
+      // recargar items + solicitudes; lo reutilizamos sólo dentro de la
+      // actualización manual para que también reconozca SKU nuevos.
+      document.querySelector("#refreshPurchaseRequests")?.click();
     } else {
       // Compatibilidad defensiva si compras.js todavía no contiene la API v6.
       result = await refreshMaterializedItemsFallback();
@@ -1294,12 +1298,16 @@ async function saveFileChanges(def, changes) {
 
 function applyLocalPatches(localPatches) {
   const changedIds = [];
+  const changedItems = [];
+
   Object.entries(localPatches || {}).forEach(([id, patch]) => {
     const current = itemsById.get(String(id));
     if (current) {
-      itemsById.set(String(id), { ...current, ...patch });
+      const updated = { ...current, ...patch };
+      itemsById.set(String(id), updated);
       livePatchedItemIds.add(String(id));
       changedIds.push(String(id));
+      changedItems.push({ ...updated });
     }
   });
 
@@ -1307,18 +1315,19 @@ function applyLocalPatches(localPatches) {
     window.__purchaseCatalog.patchItems(localPatches);
   }
 
+  // El motor progresivo necesita conocer los valores nuevos para filtros/orden,
+  // pero sin reconstruir las tarjetas.
+  window.__purchasePerformance?.patchItems?.(changedItems);
+
+  window.__purchaseCatalog?.refreshDerivedViews?.();
   scheduleLiveCardRefresh(changedIds);
 }
 
 async function refreshAfterSave() {
-  // No usamos refreshItems() del render progresivo: ese método reconstruye la
-  // lista y puede sentirse como una recarga. Actualizamos solo las tarjetas.
-  [0, 80, 220].forEach(delay => {
-    window.setTimeout(() => {
-      decorateCards();
-      refreshRenderedCards();
-    }, delay);
-  });
+  // Guardar en el editor masivo sólo actualiza las tarjetas afectadas.
+  // No consulta nuevamente Firestore ni reconstruye la lista completa.
+  decorateCards();
+  refreshRenderedCards();
 }
 
 async function saveEditor() {
@@ -1376,6 +1385,10 @@ async function saveEditor() {
     // otra propiedad de los mismos items inmediatamente.
     modalInstance?.hide();
     await refreshAfterSave();
+
+    // Actualiza la caché de Solicitudes de compra después de cerrar el editor.
+    // No reconstruye #itemsList ni altera el scroll/filtros.
+    document.querySelector("#refreshPurchaseRequests")?.click();
   } catch (error) {
     console.error(error);
     alert(`No se pudo completar la edición masiva: ${error.message}`);
@@ -1442,40 +1455,30 @@ function bindEvents() {
     const ids = Array.isArray(event.detail?.itemIds) ? event.detail.itemIds : null;
     syncLogicalIds(ids);
   });
-  document.addEventListener("purchase:catalog-refreshed", () => {
-    refreshItemMapFromCatalog(true);
-    window.setTimeout(() => {
-      syncLogicalIds();
-      decorateCards();
-      scheduleLiveCardRefresh();
-    }, 0);
-  });
-  document.addEventListener("purchase:render-batch", () => { decorateCards(); scheduleLiveCardRefresh(); });
-  document.addEventListener("purchase:materialized-all", () => { decorateCards(); scheduleLiveCardRefresh(); });
-  document.addEventListener("purchase:item-cache-ready", () => {
-    window.setTimeout(() => {
-      // Si otro flujo de Compras cambió uno de los items que ya habíamos
-      // refrescado en vivo, tomamos la copia más reciente de la caché común.
-      livePatchedItemIds.forEach(id => {
-        const fresh = window.__purchasePerformance?.getItem?.(id);
-        if (fresh) itemsById.set(String(id), { ...fresh });
-      });
-      syncLogicalIds();
-      scheduleLiveCardRefresh();
-    }, 0);
-  });
+  // El render progresivo sigue avisando únicamente cuando materializa más
+  // tarjetas al hacer scroll. Sólo agregamos los controles del editor masivo;
+  // no consultamos Firestore ni reconstruimos el listado.
+  document.addEventListener("purchase:render-batch", () => { decorateCards(); });
+  document.addEventListener("purchase:materialized-all", () => { decorateCards(); });
 
-  // También corrige el problema histórico de la edición rápida individual:
-  // compras.js guarda correctamente en Firestore, pero otros módulos pueden
-  // conservar una copia anterior del item. Después del submit releemos ese
-  // documento y actualizamos la tarjeta sin refrescar toda la página.
-  document.addEventListener("submit", event => {
-    const form = event.target.closest?.(".quick-edit-item-form");
-    const itemId = String(form?.dataset?.id || "");
-    if (!itemId) return;
-    [450, 1100].forEach(delay => {
-      window.setTimeout(() => void refreshOneItemFromFirestore(itemId), delay);
+  // Guardado del editor individual: recibe el item ya actualizado desde
+  // compras.js y modifica únicamente esa tarjeta.
+  document.addEventListener("purchase:items-local-updated", event => {
+    const rows = Array.isArray(event.detail?.items) ? event.detail.items : [];
+    const ids = [];
+
+    rows.forEach(item => {
+      if (!item?.id) return;
+      const id = String(item.id);
+      itemsById.set(id, { ...item, id });
+      livePatchedItemIds.add(id);
+      ids.push(id);
     });
+
+    if (ids.length) {
+      decorateCards();
+      refreshRenderedCards(ids);
+    }
   });
 
   // No usamos MutationObserver sobre todo el subárbol de #itemsList.
@@ -1502,17 +1505,10 @@ async function init() {
   bindEvents();
   syncLogicalIds();
   decorateCards();
-  scheduleLiveCardRefresh();
 
-  // compras.js y el render progresivo pueden terminar de materializar el filtro
-  // después de que este módulo ya arrancó. Reintentamos unas veces para tomar
-  // el conjunto lógico completo (no solo las primeras tarjetas visibles).
-  [120, 450, 1000, 2200].forEach(delay => {
-    window.setTimeout(() => {
-      labelPurchaseRequestBulkToolbar();
-      if (!saving) syncLogicalIds();
-    }, delay);
-  });
+  // Sin temporizadores de resincronización. Las tarjetas adicionales se
+  // decoran mediante purchase:render-batch conforme aparecen al hacer scroll.
+  labelPurchaseRequestBulkToolbar();
 }
 
 init().catch(error => {

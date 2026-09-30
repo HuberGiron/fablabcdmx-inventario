@@ -2,6 +2,7 @@ import {
   collection,
   getDocs,
   getDocsFromCache,
+  getDocsFromServer,
   getFirestore,
   query,
   where,
@@ -55,7 +56,6 @@ let bulkMaterialized = false;
 let sentinelObserver = null;
 let resultCountObserver = null;
 let searchTimer = null;
-let refreshTimer = null;
 let restoringTimer = null;
 let lastBaseIdSetKey = "";
 let replayExport = false;
@@ -705,23 +705,6 @@ function refreshLogicalAfterExtraFilter() {
   );
 }
 
-function refreshItemCacheAfterMutation(delay = 900) {
-  clearTimeout(refreshTimer);
-
-  refreshTimer = window.setTimeout(
-    async () => {
-      await loadItems({
-        force: true,
-      });
-
-      triggerBaseRerender({
-        preserveLimit: true,
-      });
-    },
-    delay
-  );
-}
-
 document.addEventListener(
   "input",
   event => {
@@ -770,7 +753,8 @@ document.addEventListener(
           Number(target.value) || 3;
       }
 
-      refreshItemCacheAfterMutation(700);
+      // Sin resincronización automática del catálogo.
+      // El botón flotante Actualizar realiza la consulta explícita.
       return;
     }
 
@@ -856,31 +840,8 @@ document.addEventListener(
       return;
     }
 
-    if (
-      target?.closest?.(
-        ".request-line-receive, "
-        + ".request-line-cancel, "
-        + ".request-line-requisition, "
-        + ".group-batch-receive, "
-        + ".group-batch-requisition, "
-        + "#purchaseGroupBatchSave, "
-        + "#requestWideRequisitionSave, "
-        + ".purchase-add-request-btn"
-      )
-    ) {
-      refreshItemCacheAfterMutation(1500);
-    }
   },
   true
-);
-
-document.addEventListener(
-  "visibilitychange",
-  () => {
-    if (document.visibilityState === "visible") {
-      refreshItemCacheAfterMutation(250);
-    }
-  }
 );
 
 function injectStyles() {
@@ -945,23 +906,36 @@ async function loadItems({
   itemsLoadPromise = (async () => {
     let snapshot = null;
 
-    // Primero intentamos reutilizar lo que compras.js / compras-status
-    // hayan dejado en la caché local del SDK.
-    try {
-      snapshot = await getDocsFromCache(
-        itemsQuery
-      );
-    } catch (_) {
-      snapshot = null;
-    }
+    if (force) {
+      // Una actualización explícita debe leer del servidor para incorporar
+      // SKU creados después de abrir la página.
+      try {
+        snapshot = await getDocsFromServer(
+          itemsQuery
+        );
+      } catch (_) {
+        snapshot = await getDocs(
+          itemsQuery
+        );
+      }
+    } else {
+      // La carga inicial puede reutilizar caché para mantener el rendimiento.
+      try {
+        snapshot = await getDocsFromCache(
+          itemsQuery
+        );
+      } catch (_) {
+        snapshot = null;
+      }
 
-    if (
-      !snapshot
-      || snapshot.empty
-    ) {
-      snapshot = await getDocs(
-        itemsQuery
-      );
+      if (
+        !snapshot
+        || snapshot.empty
+      ) {
+        snapshot = await getDocs(
+          itemsQuery
+        );
+      }
     }
 
     itemsById.clear();
@@ -977,12 +951,6 @@ async function loadItems({
     });
 
     itemsReady = true;
-
-    if (baseEntries.length) {
-      triggerBaseRerender({
-        preserveLimit: true,
-      });
-    }
 
     document.dispatchEvent(
       new CustomEvent(
@@ -1061,6 +1029,14 @@ window.__purchasePerformance = {
 
   getLogicalCount() {
     return logicalEntries().length;
+  },
+
+  patchItems(nextItems = []) {
+    const rows = Array.isArray(nextItems) ? nextItems : [];
+    rows.forEach(item => {
+      if (!item?.id) return;
+      itemsById.set(String(item.id), { ...item, id: String(item.id) });
+    });
   },
 
   refreshItems() {

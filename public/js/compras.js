@@ -670,6 +670,9 @@ window.__purchaseCatalog = {
     items = items.map(patchRow).filter(item => item.activo !== false);
     filtered = filtered.map(patchRow).filter(item => item.activo !== false);
   },
+  refreshDerivedViews() {
+    updatePurchaseSummary();
+  },
   refreshItemsFromServer: refreshCatalogItemsFromServer,
 };
 
@@ -1564,9 +1567,37 @@ async function saveInlineItem(e, itemId) {
     alert(`El item se guardó, pero hubo un error al subir archivos: ${err.message}`);
   }
 
-  items = sortItems(items.map(x => x.id === itemId ? { ...x, ...payload, ...uploadedFields } : x));
+  const previousItem = items.find(x => x.id === itemId) || { id: itemId };
+  const updatedItem = { ...previousItem, ...payload, ...uploadedFields, id: itemId };
+
+  // Actualizamos sólo los datos locales del item. No reconstruimos #itemsList:
+  // así se conserva la posición, los filtros y no hay parpadeo de tarjetas.
+  items = sortItems(items.map(x => x.id === itemId ? updatedItem : x));
+  filtered = filtered.map(x => x.id === itemId ? { ...x, ...payload, ...uploadedFields } : x);
+
+  // Mantiene sincronizada la caché del render progresivo sin forzar un rerender.
+  window.__purchasePerformance?.patchItems?.([updatedItem]);
+
+  // Cierra únicamente el editor individual.
+  const panel = form.closest(".inline-admin-panel");
+  if (panel) {
+    panel.innerHTML = "";
+    panel.dataset.mode = "";
+  }
+
+  // Totales/reporte se recalculan con el item ya modificado.
+  updatePurchaseSummary();
+
+  // El editor masivo también actúa como actualizador visual dirigido de tarjetas.
+  document.dispatchEvent(new CustomEvent("purchase:items-local-updated", {
+    detail: { items: [{ ...updatedItem }], source: "inline-editor" },
+  }));
+
   alert("Item actualizado.");
-  applyFilters();
+
+  // Sincroniza la caché interna de Solicitudes de compra después del guardado.
+  // Este refresco no reconstruye la lista principal de tarjetas.
+  document.querySelector("#refreshPurchaseRequests")?.click();
 }
 
 function openLocationEditorForItem(itemId) {
