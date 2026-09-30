@@ -47,6 +47,7 @@ let locations = [];
 let weeks = [];
 let modalInstance = null;
 let saving = false;
+let refreshingVisible = false;
 
 const PROPERTY_DEFS = [
   { key: "nombre", label: "Nombre", kind: "text", group: "Datos generales", required: true },
@@ -198,6 +199,15 @@ function injectStyles() {
     #bulkItemEditorModal .bulk-file-progress { font-size:.85rem; color:#6c757d; }
     #bulkItemEditorModal .bulk-uniform-control { max-width:760px; }
     #bulkItemEditorModal select[multiple] { min-height:140px; }
+    #purchaseLiveRefreshButton {
+      position:fixed; right:18px; bottom:20px; z-index:1045;
+      display:inline-flex; align-items:center; gap:.5rem; border-radius:999px;
+      box-shadow:0 .35rem 1rem rgba(0,0,0,.18); padding:.65rem 1rem;
+      font-weight:700;
+    }
+    #purchaseLiveRefreshButton .refresh-icon { display:inline-block; font-size:1.05rem; line-height:1; }
+    #purchaseLiveRefreshButton.is-refreshing .refresh-icon { animation:purchaseRefreshSpin .8s linear infinite; }
+    @keyframes purchaseRefreshSpin { to { transform:rotate(360deg); } }
     @media (max-width: 767.98px) {
       .bulk-item-card-selector { width:100%; }
       #bulkItemEditToolbar .bulk-editor-actions { width:100%; }
@@ -251,6 +261,18 @@ function labelPurchaseRequestBulkToolbar() {
     <div class="purchase-bulk-section-subtitle">Selecciona los artículos del filtro que quieres agregar al borrador de una Solicitud de compra.</div>`;
   toolbar.prepend(heading);
   return true;
+}
+
+function addFloatingRefreshButton() {
+  if (document.querySelector("#purchaseLiveRefreshButton")) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "purchaseLiveRefreshButton";
+  button.className = "btn btn-dark";
+  button.title = "Actualizar los datos visibles sin perder filtros ni posición";
+  button.setAttribute("aria-label", "Actualizar datos visibles");
+  button.innerHTML = '<span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Actualizar</span>';
+  document.body.appendChild(button);
 }
 
 function addModal() {
@@ -416,6 +438,151 @@ function liveAvailableToRequest(item, card) {
   return Math.max(desired - current - pending - draft, 0);
 }
 
+function livePurchaseState(item, card) {
+  const current = liveCurrentInventory(item);
+  const desired = asNumber(item?.inventarioDeseado);
+  const pending = Math.max(asNumber(item?.purchasePendingQty), 0);
+  const requisition = Math.min(Math.max(asNumber(item?.purchaseRequisitionQty), 0), pending);
+  const draft = liveDraftQty(card);
+  const rawMissing = Math.max(desired - current, 0);
+  const available = Math.max(rawMissing - pending - draft, 0);
+
+  if (pending > 0 && requisition > 0) {
+    return {
+      key: "requisition", bandClass: "purchase-state-requisition", borderClass: "border-primary",
+      badgeClass: "text-bg-primary", label: requisition >= pending ? "En requisición" : "En requisición parcial",
+      current, desired, pending, requisition, draft, available,
+      orderedWithoutRequisition: Math.max(pending - requisition, 0),
+    };
+  }
+  if (pending > 0) {
+    return {
+      key: "ordered", bandClass: "purchase-state-ordered", borderClass: "border-warning",
+      badgeClass: "text-bg-warning", label: "En compras", current, desired, pending, requisition: 0, draft, available,
+    };
+  }
+  if (rawMissing <= 0) {
+    return {
+      key: "complete", bandClass: "purchase-state-complete", borderClass: "border-success",
+      badgeClass: "text-bg-success", label: "Inventario completo", current, desired, pending: 0, requisition: 0, draft, available: 0,
+    };
+  }
+  return {
+    key: "missing", bandClass: "purchase-state-missing", borderClass: "border-danger",
+    badgeClass: "text-bg-danger", label: "Falta comprar", current, desired, pending: 0, requisition: 0, draft, available,
+  };
+}
+
+function livePluralPieces(value) {
+  const n = asNumber(value);
+  return `${n} pieza${n === 1 ? "" : "s"}`;
+}
+
+function liveStatusBodyHtml(item, state) {
+  const draftBadge = state.draft > 0
+    ? `<span class="badge text-bg-dark">En borrador: ${livePluralPieces(state.draft)}</span>`
+    : "";
+  const addLabel = state.draft > 0 ? "Editar cantidad" : "Agregar a solicitud";
+
+  if (state.key === "complete") {
+    return `
+      <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <span class="badge ${state.badgeClass}">${state.label}</span>
+          <span class="purchase-status-text">Inventario actual: <strong>${state.current}</strong> / deseado: <strong>${state.desired}</strong></span>
+          ${draftBadge}
+        </div>
+        ${state.draft > 0 ? `<button type="button" class="btn btn-dark purchase-add-request-btn" data-id="${esc(item.id)}">${addLabel}</button>` : ""}
+      </div>`;
+  }
+
+  if (state.key === "requisition") {
+    return `
+      <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+        <div class="d-flex flex-column gap-1">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <span class="badge ${state.badgeClass}">${state.label}</span>
+            <span class="purchase-status-text">En requisición: <strong>${livePluralPieces(state.requisition)}</strong></span>
+            <span class="purchase-status-text">Pendiente total: <strong>${livePluralPieces(state.pending)}</strong></span>
+            ${state.orderedWithoutRequisition > 0 ? `<span class="badge text-bg-warning">Sin requisición: ${livePluralPieces(state.orderedWithoutRequisition)}</span>` : ""}
+            ${draftBadge}
+          </div>
+          ${state.available > 0 ? `<div class="purchase-status-note-danger">Aún disponible para solicitar adicionalmente: ${livePluralPieces(state.available)}</div>` : '<div class="purchase-status-note-muted">Las piezas en requisición siguen pendientes de recepción y todavía no aumentan el inventario.</div>'}
+        </div>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <button type="button" class="btn btn-primary purchase-view-requests-btn" data-id="${esc(item.id)}">Ver solicitudes</button>
+          ${state.available > 0 || state.draft > 0 ? `<button type="button" class="btn btn-danger purchase-add-request-btn" data-id="${esc(item.id)}">${addLabel}</button>` : ""}
+        </div>
+      </div>`;
+  }
+
+  if (state.key === "ordered") {
+    return `
+      <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+        <div class="d-flex flex-column gap-1">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <span class="badge ${state.badgeClass}">${state.label}</span>
+            <span class="purchase-status-text">Pendiente de recibir: <strong>${livePluralPieces(state.pending)}</strong></span>
+            ${draftBadge}
+          </div>
+          ${state.available > 0 ? `<div class="purchase-status-note-danger">Aún disponible para solicitar: ${livePluralPieces(state.available)}</div>` : '<div class="purchase-status-note-muted">Todo lo faltante ya está cubierto por solicitudes activas.</div>'}
+        </div>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <button type="button" class="btn btn-dark purchase-view-requests-btn" data-id="${esc(item.id)}">Ver solicitudes</button>
+          ${state.available > 0 || state.draft > 0 ? `<button type="button" class="btn btn-danger purchase-add-request-btn" data-id="${esc(item.id)}">${addLabel}</button>` : ""}
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
+      <div class="d-flex flex-column gap-1">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <span class="badge ${state.badgeClass}">${state.label}</span>
+          <span class="purchase-status-text">Disponible para solicitar: <strong>${livePluralPieces(state.available)}</strong></span>
+          ${draftBadge}
+        </div>
+        <div class="purchase-status-note-muted">Actual: ${state.current} / Deseado: ${state.desired}</div>
+      </div>
+      <button type="button" class="btn btn-danger purchase-add-request-btn" data-id="${esc(item.id)}">${addLabel}</button>
+    </div>`;
+}
+
+function refreshLivePurchaseStatus(card, item) {
+  const controls = card?.querySelector(".purchase-status-controls");
+  if (!controls || !item) return;
+
+  const state = livePurchaseState(item, card);
+  const selector = controls.querySelector(".purchase-bulk-selector");
+  const checkbox = selector?.querySelector(".purchase-bulk-checkbox");
+  const wasChecked = Boolean(checkbox?.checked);
+
+  selector?.remove();
+  controls.classList.remove("purchase-state-missing", "purchase-state-ordered", "purchase-state-requisition", "purchase-state-complete");
+  controls.classList.add(state.bandClass);
+  controls.dataset.signature = `live|${state.key}|${state.current}|${state.desired}|${state.pending}|${state.requisition}|${state.available}|${state.draft}`;
+  controls.innerHTML = liveStatusBodyHtml(item, state);
+
+  if (selector) {
+    const eligible = state.available > 0;
+    selector.classList.toggle("is-disabled", !eligible);
+    controls.prepend(selector);
+    const liveCheckbox = selector.querySelector(".purchase-bulk-checkbox");
+    if (liveCheckbox) {
+      liveCheckbox.disabled = !eligible;
+      liveCheckbox.checked = eligible && wasChecked;
+      if (!eligible && wasChecked) {
+        // Ya conectado al DOM: el listener delegado de Compras elimina también
+        // este item de la selección masiva para Solicitud de compra.
+        liveCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+  }
+
+  card.classList.remove("border-success", "border-warning", "border-danger", "border-primary", "border-2");
+  card.classList.add("border-2", state.borderClass);
+}
+
 function liveStatusBadges(item) {
   const badges = [];
   if (item.visibleParaAlumno === false) badges.push('<span class="badge text-bg-secondary">Oculto alumno</span>');
@@ -465,14 +632,25 @@ function refreshRenderedCard(itemId) {
     const currency = item.moneda || "MXN";
     const price = asNumber(item.precioUnitario);
     const pending = Math.max(asNumber(item.purchasePendingQty), 0);
+    const draft = liveDraftQty(card);
     const available = liveAvailableToRequest(item, card);
     const subtotal = available * price;
     cost.innerHTML = `
       <span><strong>Precio unitario:</strong> ${esc(liveFormatCurrency(price, currency))}</span>
       <span><strong>Pendiente de recibir:</strong> ${pending}</span>
+      ${draft > 0 ? `<span><strong>En borrador:</strong> ${draft}</span>` : ""}
       <span><strong>Disponible para solicitar:</strong> ${available}</span>
       <span><strong>Subtotal disponible:</strong> ${esc(liveFormatCurrency(subtotal, currency))}</span>`;
-    cost.dataset.purchaseCostSignature = `live|${currency}|${price}|${pending}|${available}|${subtotal}`;
+    cost.dataset.purchaseCostSignature = `live|${currency}|${price}|${pending}|${draft}|${available}|${subtotal}`;
+  }
+
+  // La franja de Solicitud de compra usa un estado separado; se actualiza aquí
+  // con el mismo item para no depender de una recarga completa de la página.
+  refreshLivePurchaseStatus(card, item);
+
+  const prioritySelect = body.querySelector(".purchase-priority-select");
+  if (prioritySelect && document.activeElement !== prioritySelect) {
+    prioritySelect.value = String([1, 2, 3].includes(Number(item.purchasePriority)) ? Number(item.purchasePriority) : 3);
   }
 
   const path = body.querySelector(".path-compact");
@@ -550,6 +728,61 @@ async function refreshOneItemFromFirestore(itemId) {
     scheduleLiveCardRefresh([id]);
   } catch (error) {
     console.warn("No se pudo refrescar el item después de editarlo:", error);
+  }
+}
+
+async function refreshVisibleItemsFromServer() {
+  if (refreshingVisible) return;
+
+  const button = document.querySelector("#purchaseLiveRefreshButton");
+  const label = button?.querySelector(".refresh-label");
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  const ids = [...document.querySelectorAll("#itemsList .item-card[data-item-id]")]
+    .filter(card => !card.classList.contains("d-none"))
+    .map(card => String(card.dataset.itemId || ""))
+    .filter(Boolean);
+
+  if (!ids.length) return;
+
+  refreshingVisible = true;
+  if (button) {
+    button.disabled = true;
+    button.classList.add("is-refreshing");
+  }
+  if (label) label.textContent = "Actualizando…";
+
+  try {
+    // Solo releemos las tarjetas materializadas/visibles. Así no se reconstruye
+    // la lista completa de miles de items y se conserva exactamente el scroll.
+    for (let i = 0; i < ids.length; i += 10) {
+      const chunk = ids.slice(i, i + 10);
+      const snapshots = await Promise.all(chunk.map(id => getDocFromServer(doc(db, "items", id))));
+      snapshots.forEach(snap => {
+        if (!snap.exists()) return;
+        const fresh = { id: snap.id, ...snap.data() };
+        itemsById.set(String(snap.id), fresh);
+        livePatchedItemIds.add(String(snap.id));
+      });
+    }
+
+    refreshRenderedCards(ids);
+    decorateCards();
+    window.requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
+    if (label) label.textContent = "Actualizado ✓";
+    window.setTimeout(() => { if (label) label.textContent = "Actualizar"; }, 1400);
+  } catch (error) {
+    console.error(error);
+    if (label) label.textContent = "Error al actualizar";
+    window.setTimeout(() => { if (label) label.textContent = "Actualizar"; }, 1800);
+    alert(`No se pudieron actualizar los datos visibles: ${error.message}`);
+  } finally {
+    refreshingVisible = false;
+    if (button) {
+      button.disabled = false;
+      button.classList.remove("is-refreshing");
+    }
+    window.requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
   }
 }
 
@@ -970,18 +1203,10 @@ function applyLocalPatches(localPatches) {
 }
 
 async function refreshAfterSave() {
-  try {
-    await window.__purchasePerformance?.refreshItems?.();
-  } catch (error) {
-    console.warn("No se pudo refrescar la caché de Compras después de la edición masiva:", error);
-  }
-
-  // El render base y el módulo de estados trabajan con cachés distintas.
-  // Reaplicamos los valores recién guardados después de que ambos terminen
-  // su propio ciclo de render para que la tarjeta cambie sin recargar la página.
-  [80, 220, 520].forEach(delay => {
+  // No usamos refreshItems() del render progresivo: ese método reconstruye la
+  // lista y puede sentirse como una recarga. Actualizamos solo las tarjetas.
+  [0, 80, 220].forEach(delay => {
     window.setTimeout(() => {
-      syncLogicalIds();
       decorateCards();
       refreshRenderedCards();
     }, delay);
@@ -1098,6 +1323,10 @@ function bindEvents() {
     }
     if (event.target.closest?.("#bulkEditorSave")) {
       void saveEditor();
+      return;
+    }
+    if (event.target.closest?.("#purchaseLiveRefreshButton")) {
+      void refreshVisibleItemsFromServer();
     }
   });
 
@@ -1147,6 +1376,7 @@ async function init() {
   injectStyles();
   addToolbar();
   addModal();
+  addFloatingRefreshButton();
   labelPurchaseRequestBulkToolbar();
   const propertySelect = document.querySelector("#bulkEditorProperty");
   if (propertySelect) propertySelect.innerHTML = groupedPropertyOptions();
