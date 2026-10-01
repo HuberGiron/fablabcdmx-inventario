@@ -34,6 +34,9 @@ if (currentPath.endsWith("compras.html")) {
   }
 
   import("./compras-status.js")
+    // Capa adicional y no invasiva: cuando el perfil real es supervisor,
+    // conserva toda la consulta/reporteo y bloquea las acciones de escritura.
+    .then(() => import("./compras-supervisor-readonly.js"))
     .then(() => import("./compras-bulk-item-editor.js"))
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))

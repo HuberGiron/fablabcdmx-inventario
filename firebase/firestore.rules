@@ -26,8 +26,22 @@ service cloud.firestore {
       return role() == 'tecnico';
     }
 
+    function isSupervisor() {
+      return role() == 'supervisor';
+    }
+
     function isStaff() {
       return isAdmin() || isTecnico();
+    }
+
+    // El supervisor de compras puede consultar el inventario completo,
+    // pero no hereda permisos de Técnico sobre préstamos, reservas o usuarios.
+    function canReadInventory() {
+      return isStaff() || isSupervisor();
+    }
+
+    function canReadPurchases() {
+      return isAdmin() || isSupervisor();
     }
 
     match /zones/{id} {
@@ -51,14 +65,15 @@ service cloud.firestore {
     }
 
     match /items/{id} {
-      // Staff ve todo lo activo. Alumnos y público solo ven lo explícitamente visible.
-      allow read: if isStaff()
+      // Admin/Técnico/Supervisor ven todo lo activo. Alumnos y público sólo
+      // ven lo explícitamente visible. La escritura continúa exclusiva de Admin.
+      allow read: if canReadInventory()
         || (resource.data.activo == true && resource.data.visibleParaAlumno == true);
       allow create, update, delete: if isAdmin();
     }
 
     match /files/{id} {
-      allow read: if resource.data.active == true || isStaff();
+      allow read: if resource.data.active == true || canReadInventory();
       allow write: if isAdmin();
     }
 
@@ -97,6 +112,29 @@ service cloud.firestore {
     match /inventoryMovements/{id} {
       allow read: if isStaff();
       allow write: if false;
+    }
+
+    // Compras: Admin administra; Supervisor consulta y genera reportes.
+    // Las líneas de requisición/recepción se guardan dentro de items de cada
+    // solicitud, por eso la misma separación read/write se aplica al subárbol.
+    match /purchaseRequests/{requestId} {
+      allow read: if canReadPurchases();
+      allow create, update, delete: if isAdmin();
+
+      match /items/{itemId} {
+        allow read: if canReadPurchases();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    // Consecutivos/folios: sólo los modifica el administrador al enviar compras.
+    match /purchaseRequestCounters/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /purchaseBudgets/{id} {
+      allow read: if canReadPurchases();
+      allow create, update, delete: if isAdmin();
     }
   }
 }
