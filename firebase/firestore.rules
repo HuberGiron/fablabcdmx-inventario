@@ -1,13 +1,19 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ============================================================
+    // FUNCIONES GENERALES
+    // ============================================================
 
     function signedIn() {
       return request.auth != null;
     }
 
     function userExists() {
-      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     function userDoc() {
@@ -30,111 +36,865 @@ service cloud.firestore {
       return role() == 'supervisor';
     }
 
+    // Admin y técnico administran inventario/préstamos generales.
+    // Supervisor NO pertenece a Staff para evitar permisos adicionales.
     function isStaff() {
       return isAdmin() || isTecnico();
     }
 
-    // El supervisor de compras puede consultar el inventario completo,
-    // pero no hereda permisos de Técnico sobre préstamos, reservas o usuarios.
-    function canReadInventory() {
-      return isStaff() || isSupervisor();
-    }
-
-    function canReadPurchases() {
+    // Roles autorizados específicamente para Compras.
+    function isPurchaseStaff() {
       return isAdmin() || isSupervisor();
     }
 
+    // Usuarios que pueden consultar todos los items.
+    function canReadAllItems() {
+      return isAdmin() || isTecnico() || isSupervisor();
+    }
+
+    function validRequestStatus(status) {
+      return status == 'draft'
+        || status == 'sent'
+        || status == 'partial'
+        || status == 'completed'
+        || status == 'cancelled';
+    }
+
+
+    // ============================================================
+    // ZONAS
+    // ============================================================
+
     match /zones/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
+
+
+    // ============================================================
+    // SUBZONAS
+    // ============================================================
 
     match /subzones/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
+
+
+    // ============================================================
+    // UBICACIONES
+    // ============================================================
 
     match /locations/{id} {
       allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
+
+    // ============================================================
+    // FABACADEMY
+    // ============================================================
+
     match /fabacademyWeeks/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
+
+
+    // ============================================================
+    // ITEMS
+    // ============================================================
 
     match /items/{id} {
-      // Admin/Técnico/Supervisor ven todo lo activo. Alumnos y público sólo
-      // ven lo explícitamente visible. La escritura continúa exclusiva de Admin.
-      allow read: if canReadInventory()
-        || (resource.data.activo == true && resource.data.visibleParaAlumno == true);
-      allow create, update, delete: if isAdmin();
-    }
 
-    match /files/{id} {
-      allow read: if resource.data.active == true || canReadInventory();
-      allow write: if isAdmin();
-    }
+      allow read: if canReadAllItems()
+        || (
+          resource.data.activo == true
+          && resource.data.visibleParaAlumno == true
+        );
 
-    match /users/{uid} {
-      allow create: if signedIn()
-        && request.auth.uid == uid
-        && request.resource.data.role == 'alumno'
-        && request.resource.data.uid == request.auth.uid;
-      allow read: if signedIn() && (request.auth.uid == uid || isStaff());
-      allow update: if signedIn() && (
-        isAdmin()
-        || (request.auth.uid == uid
-          && resource.data.role == request.resource.data.role
-          && request.resource.data.role == 'alumno')
-      );
-      allow delete: if isAdmin();
-    }
-
-    match /loanRequests/{id} {
-      allow create: if signedIn()
-        && request.resource.data.alumnoUid == request.auth.uid
-        && request.resource.data.status == 'pendiente';
-      allow read: if signedIn() && (resource.data.alumnoUid == request.auth.uid || isStaff());
-      allow update, delete: if isStaff();
-    }
-
-    // Preparado para una etapa futura de reservas/asistencia de máquinas.
-    match /reservationRequests/{id} {
-      allow create: if signedIn()
-        && request.resource.data.userUid == request.auth.uid
-        && request.resource.data.status == 'pendiente';
-      allow read: if signedIn() && (resource.data.userUid == request.auth.uid || isStaff());
-      allow update, delete: if isStaff();
-    }
-
-    match /inventoryMovements/{id} {
-      allow read: if isStaff();
-      allow write: if false;
-    }
-
-    // Compras: Admin administra; Supervisor consulta y genera reportes.
-    // Las líneas de requisición/recepción se guardan dentro de items de cada
-    // solicitud, por eso la misma separación read/write se aplica al subárbol.
-    match /purchaseRequests/{requestId} {
-      allow read: if canReadPurchases();
+      // Supervisor: sólo lectura. Las escrituras de items siguen siendo
+      // exclusivas del Administrador.
       allow create, update, delete: if isAdmin();
 
-      match /items/{itemId} {
-        allow read: if canReadPurchases();
-        allow create, update, delete: if isAdmin();
+      // LEGACY / INACTIVO:
+      // Se conserva esta función de validación para minimizar el cambio frente
+      // a las reglas que ya funcionaban. Ningún `allow` del rol Supervisor la
+      // invoca ahora; Supervisor es estrictamente de sólo lectura.
+      function supervisorPurchaseWorkflowUpdate() {
+
+        let oldPending =
+          resource.data.get('purchasePendingQty', 0);
+
+        let newPending =
+          request.resource.data.get('purchasePendingQty', 0);
+
+        let oldStock =
+          resource.data.get('stockAlmacen', 0);
+
+        let newStock =
+          request.resource.data.get('stockAlmacen', 0);
+
+        let stockDelta =
+          newStock - oldStock;
+
+        let pendingDelta =
+          oldPending - newPending;
+
+        let changed =
+          request.resource.data
+            .diff(resource.data)
+            .affectedKeys();
+
+        let newRequisition =
+          request.resource.data.get(
+            'purchaseRequisitionQty',
+            0
+          );
+
+        let pendingOnlyChange =
+          newStock == oldStock;
+
+        let validReceipt =
+          stockDelta > 0
+          && newPending <= oldPending
+          && pendingDelta == stockDelta;
+
+        return changed.hasOnly([
+            'purchasePendingQty',
+            'purchasePendingRefs',
+
+            // Cache de artículos actualmente en requisición.
+            'purchaseRequisitionQty',
+            'purchaseRequisitionRefs',
+
+            'stockAlmacen',
+            'updatedAt'
+          ])
+
+          && newPending >= 0
+
+          && newRequisition >= 0
+
+          // Nunca puede haber más piezas en requisición
+          // que piezas pendientes de recibir.
+          && newRequisition <= newPending
+
+          // Supervisor nunca disminuye inventario.
+          && newStock >= oldStock
+
+          && (
+            pendingOnlyChange
+            || validReceipt
+          );
       }
     }
 
-    // Consecutivos/folios: sólo los modifica el administrador al enviar compras.
-    match /purchaseRequestCounters/{id} {
-      allow read, write: if isAdmin();
+
+    // ============================================================
+    // SOLICITUDES DE COMPRA
+    // ============================================================
+
+    match /purchaseRequests/{requestId} {
+
+      allow read: if isPurchaseStaff();
+
+
+      // ----------------------------------------------------------
+      // CREAR SOLICITUD
+      // ----------------------------------------------------------
+
+      // Supervisor: sólo lectura. Sólo Admin puede crear solicitudes.
+      allow create: if isAdmin();
+
+
+      // ----------------------------------------------------------
+      // ACTUALIZAR SOLICITUD
+      // ----------------------------------------------------------
+
+      // Supervisor: sólo lectura. Sólo Admin puede actualizar solicitudes.
+      allow update: if isAdmin();
+
+
+      // Sólo Admin puede eliminar definitivamente solicitudes.
+      allow delete: if isAdmin();
+
+
+      // LEGACY / INACTIVO: retenido por compatibilidad documental.
+      // Supervisor ya no tiene `allow update` sobre purchaseRequests.
+      function supervisorPurchaseRequestUpdate() {
+
+        let oldStatus =
+          resource.data.get('status', '');
+
+        let newStatus =
+          request.resource.data.get('status', '');
+
+        let changed =
+          request.resource.data
+            .diff(resource.data)
+            .affectedKeys();
+
+
+        // --------------------------------------------------------
+        // ACTUALIZAR RESUMEN DE BORRADOR
+        // --------------------------------------------------------
+
+        let draftSummaryUpdate =
+          oldStatus == 'draft'
+
+          && newStatus == 'draft'
+
+          && changed.hasOnly([
+            'itemCount',
+            'totalQty',
+            'totalsByCurrency',
+            'updatedAt'
+          ]);
+
+
+        // --------------------------------------------------------
+        // ENVIAR SOLICITUD
+        // --------------------------------------------------------
+
+        let sendDraft =
+          oldStatus == 'draft'
+
+          && newStatus == 'sent'
+
+          && request.resource.data
+            .get('folio', '') != ''
+
+          && changed.hasOnly([
+            'folio',
+            'status',
+            'sentAt',
+            'updatedAt',
+            'filtersSnapshot',
+            'itemCount',
+            'totalQty',
+            'totalsByCurrency'
+          ]);
+
+
+        // --------------------------------------------------------
+        // TRANSICIONES DE SOLICITUD YA ENVIADA
+        // --------------------------------------------------------
+
+        let validOperationalTransition =
+
+          (
+            oldStatus == 'sent'
+
+            && (
+              newStatus == 'sent'
+              || newStatus == 'partial'
+              || newStatus == 'completed'
+              || newStatus == 'cancelled'
+            )
+          )
+
+          ||
+
+          (
+            oldStatus == 'partial'
+
+            && (
+              newStatus == 'partial'
+              || newStatus == 'completed'
+              || newStatus == 'cancelled'
+            )
+          )
+
+          ||
+
+          (
+            oldStatus == 'completed'
+            && newStatus == 'completed'
+          )
+
+          ||
+
+          (
+            oldStatus == 'cancelled'
+            && newStatus == 'cancelled'
+          );
+
+
+        let operationalSummaryUpdate =
+          oldStatus != 'draft'
+
+          && validRequestStatus(newStatus)
+
+          && validOperationalTransition
+
+          && changed.hasOnly([
+            'status',
+            'itemCount',
+            'totalQty',
+            'totalsByCurrency',
+            'updatedAt'
+          ]);
+
+
+        return draftSummaryUpdate
+          || sendDraft
+          || operationalSummaryUpdate;
+      }
+
+
+      // ==========================================================
+      // LÍNEAS DE LA SOLICITUD
+      // ==========================================================
+
+      match /items/{lineId} {
+
+        allow read: if isPurchaseStaff();
+
+
+        // --------------------------------------------------------
+        // CREAR LÍNEA
+        // --------------------------------------------------------
+
+        // Supervisor: sólo lectura. Sólo Admin puede crear líneas.
+        allow create: if isAdmin();
+
+
+        // --------------------------------------------------------
+        // ACTUALIZAR LÍNEA
+        // --------------------------------------------------------
+
+        // Supervisor: sólo lectura. Sólo Admin puede actualizar líneas.
+        allow update: if isAdmin();
+
+
+        // --------------------------------------------------------
+        // ELIMINAR LÍNEA
+        // --------------------------------------------------------
+
+        // Supervisor: sólo lectura. Sólo Admin puede eliminar líneas.
+        allow delete: if isAdmin();
+
+
+        // ========================================================
+        // LÓGICA LEGACY DEL FLUJO DE COMPRAS (INACTIVA PARA SUPERVISOR)
+        // ========================================================
+
+        // Se conserva para no reestructurar innecesariamente las reglas
+        // anteriores. Ningún `allow` de Supervisor invoca estos helpers.
+        function supervisorPurchaseLineUpdate() {
+
+          return supervisorDraftLineEdit()
+
+            || supervisorSendLine()
+
+            // NUEVO:
+            // registrar requisición sin modificar inventario.
+            || supervisorRegisterRequisition()
+
+            || supervisorLineMovement();
+        }
+
+
+        // --------------------------------------------------------
+        // EDITAR LÍNEA EN BORRADOR
+        // --------------------------------------------------------
+
+        function supervisorDraftLineEdit() {
+
+          return get(
+              /databases/$(database)/documents/purchaseRequests/$(requestId)
+            ).data.status == 'draft'
+
+            && resource.data
+              .get('status', '') == 'draft'
+
+            && request.resource.data
+              .get('status', '') == 'draft'
+
+            && request.resource.data
+              .get('itemId', '')
+              == resource.data.get('itemId', '')
+
+            && request.resource.data
+              .get('itemId', '') == lineId
+
+            && request.resource.data
+              .get('quantityRequested', 0) > 0
+
+            && request.resource.data
+              .get('quantityReceived', 0) == 0
+
+            && request.resource.data
+              .get('quantityCancelled', 0) == 0;
+        }
+
+
+        // --------------------------------------------------------
+        // ENVIAR LÍNEA
+        // --------------------------------------------------------
+
+        function supervisorSendLine() {
+
+          let changed =
+            request.resource.data
+              .diff(resource.data)
+              .affectedKeys();
+
+          return resource.data
+              .get('status', '') == 'draft'
+
+            && request.resource.data
+              .get('status', '') == 'ordered'
+
+            && request.resource.data
+              .get('folio', '') != ''
+
+            && changed.hasOnly([
+              'status',
+              'folio',
+              'sentAt',
+              'updatedAt'
+            ]);
+        }
+
+
+        // ========================================================
+        // REGISTRAR REQUISICIÓN
+        // ========================================================
+
+        // El Supervisor puede registrar que una línea completa
+        // entró a Requisición.
+        //
+        // IMPORTANTE:
+        // - No aumenta inventario.
+        // - No cambia cantidad solicitada.
+        // - No cambia recibido.
+        // - No cambia cancelado.
+        // - No puede modificar precio.
+        //
+        // Sólo el Administrador puede cambiar el costo
+        // de requisición / cotización oficial.
+        function supervisorRegisterRequisition() {
+
+          let changed =
+            request.resource.data
+              .diff(resource.data)
+              .affectedKeys();
+
+          return (
+
+              resource.data
+                .get('status', '') == 'ordered'
+
+              ||
+
+              resource.data
+                .get('status', '') == 'partial'
+            )
+
+            // No se puede registrar dos veces.
+            && resource.data
+              .get('requisitionStatus', '')
+              != 'requisitioned'
+
+            && request.resource.data
+              .get('requisitionStatus', '')
+              == 'requisitioned'
+
+            // Requisición es para la línea completa antes
+            // de haber recibido o cancelado unidades.
+            && resource.data
+              .get('quantityReceived', 0) == 0
+
+            && resource.data
+              .get('quantityCancelled', 0) == 0
+
+            // Cantidades no cambian.
+            && request.resource.data
+              .get('quantityRequested', 0)
+              == resource.data.get('quantityRequested', 0)
+
+            && request.resource.data
+              .get('quantityReceived', 0)
+              == resource.data.get('quantityReceived', 0)
+
+            && request.resource.data
+              .get('quantityCancelled', 0)
+              == resource.data.get('quantityCancelled', 0)
+
+            // Supervisor NO puede modificar unitPrice.
+            && request.resource.data
+              .get('unitPrice', 0)
+              == resource.data.get('unitPrice', 0)
+
+            // Para Supervisor el costo de requisición
+            // debe coincidir con el precio existente.
+            && request.resource.data
+              .get('requisitionUnitCost', 0)
+              == resource.data.get('unitPrice', 0)
+
+            // Debe quedar registrado quién hizo la operación.
+            && request.resource.data
+              .get('requisitionedBy', '')
+              == request.auth.uid
+
+            && changed.hasOnly([
+              'requisitionStatus',
+              'requisitionedAt',
+              'requisitionedBy',
+              'requisitionedByName',
+              'requisitionUnitCost',
+              'updatedAt'
+            ]);
+        }
+
+
+        // ========================================================
+        // RECEPCIÓN / CANCELACIÓN
+        // ========================================================
+
+        // Después de enviada sólo se permite aumentar recibido
+        // o cancelado.
+        //
+        // Nunca se modifica la cantidad originalmente solicitada.
+        function supervisorLineMovement() {
+
+          let oldRequested =
+            resource.data.get(
+              'quantityRequested',
+              0
+            );
+
+          let newRequested =
+            request.resource.data.get(
+              'quantityRequested',
+              0
+            );
+
+          let oldReceived =
+            resource.data.get(
+              'quantityReceived',
+              0
+            );
+
+          let newReceived =
+            request.resource.data.get(
+              'quantityReceived',
+              0
+            );
+
+          let oldCancelled =
+            resource.data.get(
+              'quantityCancelled',
+              0
+            );
+
+          let newCancelled =
+            request.resource.data.get(
+              'quantityCancelled',
+              0
+            );
+
+          let oldActual =
+            resource.data.get(
+              'actualCostTotal',
+              oldReceived
+                * resource.data.get('unitPrice', 0)
+            );
+
+          let newActual =
+            request.resource.data.get(
+              'actualCostTotal',
+              oldActual
+            );
+
+          let changed =
+            request.resource.data
+              .diff(resource.data)
+              .affectedKeys();
+
+
+          return (
+
+              resource.data
+                .get('status', '') == 'ordered'
+
+              ||
+
+              resource.data
+                .get('status', '') == 'partial'
+            )
+
+            && changed.hasOnly([
+              'quantityReceived',
+              'quantityCancelled',
+              'status',
+              'updatedAt',
+              'lastReceivedAt',
+              'lastCancelledAt',
+              'lastActualCostAt',
+              'lastActualUnitCost',
+              'actualCostTotal'
+            ])
+
+            && (
+
+              // -----------------------------------------------
+              // RECEPCIÓN
+              // -----------------------------------------------
+              (
+                newReceived > oldReceived
+
+                && newCancelled == oldCancelled
+
+                // Supervisor recibe usando el precio registrado.
+                // El ajuste manual del costo real es función Admin.
+                && newActual
+                  == oldActual
+                  + (
+                    (newReceived - oldReceived)
+                    * resource.data.get('unitPrice', 0)
+                  )
+
+                && request.resource.data
+                  .get('lastActualUnitCost', 0)
+                  == resource.data.get('unitPrice', 0)
+              )
+
+              ||
+
+              // -----------------------------------------------
+              // CANCELACIÓN
+              // -----------------------------------------------
+              (
+                newCancelled > oldCancelled
+
+                && newReceived == oldReceived
+
+                && newActual == oldActual
+              )
+            )
+
+            && newReceived >= oldReceived
+
+            && newCancelled >= oldCancelled
+
+            && newRequested == oldRequested
+
+            && newReceived + newCancelled
+              <= oldRequested
+
+            && (
+
+              // Quedan piezas pendientes.
+              (
+                newReceived + newCancelled
+                  < oldRequested
+
+                && request.resource.data
+                  .get('status', '') == 'partial'
+              )
+
+              ||
+
+              // Todo terminó con al menos una recepción.
+              (
+                newReceived + newCancelled
+                  == oldRequested
+
+                && newReceived > 0
+
+                && request.resource.data
+                  .get('status', '') == 'received'
+              )
+
+              ||
+
+              // Todo fue cancelado.
+              (
+                newReceived + newCancelled
+                  == oldRequested
+
+                && newReceived == 0
+
+                && request.resource.data
+                  .get('status', '') == 'cancelled'
+              )
+            );
+        }
+      }
     }
 
-    match /purchaseBudgets/{id} {
-      allow read: if canReadPurchases();
+
+    // ============================================================
+    // PRESUPUESTOS DE COMPRAS POR ZONA
+    // ============================================================
+
+    match /purchaseBudgets/{budgetId} {
+
+      // Admin y Supervisor pueden consultar disponibilidad
+      // y reportes.
+      allow read: if isPurchaseStaff();
+
+      // La asignación o ajuste manual del presupuesto
+      // es exclusiva del Administrador.
       allow create, update, delete: if isAdmin();
+    }
+
+
+    // ============================================================
+    // CONSECUTIVO DE SOLICITUDES
+    // ============================================================
+
+    match /purchaseRequestCounters/{year} {
+
+      allow read: if isPurchaseStaff();
+
+
+      // Supervisor puede consultar el consecutivo, pero no modificarlo.
+      allow create: if isAdmin();
+
+
+      allow update: if isAdmin();
+
+
+      allow delete: if isAdmin();
+    }
+
+
+    // ============================================================
+    // ARCHIVOS
+    // ============================================================
+
+    match /files/{id} {
+
+      allow read: if resource.data.active == true
+        || isStaff()
+        || isSupervisor();
+
+      allow create, update, delete: if isAdmin();
+    }
+
+
+    // ============================================================
+    // USUARIOS
+    // ============================================================
+
+    match /users/{uid} {
+
+      // El autorregistro siempre crea Alumno.
+      allow create: if signedIn()
+
+        && request.auth.uid == uid
+
+        && request.resource.data.role == 'alumno'
+
+        && request.resource.data.uid
+          == request.auth.uid;
+
+
+      // Usuario puede leer su propio perfil.
+      // Admin/Técnico conservan acceso general.
+      allow read: if signedIn()
+        && (
+          request.auth.uid == uid
+          || isStaff()
+        );
+
+
+      // Admin puede cambiar perfiles.
+      //
+      // Alumno puede modificar su perfil pero nunca
+      // cambiarse de rol.
+      allow update: if signedIn()
+        && (
+          isAdmin()
+
+          ||
+
+          (
+            request.auth.uid == uid
+
+            && resource.data.role
+              == request.resource.data.role
+
+            && request.resource.data.role == 'alumno'
+          )
+        );
+
+
+      allow delete: if isAdmin();
+    }
+
+
+    // ============================================================
+    // SOLICITUDES DE PRÉSTAMO
+    // ============================================================
+
+    match /loanRequests/{id} {
+
+      allow create: if signedIn()
+
+        && request.resource.data.alumnoUid
+          == request.auth.uid
+
+        && request.resource.data.status
+          == 'pendiente';
+
+
+      allow read: if signedIn()
+        && (
+          resource.data.alumnoUid
+            == request.auth.uid
+
+          || isStaff()
+        );
+
+
+      // Supervisor no administra préstamos.
+      allow update, delete: if isStaff();
+    }
+
+
+    // ============================================================
+    // RESERVAS / ASISTENCIA
+    // ============================================================
+
+    match /reservationRequests/{id} {
+
+      allow create: if signedIn()
+
+        && request.resource.data.userUid
+          == request.auth.uid
+
+        && request.resource.data.status
+          == 'pendiente';
+
+
+      allow read: if signedIn()
+        && (
+          resource.data.userUid
+            == request.auth.uid
+
+          || isStaff()
+        );
+
+
+      // Supervisor no administra reservas.
+      allow update, delete: if isStaff();
+    }
+
+
+    // ============================================================
+    // MOVIMIENTOS DE INVENTARIO
+    // ============================================================
+
+    match /inventoryMovements/{id} {
+
+      allow read: if isStaff();
+
+      allow write: if false;
     }
   }
 }
