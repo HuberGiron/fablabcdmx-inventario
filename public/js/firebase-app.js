@@ -43,6 +43,9 @@ if (currentPath.endsWith("compras.html")) {
     .then(() => import("./compras-request-progress.js"))
     .then(() => import("./compras-group-batch-actions.js"))
     .then(() => import("./compras-request-stage-tools.js"))
+    // Corrige el estado persistente del botón Guardar precios y deja explícito
+    // el flujo de precio confirmado después de enviar a requisición.
+    .then(() => import("./compras-price-requisition-fix.js"))
     .then(() => import("./compras-request-wide-requisition.js"))
     .then(() => import("./compras-global-money-charts.js"))
     .then(() => import("./compras-budget-money-charts.js"))
