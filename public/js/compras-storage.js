@@ -24,7 +24,8 @@ import {
  * - Otros roles / usuario sin sesion: este modulo no muestra el dato.
  * - "Sin asignar" es solo un estado de revision; no se guarda como categoria.
  * - Agrega al selector Ordenar: Estado de compra y Tamaño de almacenamiento.
- *   Los órdenes personalizados se aplican al conjunto lógico completo.
+ * - Agrega filtro múltiple por tamaño: Pequeño / Mediano / Grande / Sin asignar.
+ *   Los órdenes y el filtro se aplican al conjunto lógico completo.
  * ============================================================================
  */
 
@@ -55,7 +56,9 @@ let currentRole = "";
 let observer = null;
 let decorateQueued = false;
 let customSortTimer = null;
+let storageFilterTimer = null;
 let customSortInProgress = false;
+let storageFilterUiObserver = null;
 
 function normalizeStorageSize(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -73,6 +76,60 @@ function storageBadgeClass(value) {
   if (normalized === "medium") return "storage-size-medium";
   if (normalized === "large") return "storage-size-large";
   return "storage-size-unassigned";
+}
+
+function storageFilterKey(item) {
+  return normalizeStorageSize(item?.purchaseStorageSize) || "unassigned";
+}
+
+function currentStorageFilters() {
+  const checks = [...document.querySelectorAll(
+    "#filterPurchaseStorageGroup .purchase-storage-check"
+  )];
+
+  if (!checks.length) {
+    return new Set(["small", "medium", "large", "unassigned"]);
+  }
+
+  return new Set(
+    checks
+      .filter(check => check.checked)
+      .map(check => String(check.value || ""))
+  );
+}
+
+function storageFilterIsActive() {
+  return currentStorageFilters().size < 4;
+}
+
+function currentPurchaseStatusFilters() {
+  const checks = [...document.querySelectorAll(
+    "#filterPurchaseStatusGroup .purchase-status-check"
+  )];
+
+  if (!checks.length) {
+    return new Set(["missing", "ordered", "requisition", "complete"]);
+  }
+
+  return new Set(
+    checks
+      .filter(check => check.checked)
+      .map(check => String(check.value || ""))
+  );
+}
+
+function currentPurchasePriorityFilters() {
+  const checks = [...document.querySelectorAll(
+    "#filterPurchasePriorityGroup .purchase-priority-check"
+  )];
+
+  if (!checks.length) return new Set(["1", "2", "3"]);
+
+  return new Set(
+    checks
+      .filter(check => check.checked)
+      .map(check => String(check.value || ""))
+  );
 }
 
 function num(value) {
@@ -126,6 +183,70 @@ function addCustomSortOptions() {
     option.value = value;
     option.textContent = label;
     sort.appendChild(option);
+  });
+}
+
+function ensureStorageFilterUi() {
+  const row = document.querySelector("#purchaseStatusFilterRow");
+  if (!row) return false;
+
+  if (row.querySelector("#filterPurchaseStorageGroup")) return true;
+
+  // Estado, Prioridad y Tamaño quedan en tres columnas equivalentes.
+  [...row.children].forEach(column => {
+    if (column.classList.contains("col-lg-6")) {
+      column.classList.remove("col-lg-6");
+      column.classList.add("col-lg-4");
+    }
+  });
+
+  const column = document.createElement("div");
+  column.className = "col-lg-4";
+  column.innerHTML = `
+    <div class="form-label small mb-1 fw-semibold">Tamaño de almacenamiento</div>
+    <div id="filterPurchaseStorageGroup" class="purchase-multi-filter" role="group" aria-label="Tamaño de almacenamiento">
+      <div class="form-check">
+        <input class="form-check-input purchase-storage-check" type="checkbox" value="small" id="filterPurchaseStorageSmall" checked>
+        <label class="form-check-label" for="filterPurchaseStorageSmall">Pequeño</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input purchase-storage-check" type="checkbox" value="medium" id="filterPurchaseStorageMedium" checked>
+        <label class="form-check-label" for="filterPurchaseStorageMedium">Mediano</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input purchase-storage-check" type="checkbox" value="large" id="filterPurchaseStorageLarge" checked>
+        <label class="form-check-label" for="filterPurchaseStorageLarge">Grande</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input purchase-storage-check" type="checkbox" value="unassigned" id="filterPurchaseStorageUnassigned" checked>
+        <label class="form-check-label" for="filterPurchaseStorageUnassigned">Sin asignar</label>
+      </div>
+    </div>`;
+
+  row.appendChild(column);
+
+  column.querySelectorAll(".purchase-storage-check").forEach(check => {
+    check.addEventListener("change", () => {
+      scheduleStorageFilter({ materialize: true });
+    });
+  });
+
+  return true;
+}
+
+function watchForStorageFilterUi() {
+  if (ensureStorageFilterUi()) return;
+  if (storageFilterUiObserver) return;
+
+  storageFilterUiObserver = new MutationObserver(() => {
+    if (!ensureStorageFilterUi()) return;
+    storageFilterUiObserver?.disconnect();
+    storageFilterUiObserver = null;
+  });
+
+  storageFilterUiObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
   });
 }
 
@@ -189,6 +310,70 @@ function reorderMaterializedCards(mode) {
   }
 }
 
+function applyStorageFilterToCards() {
+  const storageFilters = currentStorageFilters();
+  const storageActive = storageFilters.size < 4;
+  const cards = [...document.querySelectorAll(
+    "#itemsList .item-card[data-item-id]"
+  )];
+
+  // Con los cuatro tamaños activos, Compras conserva por completo su conteo,
+  // paginación y filtros nativos. Sólo retiramos nuestra marca visual.
+  if (!storageActive) {
+    cards.forEach(card => card.classList.remove("storage-filter-hidden"));
+    return;
+  }
+
+  const statusFilters = currentPurchaseStatusFilters();
+  const priorityFilters = currentPurchasePriorityFilters();
+  let visible = 0;
+
+  cards.forEach(card => {
+    const item = itemsById.get(String(card.dataset.itemId || ""));
+    if (!item) return;
+
+    const storageMatch = storageFilters.has(storageFilterKey(item));
+    const statusMatch = statusFilters.has(purchaseStateKeyFromCard(card, item));
+    const priority = [1, 2, 3].includes(Number(item.purchasePriority))
+      ? Number(item.purchasePriority)
+      : 3;
+    const priorityMatch = priorityFilters.has(String(priority));
+    const show = storageMatch && statusMatch && priorityMatch;
+
+    card.classList.toggle("storage-filter-hidden", !storageMatch);
+    card.classList.toggle("d-none", !show);
+    if (show) visible += 1;
+  });
+
+  const resultCount = document.querySelector("#resultCount");
+  if (resultCount) {
+    resultCount.textContent = `${visible} resultado${visible === 1 ? "" : "s"}`;
+  }
+}
+
+function scheduleStorageFilter({ materialize = true } = {}) {
+  clearTimeout(storageFilterTimer);
+
+  storageFilterTimer = window.setTimeout(() => {
+    ensureStorageFilterUi();
+
+    const active = storageFilterIsActive();
+    const customSort = currentCustomSortMode();
+
+    if (active && materialize) {
+      window.__purchasePerformance?.materializeAll?.();
+    } else if (!active && !customSort) {
+      window.__purchasePerformance?.restoreProgressive?.({ delay: 0 });
+    }
+
+    requestAnimationFrame(() => {
+      decorateVisibleCards();
+      applyStorageFilterToCards();
+      if (customSort) reorderMaterializedCards(customSort);
+    });
+  }, 0);
+}
+
 function scheduleCustomSort({ materialize = true } = {}) {
   clearTimeout(customSortTimer);
 
@@ -204,7 +389,10 @@ function scheduleCustomSort({ materialize = true } = {}) {
     // tarjetas recién materializadas antes de calcular el orden definitivo.
     requestAnimationFrame(() => {
       decorateVisibleCards();
-      requestAnimationFrame(() => reorderMaterializedCards(mode));
+      requestAnimationFrame(() => {
+        reorderMaterializedCards(mode);
+        applyStorageFilterToCards();
+      });
     });
   }, 0);
 }
@@ -220,8 +408,13 @@ function bindCustomSort() {
       return;
     }
 
-    // Al volver a un orden nativo, permitimos que la capa de rendimiento
-    // recupere la paginación progresiva normal.
+    if (storageFilterIsActive()) {
+      scheduleStorageFilter({ materialize: true });
+      return;
+    }
+
+    // Al volver a un orden nativo sin filtro de tamaño, permitimos que la
+    // capa de rendimiento recupere la paginación progresiva normal.
     window.__purchasePerformance?.restoreProgressive?.({ delay: 0 });
   };
 
@@ -229,11 +422,19 @@ function bindCustomSort() {
   sort.addEventListener("change", handleSortChange);
 
   document.addEventListener("purchase:render-batch", () => {
-    if (currentCustomSortMode()) scheduleCustomSort({ materialize: true });
+    if (currentCustomSortMode()) {
+      scheduleCustomSort({ materialize: true });
+    } else if (storageFilterIsActive()) {
+      scheduleStorageFilter({ materialize: true });
+    }
   });
 
   document.addEventListener("purchase:materialized-all", () => {
-    if (currentCustomSortMode()) scheduleCustomSort({ materialize: false });
+    if (currentCustomSortMode()) {
+      scheduleCustomSort({ materialize: false });
+    } else if (storageFilterIsActive()) {
+      scheduleStorageFilter({ materialize: false });
+    }
   });
 }
 
@@ -243,6 +444,10 @@ function injectStyles() {
   const style = document.createElement("style");
   style.id = "purchaseStorageStyles";
   style.textContent = `
+    .item-card.storage-filter-hidden {
+      display: none !important;
+    }
+
     .purchase-storage-wrapper {
       flex: 0 0 auto;
     }
@@ -456,6 +661,12 @@ async function updateStorageSize(itemId, select) {
     select.classList.add("is-saved");
     window.setTimeout(() => select.classList.remove("is-saved"), 700);
 
+    window.__purchasePerformance?.patchItems?.([{
+      ...current,
+      id: itemId,
+      purchaseStorageSize: next,
+    }]);
+
     document.dispatchEvent(new CustomEvent("purchase:storage-updated", {
       detail: {
         itemId,
@@ -465,6 +676,8 @@ async function updateStorageSize(itemId, select) {
 
     if (currentCustomSortMode() === "storage_size") {
       scheduleCustomSort({ materialize: false });
+    } else if (storageFilterIsActive()) {
+      scheduleStorageFilter({ materialize: false });
     }
   } catch (error) {
     console.error("No se pudo cambiar el almacenamiento:", error);
@@ -485,6 +698,29 @@ function bindActions() {
     if (!select) return;
     updateStorageSize(String(select.dataset.id || ""), select);
   });
+
+  document.addEventListener("change", event => {
+    if (event.target?.matches?.(
+      ".purchase-status-check, .purchase-priority-check"
+    )) {
+      window.setTimeout(() => scheduleStorageFilter({ materialize: false }), 0);
+    }
+  });
+
+  document.addEventListener("click", event => {
+    if (event.target?.closest?.("#clearFilters")) {
+      window.setTimeout(() => scheduleStorageFilter({ materialize: false }), 0);
+    }
+  });
+
+  // Antes de exportar, deja d-none sincronizado con Tamaño + Estado + Prioridad.
+  document.addEventListener("click", event => {
+    if (event.target?.closest?.(
+      "#exportXlsx, #exportPurchaseReport, #exportPurchasePdf"
+    )) {
+      applyStorageFilterToCards();
+    }
+  }, true);
 }
 
 function observeCards() {
@@ -502,6 +738,8 @@ function observeCards() {
       queueDecoration();
       if (!customSortInProgress && currentCustomSortMode()) {
         scheduleCustomSort({ materialize: false });
+      } else if (storageFilterIsActive()) {
+        scheduleStorageFilter({ materialize: false });
       }
     }
   });
@@ -538,10 +776,12 @@ async function initPurchaseStorage() {
   injectStyles();
   await loadItems();
   addCustomSortOptions();
+  watchForStorageFilterUi();
   bindActions();
   bindCustomSort();
   observeCards();
   queueDecoration();
+  scheduleStorageFilter({ materialize: false });
 
   // Si otra capa del módulo de Compras actualiza visualmente las tarjetas,
   // volvemos a colocar el control sin recargar la página.
@@ -555,6 +795,8 @@ async function initPurchaseStorage() {
     queueDecoration();
     if (currentCustomSortMode()) {
       scheduleCustomSort({ materialize: false });
+    } else if (storageFilterIsActive()) {
+      scheduleStorageFilter({ materialize: false });
     }
   });
 }
