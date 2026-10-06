@@ -13,19 +13,23 @@ import {
 
 /*
  * ============================================================================
- * COMPRAS · CLASIFICACION DE ALMACENAMIENTO / TAMANO DE EMBALAJE
+ * COMPRAS · CLASIFICACIÓN DE ALMACENAMIENTO / TAMAÑO DE EMBALAJE
  * ============================================================================
  *
  * Campo Firestore en items:
  *   purchaseStorageSize: "small" | "medium" | "large"
  *
  * - Admin: puede asignar/cambiar el valor desde cada tarjeta de Compras.
- * - Supervisor: ve el valor como etiqueta de solo lectura.
- * - Otros roles / usuario sin sesion: este modulo no muestra el dato.
- * - "Sin asignar" es solo un estado de revision; no se guarda como categoria.
+ * - Supervisor: ve el valor como etiqueta de sólo lectura.
+ * - Otros roles / usuario sin sesión: este módulo no muestra el dato.
+ * - "Sin asignar" es sólo un estado de revisión; no se guarda como categoría.
  * - Agrega al selector Ordenar: Estado de compra y Tamaño de almacenamiento.
- * - Agrega filtro múltiple por tamaño: Pequeño / Mediano / Grande / Sin asignar.
- *   Los órdenes y el filtro se aplican al conjunto lógico completo.
+ * - Agrega filtro múltiple por tamaño.
+ *
+ * IMPORTANTE:
+ * Esta capa YA NO reordena, materializa ni oculta tarjetas directamente.
+ * El filtrado/orden se resuelve en compras-performance.js antes del render.
+ * Así no compite con compras-status.js ni con sus colores/decoraciones.
  * ============================================================================
  */
 
@@ -37,27 +41,10 @@ const STORAGE_LABELS = {
   large: "Grande",
 };
 
-const CUSTOM_SORT_MODES = new Set(["purchase_status", "storage_size"]);
-const PURCHASE_STATE_ORDER = {
-  missing: 1,
-  ordered: 2,
-  requisition: 3,
-  complete: 4,
-};
-const STORAGE_SIZE_ORDER = {
-  small: 1,
-  medium: 2,
-  large: 3,
-  unassigned: 4,
-};
-
 const itemsById = new Map();
 let currentRole = "";
 let observer = null;
 let decorateQueued = false;
-let customSortTimer = null;
-let storageFilterTimer = null;
-let customSortInProgress = false;
 let storageFilterUiObserver = null;
 
 function normalizeStorageSize(value) {
@@ -76,96 +63,6 @@ function storageBadgeClass(value) {
   if (normalized === "medium") return "storage-size-medium";
   if (normalized === "large") return "storage-size-large";
   return "storage-size-unassigned";
-}
-
-function storageFilterKey(item) {
-  return normalizeStorageSize(item?.purchaseStorageSize) || "unassigned";
-}
-
-function currentStorageFilters() {
-  const checks = [...document.querySelectorAll(
-    "#filterPurchaseStorageGroup .purchase-storage-check"
-  )];
-
-  if (!checks.length) {
-    return new Set(["small", "medium", "large", "unassigned"]);
-  }
-
-  return new Set(
-    checks
-      .filter(check => check.checked)
-      .map(check => String(check.value || ""))
-  );
-}
-
-function storageFilterIsActive() {
-  return currentStorageFilters().size < 4;
-}
-
-function currentPurchaseStatusFilters() {
-  const checks = [...document.querySelectorAll(
-    "#filterPurchaseStatusGroup .purchase-status-check"
-  )];
-
-  if (!checks.length) {
-    return new Set(["missing", "ordered", "requisition", "complete"]);
-  }
-
-  return new Set(
-    checks
-      .filter(check => check.checked)
-      .map(check => String(check.value || ""))
-  );
-}
-
-function currentPurchasePriorityFilters() {
-  const checks = [...document.querySelectorAll(
-    "#filterPurchasePriorityGroup .purchase-priority-check"
-  )];
-
-  if (!checks.length) return new Set(["1", "2", "3"]);
-
-  return new Set(
-    checks
-      .filter(check => check.checked)
-      .map(check => String(check.value || ""))
-  );
-}
-
-function num(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function purchaseStateKey(item) {
-  if (!item) return "missing";
-
-  const current = num(item.stockAlmacen) + num(item.stockPrestadoTemporal);
-  const desired = num(item.inventarioDeseado);
-  const pending = Math.max(num(item.purchasePendingQty), 0);
-  const requisition = Math.min(
-    Math.max(num(item.purchaseRequisitionQty), 0),
-    pending
-  );
-
-  if (pending > 0 && requisition > 0) return "requisition";
-  if (pending > 0) return "ordered";
-  if (Math.max(desired - current, 0) <= 0) return "complete";
-  return "missing";
-}
-
-function purchaseStateKeyFromCard(card, item) {
-  const status = card?.querySelector?.(".purchase-status-controls");
-  if (status?.classList.contains("purchase-state-missing")) return "missing";
-  if (status?.classList.contains("purchase-state-ordered")) return "ordered";
-  if (status?.classList.contains("purchase-state-requisition")) return "requisition";
-  if (status?.classList.contains("purchase-state-complete")) return "complete";
-  return purchaseStateKey(item);
-}
-
-function currentCustomSortMode() {
-  const mode = document.querySelector("#sortMode")?.value || "";
-  return CUSTOM_SORT_MODES.has(mode) ? mode : "";
 }
 
 function addCustomSortOptions() {
@@ -224,13 +121,6 @@ function ensureStorageFilterUi() {
     </div>`;
 
   row.appendChild(column);
-
-  column.querySelectorAll(".purchase-storage-check").forEach(check => {
-    check.addEventListener("change", () => {
-      scheduleStorageFilter({ materialize: true });
-    });
-  });
-
   return true;
 }
 
@@ -250,204 +140,12 @@ function watchForStorageFilterUi() {
   });
 }
 
-function compareText(left, right) {
-  return String(left || "").localeCompare(
-    String(right || ""),
-    "es",
-    { numeric: true, sensitivity: "base" }
-  );
-}
-
-function storageSortRank(item) {
-  const value = normalizeStorageSize(item?.purchaseStorageSize);
-  return STORAGE_SIZE_ORDER[value || "unassigned"] || STORAGE_SIZE_ORDER.unassigned;
-}
-
-function compareCardsForCustomSort(leftCard, rightCard, mode) {
-  const leftItem = itemsById.get(String(leftCard.dataset.itemId || "")) || {};
-  const rightItem = itemsById.get(String(rightCard.dataset.itemId || "")) || {};
-
-  if (mode === "purchase_status") {
-    const leftState = purchaseStateKeyFromCard(leftCard, leftItem);
-    const rightState = purchaseStateKeyFromCard(rightCard, rightItem);
-    const stateDiff = (PURCHASE_STATE_ORDER[leftState] || 99) - (PURCHASE_STATE_ORDER[rightState] || 99);
-    if (stateDiff) return stateDiff;
-
-    const priorityDiff = (num(leftItem.purchasePriority) || 3) - (num(rightItem.purchasePriority) || 3);
-    if (priorityDiff) return priorityDiff;
-  }
-
-  if (mode === "storage_size") {
-    const storageDiff = storageSortRank(leftItem) - storageSortRank(rightItem);
-    if (storageDiff) return storageDiff;
-  }
-
-  return compareText(leftItem.nombre, rightItem.nombre)
-    || compareText(leftItem.sku, rightItem.sku);
-}
-
-function reorderMaterializedCards(mode) {
-  if (!CUSTOM_SORT_MODES.has(mode) || customSortInProgress) return;
-
-  const container = document.querySelector("#itemsList");
-  if (!container) return;
-
-  const cards = [...container.querySelectorAll(":scope > .item-card[data-item-id]")];
-  if (cards.length < 2) return;
-
-  const sorted = [...cards].sort((a, b) => compareCardsForCustomSort(a, b, mode));
-  const currentIds = cards.map(card => card.dataset.itemId).join("|");
-  const sortedIds = sorted.map(card => card.dataset.itemId).join("|");
-  if (currentIds === sortedIds) return;
-
-  customSortInProgress = true;
-  try {
-    sorted.forEach(card => container.appendChild(card));
-  } finally {
-    queueMicrotask(() => {
-      customSortInProgress = false;
-    });
-  }
-}
-
-function applyStorageFilterToCards() {
-  const storageFilters = currentStorageFilters();
-  const storageActive = storageFilters.size < 4;
-  const cards = [...document.querySelectorAll(
-    "#itemsList .item-card[data-item-id]"
-  )];
-
-  // Con los cuatro tamaños activos, Compras conserva por completo su conteo,
-  // paginación y filtros nativos. Sólo retiramos nuestra marca visual.
-  if (!storageActive) {
-    cards.forEach(card => card.classList.remove("storage-filter-hidden"));
-    return;
-  }
-
-  const statusFilters = currentPurchaseStatusFilters();
-  const priorityFilters = currentPurchasePriorityFilters();
-  let visible = 0;
-
-  cards.forEach(card => {
-    const item = itemsById.get(String(card.dataset.itemId || ""));
-    if (!item) return;
-
-    const storageMatch = storageFilters.has(storageFilterKey(item));
-    const statusMatch = statusFilters.has(purchaseStateKeyFromCard(card, item));
-    const priority = [1, 2, 3].includes(Number(item.purchasePriority))
-      ? Number(item.purchasePriority)
-      : 3;
-    const priorityMatch = priorityFilters.has(String(priority));
-    const show = storageMatch && statusMatch && priorityMatch;
-
-    card.classList.toggle("storage-filter-hidden", !storageMatch);
-    card.classList.toggle("d-none", !show);
-    if (show) visible += 1;
-  });
-
-  const resultCount = document.querySelector("#resultCount");
-  if (resultCount) {
-    resultCount.textContent = `${visible} resultado${visible === 1 ? "" : "s"}`;
-  }
-}
-
-function scheduleStorageFilter({ materialize = true } = {}) {
-  clearTimeout(storageFilterTimer);
-
-  storageFilterTimer = window.setTimeout(() => {
-    ensureStorageFilterUi();
-
-    const active = storageFilterIsActive();
-    const customSort = currentCustomSortMode();
-
-    if (active && materialize) {
-      window.__purchasePerformance?.materializeAll?.();
-    } else if (!active && !customSort) {
-      window.__purchasePerformance?.restoreProgressive?.({ delay: 0 });
-    }
-
-    requestAnimationFrame(() => {
-      decorateVisibleCards();
-      applyStorageFilterToCards();
-      if (customSort) reorderMaterializedCards(customSort);
-    });
-  }, 0);
-}
-
-function scheduleCustomSort({ materialize = true } = {}) {
-  clearTimeout(customSortTimer);
-
-  customSortTimer = window.setTimeout(() => {
-    const mode = currentCustomSortMode();
-    if (!mode) return;
-
-    if (materialize) {
-      window.__purchasePerformance?.materializeAll?.();
-    }
-
-    // Da oportunidad a compras-status y a esta misma capa de decorar las
-    // tarjetas recién materializadas antes de calcular el orden definitivo.
-    requestAnimationFrame(() => {
-      decorateVisibleCards();
-      requestAnimationFrame(() => {
-        reorderMaterializedCards(mode);
-        applyStorageFilterToCards();
-      });
-    });
-  }, 0);
-}
-
-function bindCustomSort() {
-  const sort = document.querySelector("#sortMode");
-  if (!sort) return;
-
-  const handleSortChange = () => {
-    const mode = currentCustomSortMode();
-    if (mode) {
-      scheduleCustomSort({ materialize: true });
-      return;
-    }
-
-    if (storageFilterIsActive()) {
-      scheduleStorageFilter({ materialize: true });
-      return;
-    }
-
-    // Al volver a un orden nativo sin filtro de tamaño, permitimos que la
-    // capa de rendimiento recupere la paginación progresiva normal.
-    window.__purchasePerformance?.restoreProgressive?.({ delay: 0 });
-  };
-
-  sort.addEventListener("input", handleSortChange);
-  sort.addEventListener("change", handleSortChange);
-
-  document.addEventListener("purchase:render-batch", () => {
-    if (currentCustomSortMode()) {
-      scheduleCustomSort({ materialize: true });
-    } else if (storageFilterIsActive()) {
-      scheduleStorageFilter({ materialize: true });
-    }
-  });
-
-  document.addEventListener("purchase:materialized-all", () => {
-    if (currentCustomSortMode()) {
-      scheduleCustomSort({ materialize: false });
-    } else if (storageFilterIsActive()) {
-      scheduleStorageFilter({ materialize: false });
-    }
-  });
-}
-
 function injectStyles() {
   if (document.querySelector("#purchaseStorageStyles")) return;
 
   const style = document.createElement("style");
   style.id = "purchaseStorageStyles";
   style.textContent = `
-    .item-card.storage-filter-hidden {
-      display: none !important;
-    }
-
     .purchase-storage-wrapper {
       flex: 0 0 auto;
     }
@@ -631,6 +329,14 @@ function queueDecoration() {
   });
 }
 
+function replayCurrentOrdering() {
+  const sort = document.querySelector("#sortMode");
+  if (!sort) return;
+
+  const event = new Event("input", { bubbles: true });
+  sort.dispatchEvent(event);
+}
+
 async function updateStorageSize(itemId, select) {
   if (currentRole !== "admin") return;
 
@@ -650,10 +356,14 @@ async function updateStorageSize(itemId, select) {
     await updateDoc(doc(db, "items", itemId), payload);
 
     const current = itemsById.get(itemId) || { id: itemId };
-    itemsById.set(itemId, {
+    const updated = {
       ...current,
+      id: itemId,
       purchaseStorageSize: next,
-    });
+    };
+
+    itemsById.set(itemId, updated);
+    window.__purchasePerformance?.patchItems?.([updated]);
 
     const wrapper = select.closest(".purchase-storage-wrapper");
     if (wrapper) wrapper.dataset.storageSignature = `${currentRole}|${next}`;
@@ -661,27 +371,29 @@ async function updateStorageSize(itemId, select) {
     select.classList.add("is-saved");
     window.setTimeout(() => select.classList.remove("is-saved"), 700);
 
-    window.__purchasePerformance?.patchItems?.([{
-      ...current,
-      id: itemId,
-      purchaseStorageSize: next,
-    }]);
-
     document.dispatchEvent(new CustomEvent("purchase:storage-updated", {
       detail: {
         itemId,
         purchaseStorageSize: next,
       },
     }));
-
-    if (currentCustomSortMode() === "storage_size") {
-      scheduleCustomSort({ materialize: false });
-    } else if (storageFilterIsActive()) {
-      scheduleStorageFilter({ materialize: false });
-    }
   } catch (error) {
     console.error("No se pudo cambiar el almacenamiento:", error);
     select.value = previous;
+
+    const current = itemsById.get(itemId) || { id: itemId };
+    const reverted = {
+      ...current,
+      id: itemId,
+      purchaseStorageSize: previous,
+    };
+    itemsById.set(itemId, reverted);
+    window.__purchasePerformance?.patchItems?.([reverted]);
+
+    // Si el cambio optimista había alterado filtro/orden, recupera el estado
+    // anterior una única vez. No mueve nodos directamente.
+    replayCurrentOrdering();
+
     alert(`No se pudo cambiar el almacenamiento: ${error.message}`);
   } finally {
     select.classList.remove("is-saving");
@@ -698,29 +410,6 @@ function bindActions() {
     if (!select) return;
     updateStorageSize(String(select.dataset.id || ""), select);
   });
-
-  document.addEventListener("change", event => {
-    if (event.target?.matches?.(
-      ".purchase-status-check, .purchase-priority-check"
-    )) {
-      window.setTimeout(() => scheduleStorageFilter({ materialize: false }), 0);
-    }
-  });
-
-  document.addEventListener("click", event => {
-    if (event.target?.closest?.("#clearFilters")) {
-      window.setTimeout(() => scheduleStorageFilter({ materialize: false }), 0);
-    }
-  });
-
-  // Antes de exportar, deja d-none sincronizado con Tamaño + Estado + Prioridad.
-  document.addEventListener("click", event => {
-    if (event.target?.closest?.(
-      "#exportXlsx, #exportPurchaseReport, #exportPurchasePdf"
-    )) {
-      applyStorageFilterToCards();
-    }
-  }, true);
 }
 
 function observeCards() {
@@ -734,14 +423,9 @@ function observeCards() {
       && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)
     );
 
-    if (changed) {
-      queueDecoration();
-      if (!customSortInProgress && currentCustomSortMode()) {
-        scheduleCustomSort({ materialize: false });
-      } else if (storageFilterIsActive()) {
-        scheduleStorageFilter({ materialize: false });
-      }
-    }
+    // Sólo decoramos las tarjetas nuevas. NO reordenamos ni volvemos a
+    // materializar aquí; compras-performance.js ya entregó el orden correcto.
+    if (changed) queueDecoration();
   });
 
   observer.observe(itemsList, {
@@ -778,13 +462,11 @@ async function initPurchaseStorage() {
   addCustomSortOptions();
   watchForStorageFilterUi();
   bindActions();
-  bindCustomSort();
   observeCards();
   queueDecoration();
-  scheduleStorageFilter({ materialize: false });
 
-  // Si otra capa del módulo de Compras actualiza visualmente las tarjetas,
-  // volvemos a colocar el control sin recargar la página.
+  // Si otra capa de Compras actualiza datos locales, mantenemos sincronizada
+  // únicamente nuestra caché y volvemos a decorar las tarjetas afectadas.
   document.addEventListener("purchase:items-local-updated", event => {
     const rows = Array.isArray(event.detail?.items) ? event.detail.items : [];
     rows.forEach(row => {
@@ -793,11 +475,6 @@ async function initPurchaseStorage() {
       itemsById.set(String(row.id), { ...previous, ...row });
     });
     queueDecoration();
-    if (currentCustomSortMode()) {
-      scheduleCustomSort({ materialize: false });
-    } else if (storageFilterIsActive()) {
-      scheduleStorageFilter({ materialize: false });
-    }
   });
 }
 

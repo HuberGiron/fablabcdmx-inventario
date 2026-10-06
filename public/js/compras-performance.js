@@ -25,7 +25,10 @@ import {
  * - mantener totales, PDF, Excel y operaciones masivas sobre el conjunto
  *   lógico completo, no únicamente sobre las tarjetas dibujadas.
  *
- * No modifica Firestore ni la estructura de datos.
+ * Esta versión integra también los filtros/órdenes propios de Compras
+ * (estado, prioridad y tamaño de almacenamiento) ANTES de materializar DOM.
+ * Así se evita que módulos posteriores reordenen nodos ya decorados y se
+ * elimina el parpadeo / pérdida temporal de colores de estado.
  * ============================================================================
  */
 
@@ -34,6 +37,20 @@ const SEARCH_DEBOUNCE_MS = 220;
 const SENTINEL_ID = "purchaseProgressiveSentinel";
 const STYLE_ID = "purchaseProgressiveStyles";
 const CARD_MARKER = '<div class="item-card card shadow-sm mb-3" data-item-id="';
+
+const PURCHASE_STATE_ORDER = {
+  missing: 1,
+  ordered: 2,
+  requisition: 3,
+  complete: 4,
+};
+
+const STORAGE_SIZE_ORDER = {
+  small: 1,
+  medium: 2,
+  large: 3,
+  unassigned: 4,
+};
 
 const db = getFirestore();
 const auth = getAuth();
@@ -76,6 +93,14 @@ function num(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function compareText(left, right) {
+  return String(left || "").localeCompare(
+    String(right || ""),
+    "es",
+    { numeric: true, sensitivity: "base" }
+  );
+}
+
 function currentInventory(item) {
   return num(item?.stockAlmacen) + num(item?.stockPrestadoTemporal);
 }
@@ -100,6 +125,21 @@ function purchaseStateKey(item) {
 function itemPriority(item) {
   const value = Number(item?.purchasePriority);
   return [1, 2, 3].includes(value) ? value : 3;
+}
+
+function normalizeStorageSize(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["small", "medium", "large"].includes(normalized)
+    ? normalized
+    : "";
+}
+
+function storageFilterKey(item) {
+  return normalizeStorageSize(item?.purchaseStorageSize) || "unassigned";
+}
+
+function storageSortRank(item) {
+  return STORAGE_SIZE_ORDER[storageFilterKey(item)] || STORAGE_SIZE_ORDER.unassigned;
 }
 
 function selectedValues(selector, fallback) {
@@ -130,6 +170,17 @@ function currentPriorityFilters() {
   );
 }
 
+function currentStorageFilters() {
+  return selectedValues(
+    "#filterPurchaseStorageGroup .purchase-storage-check",
+    ["small", "medium", "large", "unassigned"]
+  );
+}
+
+function storageFilterIsActive() {
+  return currentStorageFilters().size < 4;
+}
+
 function passesExtraFilters(item) {
   if (!item) {
     // Mientras la caché termina de llegar no ocultamos resultados.
@@ -138,10 +189,12 @@ function passesExtraFilters(item) {
 
   const statuses = currentStatusFilters();
   const priorities = currentPriorityFilters();
+  const storageSizes = currentStorageFilters();
 
   return (
     statuses.has(purchaseStateKey(item))
     && priorities.has(String(itemPriority(item)))
+    && storageSizes.has(storageFilterKey(item))
   );
 }
 
@@ -210,23 +263,49 @@ function logicalEntries() {
   const sortMode =
     document.querySelector("#sortMode")?.value || "zone";
 
-  if (sortMode === "priority" && itemsReady) {
-    rows = [...rows].sort((a, b) => {
-      const ia = itemsById.get(a.id);
-      const ib = itemsById.get(b.id);
+  if (itemsReady) {
+    if (sortMode === "priority") {
+      rows = [...rows].sort((a, b) => {
+        const ia = itemsById.get(a.id);
+        const ib = itemsById.get(b.id);
 
-      return (
-        itemPriority(ia) - itemPriority(ib)
-        || String(ia?.nombre || "").localeCompare(
-          String(ib?.nombre || ""),
-          "es",
-          {
-            sensitivity: "base",
-            numeric: true,
-          }
-        )
-      );
-    });
+        return (
+          itemPriority(ia) - itemPriority(ib)
+          || compareText(ia?.nombre, ib?.nombre)
+          || compareText(ia?.sku, ib?.sku)
+        );
+      });
+    }
+
+    if (sortMode === "purchase_status") {
+      rows = [...rows].sort((a, b) => {
+        const ia = itemsById.get(a.id);
+        const ib = itemsById.get(b.id);
+        const statusDiff =
+          (PURCHASE_STATE_ORDER[purchaseStateKey(ia)] || 99)
+          - (PURCHASE_STATE_ORDER[purchaseStateKey(ib)] || 99);
+
+        return (
+          statusDiff
+          || itemPriority(ia) - itemPriority(ib)
+          || compareText(ia?.nombre, ib?.nombre)
+          || compareText(ia?.sku, ib?.sku)
+        );
+      });
+    }
+
+    if (sortMode === "storage_size") {
+      rows = [...rows].sort((a, b) => {
+        const ia = itemsById.get(a.id);
+        const ib = itemsById.get(b.id);
+
+        return (
+          storageSortRank(ia) - storageSortRank(ib)
+          || compareText(ia?.nombre, ib?.nombre)
+          || compareText(ia?.sku, ib?.sku)
+        );
+      });
+    }
   }
 
   logicalEntriesCache = rows;
@@ -731,7 +810,8 @@ document.addEventListener(
     if (
       target?.matches?.(
         ".purchase-status-check, "
-        + ".purchase-priority-check"
+        + ".purchase-priority-check, "
+        + ".purchase-storage-check"
       )
     ) {
       refreshLogicalAfterExtraFilter();
@@ -755,6 +835,26 @@ document.addEventListener(
 
       // Sin resincronización automática del catálogo.
       // El botón flotante Actualizar realiza la consulta explícita.
+      return;
+    }
+
+    if (
+      target?.matches?.(
+        ".purchase-storage-select"
+      )
+    ) {
+      const itemId = String(target.dataset.id || "");
+      const item = itemsById.get(itemId);
+      const value = normalizeStorageSize(target.value);
+
+      if (item) {
+        item.purchaseStorageSize = value;
+      }
+
+      const sortMode = document.querySelector("#sortMode")?.value || "zone";
+      if (sortMode === "storage_size" || storageFilterIsActive()) {
+        refreshLogicalAfterExtraFilter();
+      }
       return;
     }
 
@@ -962,6 +1062,20 @@ async function loadItems({
         }
       )
     );
+
+    // Si el usuario ya eligió uno de los órdenes/filtros que dependen de la
+    // caché completa, reaplicamos una sola vez ahora que los datos están listos.
+    const sortMode = document.querySelector("#sortMode")?.value || "zone";
+    if (
+      sortMode === "priority"
+      || sortMode === "purchase_status"
+      || sortMode === "storage_size"
+      || storageFilterIsActive()
+    ) {
+      window.setTimeout(() => {
+        triggerBaseRerender({ preserveLimit: true });
+      }, 0);
+    }
   })();
 
   try {
