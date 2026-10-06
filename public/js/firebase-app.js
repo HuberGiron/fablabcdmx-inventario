@@ -41,6 +41,8 @@ if (currentPath.endsWith("compras.html")) {
     // Admin edita; Supervisor consulta; no se expone en el inventario público.
     .then(() => import("./compras-storage.js"))
     .then(() => import("./compras-bulk-item-editor.js"))
+    // Extiende el editor masivo con purchaseStorageSize sin duplicar el editor.
+    .then(() => import("./compras-bulk-storage-extension.js"))
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))
     .then(() => import("./compras-request-progress.js"))
