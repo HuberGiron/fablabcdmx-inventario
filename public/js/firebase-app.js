@@ -37,6 +37,9 @@ if (currentPath.endsWith("compras.html")) {
     // Capa adicional y no invasiva: cuando el perfil real es supervisor,
     // conserva toda la consulta/reporteo y bloquea las acciones de escritura.
     .then(() => import("./compras-supervisor-readonly.js"))
+    // Clasificación visual del tamaño de embalaje / almacenamiento.
+    // Admin edita; Supervisor consulta; no se expone en el inventario público.
+    .then(() => import("./compras-storage.js"))
     .then(() => import("./compras-bulk-item-editor.js"))
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))

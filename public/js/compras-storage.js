@@ -1,0 +1,370 @@
+import { db } from "./firebase-app.js";
+import { waitForUser, getUserProfile } from "./common.js";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  doc,
+  updateDoc,
+  serverTimestamp,
+  deleteField,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+/*
+ * ============================================================================
+ * COMPRAS · CLASIFICACION DE ALMACENAMIENTO / TAMANO DE EMBALAJE
+ * ============================================================================
+ *
+ * Campo Firestore en items:
+ *   purchaseStorageSize: "small" | "medium" | "large"
+ *
+ * - Admin: puede asignar/cambiar el valor desde cada tarjeta de Compras.
+ * - Supervisor: ve el valor como etiqueta de solo lectura.
+ * - Otros roles / usuario sin sesion: este modulo no muestra el dato.
+ * - "Sin asignar" es solo un estado de revision; no se guarda como categoria.
+ * ============================================================================
+ */
+
+const ALLOWED_ROLES = new Set(["admin", "supervisor"]);
+const STORAGE_VALUES = new Set(["small", "medium", "large"]);
+const STORAGE_LABELS = {
+  small: "Pequeño",
+  medium: "Mediano",
+  large: "Grande",
+};
+
+const itemsById = new Map();
+let currentRole = "";
+let observer = null;
+let decorateQueued = false;
+
+function normalizeStorageSize(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return STORAGE_VALUES.has(normalized) ? normalized : "";
+}
+
+function storageLabel(value) {
+  const normalized = normalizeStorageSize(value);
+  return normalized ? STORAGE_LABELS[normalized] : "Sin asignar";
+}
+
+function storageBadgeClass(value) {
+  const normalized = normalizeStorageSize(value);
+  if (normalized === "small") return "storage-size-small";
+  if (normalized === "medium") return "storage-size-medium";
+  if (normalized === "large") return "storage-size-large";
+  return "storage-size-unassigned";
+}
+
+function injectStyles() {
+  if (document.querySelector("#purchaseStorageStyles")) return;
+
+  const style = document.createElement("style");
+  style.id = "purchaseStorageStyles";
+  style.textContent = `
+    .purchase-storage-wrapper {
+      flex: 0 0 auto;
+    }
+
+    .purchase-storage-box {
+      min-width: 150px;
+      padding: .55rem .7rem;
+      border: 1px solid #dee2e6;
+      border-radius: .65rem;
+      background: #fff;
+      text-align: right;
+    }
+
+    .purchase-storage-box .form-select {
+      min-width: 125px;
+    }
+
+    .purchase-storage-label {
+      display: block;
+      margin-bottom: .25rem;
+      color: #6c757d;
+      font-size: .75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .02em;
+    }
+
+    .purchase-storage-badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: .42rem .65rem;
+      font-size: .78rem;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .storage-size-unassigned {
+      border: 1px solid #ced4da;
+      background: #f8f9fa;
+      color: #6c757d;
+    }
+
+    .storage-size-small {
+      border: 1px solid #adb5bd;
+      background: #f8f9fa;
+      color: #343a40;
+    }
+
+    .storage-size-medium {
+      border: 1px solid #6c757d;
+      background: #e9ecef;
+      color: #212529;
+    }
+
+    .storage-size-large {
+      border: 1px solid #343a40;
+      background: #343a40;
+      color: #fff;
+    }
+
+    .purchase-storage-select.is-saving {
+      opacity: .65;
+    }
+
+    .purchase-storage-select.is-saved {
+      box-shadow: 0 0 0 .2rem rgba(25,135,84,.16);
+    }
+
+    @media (max-width: 575.98px) {
+      .purchase-storage-wrapper,
+      .purchase-storage-box {
+        width: 100%;
+      }
+
+      .purchase-storage-box {
+        text-align: left;
+      }
+    }
+
+    @media print {
+      .purchase-storage-box {
+        min-width: 36mm;
+        padding: 2.5mm 3mm;
+        border: 1px solid #dee2e6;
+        border-radius: 2.5mm;
+        background: #fff !important;
+        text-align: right;
+      }
+
+      .purchase-storage-label {
+        margin-bottom: 1mm;
+        font-size: 7pt;
+        font-weight: 700;
+      }
+
+      .purchase-storage-badge {
+        font-size: 8pt;
+        padding: 1.6mm 2.2mm;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function storageControlHtml(item) {
+  const value = normalizeStorageSize(item?.purchaseStorageSize);
+
+  if (currentRole === "admin") {
+    return `
+      <div class="purchase-storage-box" title="Tamaño aproximado del embalaje al momento de compra, útil para prever su almacenamiento.">
+        <label class="purchase-storage-label" for="purchase-storage-${item.id}">Almacenamiento</label>
+        <select
+          id="purchase-storage-${item.id}"
+          class="form-select form-select-sm purchase-storage-select"
+          data-id="${item.id}"
+          aria-label="Tamaño de embalaje para almacenamiento">
+          <option value="" ${value === "" ? "selected" : ""}>Sin asignar</option>
+          <option value="small" ${value === "small" ? "selected" : ""}>Pequeño</option>
+          <option value="medium" ${value === "medium" ? "selected" : ""}>Mediano</option>
+          <option value="large" ${value === "large" ? "selected" : ""}>Grande</option>
+        </select>
+      </div>`;
+  }
+
+  return `
+    <div class="purchase-storage-box" title="Tamaño aproximado del embalaje al momento de compra.">
+      <span class="purchase-storage-label">Almacenamiento</span>
+      <span class="purchase-storage-badge ${storageBadgeClass(value)}">${storageLabel(value)}</span>
+    </div>`;
+}
+
+function decorateStorage(card) {
+  const itemId = String(card?.dataset?.itemId || "");
+  if (!itemId) return;
+
+  const item = itemsById.get(itemId);
+  if (!item) return;
+
+  const body = card.querySelector(".card-body");
+  if (!body) return;
+
+  const header = body.querySelector(":scope > .d-flex.justify-content-between");
+  if (!header) return;
+
+  let wrapper = header.querySelector(".purchase-storage-wrapper");
+  if (!wrapper) {
+    wrapper = document.createElement("div");
+    wrapper.className = "purchase-storage-wrapper";
+
+    const priorityWrapper = header.querySelector(".purchase-priority-wrapper");
+    if (priorityWrapper) {
+      priorityWrapper.insertAdjacentElement("afterend", wrapper);
+    } else {
+      wrapper.classList.add("ms-auto");
+      header.appendChild(wrapper);
+    }
+  }
+
+  const value = normalizeStorageSize(item.purchaseStorageSize);
+  const signature = `${currentRole}|${value}`;
+  if (wrapper.dataset.storageSignature === signature) return;
+
+  wrapper.dataset.storageSignature = signature;
+  wrapper.innerHTML = storageControlHtml(item);
+}
+
+function decorateVisibleCards() {
+  document
+    .querySelectorAll("#itemsList .item-card[data-item-id]")
+    .forEach(decorateStorage);
+}
+
+function queueDecoration() {
+  if (decorateQueued) return;
+  decorateQueued = true;
+
+  requestAnimationFrame(() => {
+    decorateQueued = false;
+    decorateVisibleCards();
+  });
+}
+
+async function updateStorageSize(itemId, select) {
+  if (currentRole !== "admin") return;
+
+  const previous = normalizeStorageSize(itemsById.get(itemId)?.purchaseStorageSize);
+  const next = normalizeStorageSize(select.value);
+
+  select.disabled = true;
+  select.classList.add("is-saving");
+  select.classList.remove("is-saved");
+
+  try {
+    const payload = {
+      updatedAt: serverTimestamp(),
+      purchaseStorageSize: next || deleteField(),
+    };
+
+    await updateDoc(doc(db, "items", itemId), payload);
+
+    const current = itemsById.get(itemId) || { id: itemId };
+    itemsById.set(itemId, {
+      ...current,
+      purchaseStorageSize: next,
+    });
+
+    const wrapper = select.closest(".purchase-storage-wrapper");
+    if (wrapper) wrapper.dataset.storageSignature = `${currentRole}|${next}`;
+
+    select.classList.add("is-saved");
+    window.setTimeout(() => select.classList.remove("is-saved"), 700);
+
+    document.dispatchEvent(new CustomEvent("purchase:storage-updated", {
+      detail: {
+        itemId,
+        purchaseStorageSize: next,
+      },
+    }));
+  } catch (error) {
+    console.error("No se pudo cambiar el almacenamiento:", error);
+    select.value = previous;
+    alert(`No se pudo cambiar el almacenamiento: ${error.message}`);
+  } finally {
+    select.classList.remove("is-saving");
+    select.disabled = false;
+  }
+}
+
+function bindActions() {
+  const itemsList = document.querySelector("#itemsList");
+  if (!itemsList) return;
+
+  itemsList.addEventListener("change", event => {
+    const select = event.target.closest(".purchase-storage-select");
+    if (!select) return;
+    updateStorageSize(String(select.dataset.id || ""), select);
+  });
+}
+
+function observeCards() {
+  const itemsList = document.querySelector("#itemsList");
+  if (!itemsList) return;
+
+  observer?.disconnect();
+  observer = new MutationObserver(mutations => {
+    const changed = mutations.some(mutation =>
+      mutation.type === "childList"
+      && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)
+    );
+
+    if (changed) queueDecoration();
+  });
+
+  observer.observe(itemsList, {
+    childList: true,
+    subtree: false,
+  });
+}
+
+async function loadItems() {
+  const snapshot = await getDocs(
+    query(collection(db, "items"), where("activo", "==", true))
+  );
+
+  itemsById.clear();
+  snapshot.docs.forEach(itemDoc => {
+    itemsById.set(itemDoc.id, {
+      id: itemDoc.id,
+      ...itemDoc.data(),
+    });
+  });
+}
+
+async function initPurchaseStorage() {
+  const user = await waitForUser();
+  if (!user) return;
+
+  const profile = await getUserProfile(user.uid);
+  currentRole = profile?.appRole || profile?.role || "";
+
+  if (!ALLOWED_ROLES.has(currentRole)) return;
+
+  injectStyles();
+  await loadItems();
+  bindActions();
+  observeCards();
+  queueDecoration();
+
+  // Si otra capa del módulo de Compras actualiza visualmente las tarjetas,
+  // volvemos a colocar el control sin recargar la página.
+  document.addEventListener("purchase:items-local-updated", event => {
+    const rows = Array.isArray(event.detail?.items) ? event.detail.items : [];
+    rows.forEach(row => {
+      if (!row?.id) return;
+      const previous = itemsById.get(String(row.id)) || {};
+      itemsById.set(String(row.id), { ...previous, ...row });
+    });
+    queueDecoration();
+  });
+}
+
+initPurchaseStorage().catch(error => {
+  console.error("No se pudo activar la clasificación de almacenamiento en Compras:", error);
+});
