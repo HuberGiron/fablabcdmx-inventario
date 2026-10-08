@@ -259,7 +259,9 @@ function injectStyles() {
     .req-followup-table th { white-space:nowrap; vertical-align:middle; }
     .req-followup-table td { vertical-align:middle; }
     .req-followup-row-complete { background:#f3fbf6; }
-    .req-followup-row-missing { background:#fff7f7; }
+    .req-followup-row-missing.req-followup-row-warning { background:#fff9e6; }
+    .req-followup-row-missing.req-followup-row-critical { background:#fff7f7; }
+    .req-followup-warning-text { color:#997404 !important; }
     .req-followup-progress { min-width:135px; }
     .req-followup-progress .progress { height:.45rem; }
     .req-followup-progress small { display:block; color:#6c757d; margin-top:.2rem; }
@@ -370,14 +372,20 @@ function updateSelectionMeta() {
   if (button) button.disabled = count === 0;
 }
 
+function progressTone(value) {
+  if (value >= 99.999) return "success";
+  if (value > 50) return "warning";
+  return "danger";
+}
+
 function progressCellHtml(value, missingPct) {
-  const complete = value >= 99.999;
-  const tone = complete ? "success" : "danger";
+  const tone = progressTone(value);
+  const textClass = tone === "warning" ? "req-followup-warning-text" : `text-${tone}`;
   return `
     <div class="req-followup-progress">
       <div class="d-flex justify-content-between gap-2 small">
         <strong>${pctText(value)}</strong>
-        <span class="text-${tone}">falta ${pctText(missingPct)}</span>
+        <span class="${textClass}">falta ${pctText(missingPct)}</span>
       </div>
       <div class="progress" role="progressbar" aria-valuenow="${value}" aria-valuemin="0" aria-valuemax="100">
         <div class="progress-bar bg-${tone}" style="width:${value}%"></div>
@@ -407,7 +415,7 @@ function modalTableHtml(rows) {
             const alias = String(request.alias || "").trim();
             const search = `${folio} ${alias}`.toLocaleLowerCase("es-MX");
             return `
-              <tr class="req-followup-request-row ${bundle.complete ? "req-followup-row-complete" : "req-followup-row-missing"}" data-search="${esc(search)}">
+              <tr class="req-followup-request-row ${bundle.complete ? "req-followup-row-complete" : `req-followup-row-missing ${progressTone(bundle.productProgress) === "warning" ? "req-followup-row-warning" : "req-followup-row-critical"}`}" data-search="${esc(search)}">
                 <td><input class="form-check-input req-followup-select" type="checkbox" value="${esc(request.id)}" checked></td>
                 <td>
                   <strong>${esc(folio)}</strong>
@@ -415,11 +423,11 @@ function modalTableHtml(rows) {
                 </td>
                 <td>${esc(dateText(request.sentAt || request.createdAt))}</td>
                 <td>${bundle.coveredProducts} / ${bundle.activeProducts}</td>
-                <td><strong class="${bundle.missingProducts ? "text-danger" : "text-success"}">${bundle.missingProducts}</strong></td>
+                <td><strong class="${bundle.complete ? "text-success" : (progressTone(bundle.productProgress) === "warning" ? "req-followup-warning-text" : "text-danger")}">${bundle.missingProducts}</strong></td>
                 <td>${progressCellHtml(bundle.productProgress, bundle.productMissingPct)}</td>
                 <td>${bundle.complete
                   ? '<span class="badge text-bg-success">Completa</span>'
-                  : `<span class="badge text-bg-danger">Falta requisición ${pctText(bundle.productMissingPct)}</span>`}</td>
+                  : `<span class="badge ${progressTone(bundle.productProgress) === "warning" ? "text-bg-warning text-dark" : "text-bg-danger"}">Falta requisición ${pctText(bundle.productMissingPct)}</span>`}</td>
               </tr>`;
           }).join("")}
         </tbody>
@@ -531,9 +539,14 @@ function batchSummary(rows) {
   return summary;
 }
 
+function pdfToneClass(value) {
+  if (value >= 99.999) return "complete";
+  if (value > 50) return "warning";
+  return "critical";
+}
+
 function pdfProgressHtml(value, missingPct) {
-  const complete = value >= 99.999;
-  const toneClass = complete ? "complete" : "incomplete";
+  const toneClass = pdfToneClass(value);
   return `
     <div class="pdf-progress ${toneClass}">
       <div class="pdf-progress-head">
@@ -557,17 +570,17 @@ function pdfSummaryRows(rows) {
     const folio = request.folio || request.id;
     const alias = String(request.alias || "").trim();
     return `
-      <tr class="${row.complete ? "row-complete" : "row-incomplete"}">
+      <tr class="${row.complete ? "row-complete" : (pdfToneClass(row.productProgress) === "warning" ? "row-warning" : "row-critical")}">
         <td><strong>${esc(folio)}</strong>${alias ? `<div class="alias">${esc(alias)}</div>` : ""}</td>
         <td>${esc(dateText(request.sentAt || request.createdAt))}</td>
         <td class="num">${row.activeProducts}</td>
         <td class="num">${row.requisitionProducts}</td>
         <td class="num">${row.receivedProducts}</td>
-        <td class="num missing">${row.missingProducts}</td>
+        <td class="num ${row.complete ? "complete-text" : (pdfToneClass(row.productProgress) === "warning" ? "warning-text" : "critical-text")}">${row.missingProducts}</td>
         <td>${pdfProgressHtml(row.productProgress, row.productMissingPct)}</td>
         <td>${row.complete
           ? '<span class="pill complete">COMPLETA</span>'
-          : `<span class="pill missing">FALTA REQUISICIÓN ${pctText(row.productMissingPct)}</span>`}</td>
+          : `<span class="pill ${pdfToneClass(row.productProgress)}">FALTA REQUISICIÓN ${pctText(row.productMissingPct)}</span>`}</td>
       </tr>`;
   }).join("");
 }
@@ -597,7 +610,7 @@ function incompleteSections(rows) {
       const folio = request.folio || request.id;
       const alias = String(request.alias || "").trim();
       return `
-        <section class="sc-detail">
+        <section class="sc-detail ${pdfToneClass(row.productProgress)}">
           <div class="sc-detail-head">
             <div>
               <div class="sc-kicker">SC INCOMPLETA</div>
@@ -680,6 +693,7 @@ h1{font-size:22pt;margin:1mm 0}
 .summary-card span{display:block;color:#666;font-size:7pt;text-transform:uppercase;font-weight:700}
 .summary-card strong{display:block;font-size:15pt;margin-top:1mm}
 .summary-card.good{border-color:#a3cfbb;background:#f0fff6}
+.summary-card.warning{border-color:#ffe69c;background:#fff9e6}
 .summary-card.bad{border-color:#f1aeb5;background:#fff5f5}
 h2{font-size:14pt;margin:0 0 2mm}
 .summary-table,.detail-table{width:100%;border-collapse:collapse}
@@ -689,30 +703,51 @@ h2{font-size:14pt;margin:0 0 2mm}
 .num{text-align:right!important;white-space:nowrap}
 .alias{font-size:7pt;color:#555;margin-top:.5mm}
 .row-complete{background:#f0fff6}
-.row-incomplete{background:#fff7f7}
-.missing{color:#b02a37}
+.row-warning{background:#fff9e6}
+.row-critical{background:#fff7f7}
+.complete-text{color:#198754}
+.warning-text{color:#997404}
+.critical-text{color:#b02a37}
 .pill{display:inline-block;border-radius:99px;padding:1mm 2mm;font-size:7pt;font-weight:700;white-space:nowrap}
 .pill.complete{background:#198754;color:#fff}
-.pill.missing{background:#dc3545;color:#fff}
+.pill.warning{background:#ffc107;color:#212529}
+.pill.critical{background:#dc3545;color:#fff}
 .pdf-batch-progress{border:1px solid #ddd;border-radius:2mm;padding:2.5mm 3mm;margin:0 0 6mm;background:#fff}
 .pdf-batch-progress-head{display:flex;justify-content:space-between;gap:4mm;align-items:center;margin-bottom:1.5mm}
 .pdf-batch-progress-head strong{font-size:11pt}
-.pdf-batch-progress-head span{font-size:8pt;color:#b02a37;font-weight:700}
+.pdf-batch-progress-head span{font-size:8pt;font-weight:700}
 .pdf-progress{min-width:34mm}
 .pdf-progress-head{display:flex;justify-content:space-between;gap:2mm;font-size:7pt;margin-bottom:.8mm}
-.pdf-progress.incomplete .pdf-progress-head span{color:#b02a37;font-weight:700}
 .pdf-progress.complete .pdf-progress-head span{color:#198754;font-weight:700}
+.pdf-progress.warning .pdf-progress-head span{color:#997404;font-weight:700}
+.pdf-progress.critical .pdf-progress-head span{color:#b02a37;font-weight:700}
 .pdf-progress-track{height:3mm;border-radius:99px;background:#e9ecef;overflow:hidden}
-.pdf-progress-fill{height:100%;background:#dc3545;border-radius:99px}
+.pdf-progress-fill{height:100%;border-radius:99px}
 .pdf-progress.complete .pdf-progress-fill{background:#198754}
+.pdf-progress.warning .pdf-progress-fill{background:#ffc107}
+.pdf-progress.critical .pdf-progress-fill{background:#dc3545}
+.pdf-batch-progress.complete .pdf-batch-progress-head span{color:#198754}
+.pdf-batch-progress.warning .pdf-batch-progress-head span{color:#997404}
+.pdf-batch-progress.critical .pdf-batch-progress-head span{color:#b02a37}
+.pdf-batch-progress.complete .pdf-progress-fill{background:#198754}
+.pdf-batch-progress.warning .pdf-progress-fill{background:#ffc107}
+.pdf-batch-progress.critical .pdf-progress-fill{background:#dc3545}
 .pdf-batch-progress .pdf-progress-track{height:4mm}
 .sc-detail{margin:0 0 6mm;break-inside:avoid-page}
-.sc-detail-head{display:flex;justify-content:space-between;gap:5mm;align-items:flex-start;border-left:2mm solid #dc3545;background:#fff5f5;padding:2.5mm 3mm;margin-bottom:2mm}
-.sc-kicker{font-size:7pt;color:#b02a37;font-weight:700;letter-spacing:.04em}
+.sc-detail-head{display:flex;justify-content:space-between;gap:5mm;align-items:flex-start;padding:2.5mm 3mm;margin-bottom:2mm}
+.sc-detail.critical .sc-detail-head{border-left:2mm solid #dc3545;background:#fff5f5}
+.sc-detail.warning .sc-detail-head{border-left:2mm solid #ffc107;background:#fff9e6}
+.sc-kicker{font-size:7pt;font-weight:700;letter-spacing:.04em}
+.sc-detail.critical .sc-kicker{color:#b02a37}
+.sc-detail.warning .sc-kicker{color:#997404}
 .detail-meta{font-size:8pt;color:#666}
-.missing-box{border:1px solid #f1aeb5;background:#fff;text-align:right;padding:2mm 3mm;border-radius:2mm;min-width:32mm}
+.missing-box{background:#fff;text-align:right;padding:2mm 3mm;border-radius:2mm;min-width:32mm}
+.sc-detail.critical .missing-box{border:1px solid #f1aeb5}
+.sc-detail.warning .missing-box{border:1px solid #ffe69c}
 .missing-box span,.missing-box small{display:block;font-size:7pt;color:#666}
-.missing-box strong{display:block;font-size:17pt;color:#b02a37}
+.missing-box strong{display:block;font-size:17pt}
+.sc-detail.critical .missing-box strong{color:#b02a37}
+.sc-detail.warning .missing-box strong{color:#997404}
 .detail-table{font-size:7.3pt}
 .line-desc{color:#666;font-size:6.8pt;margin-top:.5mm}
 a{color:#176b3a;text-decoration:none;font-weight:700}
@@ -739,12 +774,12 @@ a{color:#176b3a;text-decoration:none;font-weight:700}
 <section class="summary-grid">
   <div class="summary-card"><span>SC seleccionadas</span><strong>${summary.sc}</strong></div>
   <div class="summary-card good"><span>SC completas</span><strong>${summary.completeSc}</strong></div>
-  <div class="summary-card bad"><span>SC con faltantes</span><strong>${summary.incompleteSc}</strong></div>
+  <div class="summary-card"><span>SC con faltantes</span><strong>${summary.incompleteSc}</strong></div>
   <div class="summary-card"><span>Avance productos</span><strong>${pctText(summary.productProgress)}</strong></div>
-  <div class="summary-card bad"><span>Falta requisición</span><strong>${summary.missingProducts} prod.</strong></div>
+  <div class="summary-card ${summary.productProgress > 50 ? "warning" : "bad"}"><span>Falta requisición</span><strong>${summary.missingProducts} prod.</strong></div>
 </section>
 
-<div class="pdf-batch-progress">
+<div class="pdf-batch-progress ${pdfToneClass(summary.productProgress)}">
   <div class="pdf-batch-progress-head">
     <strong>Avance global de productos · ${pctText(summary.productProgress)}</strong>
     <span>Falta requisición · ${pctText(summary.productMissingPct)}</span>
