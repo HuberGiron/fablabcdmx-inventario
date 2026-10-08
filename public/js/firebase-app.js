@@ -45,6 +45,9 @@ if (currentPath.endsWith("compras.html")) {
     .then(() => import("./compras-bulk-storage-extension.js"))
     .then(() => import("./compras-budget-ui-fix.js"))
     .then(() => import("./compras-request-grouping.js"))
+    // Corrige la nomenclatura cromática de los PDF extendido y agrupado:
+    // amarillo=compras, azul=requisición, verde=recibido, rojo=cancelado/faltante.
+    .then(() => import("./compras-pdf-status-colors.js"))
     .then(() => import("./compras-request-progress.js"))
     .then(() => import("./compras-group-batch-actions.js"))
     .then(() => import("./compras-request-stage-tools.js"))
