@@ -49,6 +49,8 @@ if (currentPath.endsWith("compras.html")) {
     // amarillo=compras, azul=requisición, verde=recibido, rojo=cancelado/faltante.
     .then(() => import("./compras-pdf-status-colors.js"))
     .then(() => import("./compras-request-progress.js"))
+    // Reporte imprimible por SC/lote para detectar productos sin alta en requisición.
+    .then(() => import("./compras-requisition-followup-report.js"))
     .then(() => import("./compras-group-batch-actions.js"))
     .then(() => import("./compras-request-stage-tools.js"))
     // Corrige el estado persistente del botón Guardar precios y deja explícito
