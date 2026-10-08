@@ -14,7 +14,7 @@ import {
  * Objetivo:
  * - seleccionar una o varias SC como lote;
  * - medir qué porcentaje ya está cubierto por requisición/recepción;
- * - identificar qué productos siguen pendientes de alta en requisición;
+ * - identificar qué productos siguen pendientes de requisición;
  * - generar un documento imprimible / guardable como PDF.
  *
  * No modifica Firestore. Admin y Supervisor pueden consultar el reporte.
@@ -132,10 +132,6 @@ function lineStage(line) {
   return "covered";
 }
 
-function linePriority(line) {
-  const p = Number(line?.priority);
-  return [1, 2, 3].includes(p) ? p : 3;
-}
 
 function areaText(line) {
   const zone = `${line?.zoneId || ""}${line?.zoneName ? ` · ${line.zoneName}` : ""}`;
@@ -333,7 +329,7 @@ function attachButton() {
   button.id = BUTTON_ID;
   button.className = "btn btn-outline-danger btn-sm";
   button.textContent = "Seguimiento requisiciones";
-  button.title = "Generar reporte por SC con porcentaje requisicionado y productos pendientes de alta";
+  button.title = "Generar reporte por SC con porcentaje requisicionado y productos pendientes de requisición";
 
   if (global?.parentElement === container) {
     global.insertAdjacentElement("afterend", button);
@@ -399,9 +395,8 @@ function modalTableHtml(rows) {
             <th>SC</th>
             <th>Fecha</th>
             <th>Productos</th>
-            <th>Faltan alta</th>
+            <th>Falta requisición</th>
             <th>Avance productos</th>
-            <th>Avance piezas</th>
             <th>Estado</th>
           </tr>
         </thead>
@@ -422,10 +417,9 @@ function modalTableHtml(rows) {
                 <td>${bundle.coveredProducts} / ${bundle.activeProducts}</td>
                 <td><strong class="${bundle.missingProducts ? "text-danger" : "text-success"}">${bundle.missingProducts}</strong></td>
                 <td>${progressCellHtml(bundle.productProgress, bundle.productMissingPct)}</td>
-                <td>${progressCellHtml(bundle.pieceProgress, bundle.pieceMissingPct)}</td>
                 <td>${bundle.complete
                   ? '<span class="badge text-bg-success">Completa</span>'
-                  : `<span class="badge text-bg-danger">Falta ${pctText(bundle.productMissingPct)}</span>`}</td>
+                  : `<span class="badge text-bg-danger">Falta requisición ${pctText(bundle.productMissingPct)}</span>`}</td>
               </tr>`;
           }).join("")}
         </tbody>
@@ -440,14 +434,12 @@ function renderSelector(rows) {
   const complete = rows.filter(row => row.complete).length;
   const incomplete = rows.length - complete;
   const missingProducts = rows.reduce((sum, row) => sum + row.missingProducts, 0);
-  const missingPieces = rows.reduce((sum, row) => sum + row.missingPieces, 0);
-
   body.innerHTML = `
     <div class="req-followup-summary mb-3">
       <div class="req-followup-summary-card"><span>SC activas</span><strong>${rows.length}</strong></div>
       <div class="req-followup-summary-card"><span>SC completas</span><strong class="text-success">${complete}</strong></div>
       <div class="req-followup-summary-card"><span>SC con faltantes</span><strong class="text-danger">${incomplete}</strong></div>
-      <div class="req-followup-summary-card"><span>Productos / piezas sin alta</span><strong>${missingProducts} / ${missingPieces}</strong></div>
+      <div class="req-followup-summary-card"><span>Productos sin requisición</span><strong>${missingProducts}</strong></div>
     </div>
 
     <div class="req-followup-toolbar">
@@ -524,9 +516,6 @@ function batchSummary(rows) {
     activeProducts: 0,
     coveredProducts: 0,
     missingProducts: 0,
-    activePieces: 0,
-    coveredPieces: 0,
-    missingPieces: 0,
   };
 
   rows.forEach(row => {
@@ -535,16 +524,26 @@ function batchSummary(rows) {
     summary.activeProducts += row.activeProducts;
     summary.coveredProducts += row.coveredProducts;
     summary.missingProducts += row.missingProducts;
-    summary.activePieces += row.activePieces;
-    summary.coveredPieces += row.coveredPieces;
-    summary.missingPieces += row.missingPieces;
   });
 
   summary.productProgress = pct(summary.coveredProducts, summary.activeProducts);
-  summary.pieceProgress = pct(summary.coveredPieces, summary.activePieces);
   summary.productMissingPct = summary.activeProducts > 0 ? 100 - summary.productProgress : 0;
-  summary.pieceMissingPct = summary.activePieces > 0 ? 100 - summary.pieceProgress : 0;
   return summary;
+}
+
+function pdfProgressHtml(value, missingPct) {
+  const complete = value >= 99.999;
+  const toneClass = complete ? "complete" : "incomplete";
+  return `
+    <div class="pdf-progress ${toneClass}">
+      <div class="pdf-progress-head">
+        <strong>${pctText(value)}</strong>
+        <span>Falta ${pctText(missingPct)}</span>
+      </div>
+      <div class="pdf-progress-track">
+        <div class="pdf-progress-fill" style="width:${clampPercent(value)}%"></div>
+      </div>
+    </div>`;
 }
 
 function pdfSummaryRows(rows) {
@@ -565,19 +564,17 @@ function pdfSummaryRows(rows) {
         <td class="num">${row.requisitionProducts}</td>
         <td class="num">${row.receivedProducts}</td>
         <td class="num missing">${row.missingProducts}</td>
-        <td class="num"><strong>${pctText(row.productProgress)}</strong></td>
-        <td class="num"><strong>${pctText(row.pieceProgress)}</strong></td>
+        <td>${pdfProgressHtml(row.productProgress, row.productMissingPct)}</td>
         <td>${row.complete
           ? '<span class="pill complete">COMPLETA</span>'
-          : `<span class="pill missing">FALTA ${pctText(row.productMissingPct)}</span>`}</td>
+          : `<span class="pill missing">FALTA REQUISICIÓN ${pctText(row.productMissingPct)}</span>`}</td>
       </tr>`;
   }).join("");
 }
 
 function missingLineRows(row) {
   const lines = [...row.missingLines].sort((a, b) =>
-    linePriority(a) - linePriority(b)
-    || String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" })
+    String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" })
     || String(a.nombre || "").localeCompare(String(b.nombre || ""), "es", { sensitivity: "base" })
   );
 
@@ -585,12 +582,9 @@ function missingLineRows(row) {
     <tr>
       <td><strong>${esc(line.sku || "")}</strong></td>
       <td>${esc(line.nombre || "Item")}${line.descripcion ? `<div class="line-desc">${esc(line.descripcion)}</div>` : ""}</td>
-      <td class="num"><strong>${linePendingQty(line)}</strong></td>
       <td class="num">${num(line.quantityRequested)}</td>
       <td>${esc(areaText(line) || "—")}</td>
-      <td class="num">${linePriority(line)}</td>
       <td class="num">${esc(formatCurrency(line.unitPrice, line.currency || "MXN"))}</td>
-      <td>${line.purchaseUrl ? `<a href="${esc(line.purchaseUrl)}" target="_blank">Compra</a>` : "—"}</td>
     </tr>`).join("");
 }
 
@@ -608,10 +602,10 @@ function incompleteSections(rows) {
             <div>
               <div class="sc-kicker">SC INCOMPLETA</div>
               <h2>${esc(folio)}${alias ? ` · ${esc(alias)}` : ""}</h2>
-              <div class="detail-meta">${row.missingProducts} producto${row.missingProducts === 1 ? "" : "s"} · ${row.missingPieces} pieza${row.missingPieces === 1 ? "" : "s"} todavía sin alta en requisición</div>
+              <div class="detail-meta">${row.missingProducts} producto${row.missingProducts === 1 ? "" : "s"} todavía sin requisición</div>
             </div>
             <div class="missing-box">
-              <span>Falta requisicionar</span>
+              <span>Falta requisición</span>
               <strong>${pctText(row.productMissingPct)}</strong>
               <small>Avance: ${pctText(row.productProgress)}</small>
             </div>
@@ -622,12 +616,9 @@ function incompleteSections(rows) {
               <tr>
                 <th>SKU</th>
                 <th>Producto</th>
-                <th class="num">Pendiente</th>
                 <th class="num">Solicitado</th>
                 <th>Zona / subzona / área</th>
-                <th class="num">Prioridad</th>
                 <th class="num">Precio unit.</th>
-                <th>Info compra</th>
               </tr>
             </thead>
             <tbody>${missingLineRows(row)}</tbody>
@@ -642,7 +633,7 @@ function completeScList(rows) {
   return `
     <section class="complete-section">
       <h2>SC completas</h2>
-      <p>Estas SC no tienen productos pendientes de alta en requisición.</p>
+      <p>Estas SC no tienen productos pendientes de requisición.</p>
       <div class="complete-list">
         ${completed.map(row => {
           const folio = row.request.folio || row.request.id;
@@ -684,7 +675,7 @@ header{border-bottom:3px solid #c8102e;padding-bottom:4mm;margin-bottom:5mm}
 h1{font-size:22pt;margin:1mm 0}
 .meta{color:#666;font-size:8.5pt}
 .note{border-left:1.5mm solid #6c757d;background:#f8f9fa;padding:2.5mm 3mm;margin:4mm 0;font-size:8.5pt}
-.summary-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:2.5mm;margin:4mm 0 6mm}
+.summary-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:2.5mm;margin:4mm 0 4mm}
 .summary-card{border:1px solid #ddd;border-radius:2mm;padding:2.8mm}
 .summary-card span{display:block;color:#666;font-size:7pt;text-transform:uppercase;font-weight:700}
 .summary-card strong{display:block;font-size:15pt;margin-top:1mm}
@@ -703,6 +694,18 @@ h2{font-size:14pt;margin:0 0 2mm}
 .pill{display:inline-block;border-radius:99px;padding:1mm 2mm;font-size:7pt;font-weight:700;white-space:nowrap}
 .pill.complete{background:#198754;color:#fff}
 .pill.missing{background:#dc3545;color:#fff}
+.pdf-batch-progress{border:1px solid #ddd;border-radius:2mm;padding:2.5mm 3mm;margin:0 0 6mm;background:#fff}
+.pdf-batch-progress-head{display:flex;justify-content:space-between;gap:4mm;align-items:center;margin-bottom:1.5mm}
+.pdf-batch-progress-head strong{font-size:11pt}
+.pdf-batch-progress-head span{font-size:8pt;color:#b02a37;font-weight:700}
+.pdf-progress{min-width:34mm}
+.pdf-progress-head{display:flex;justify-content:space-between;gap:2mm;font-size:7pt;margin-bottom:.8mm}
+.pdf-progress.incomplete .pdf-progress-head span{color:#b02a37;font-weight:700}
+.pdf-progress.complete .pdf-progress-head span{color:#198754;font-weight:700}
+.pdf-progress-track{height:3mm;border-radius:99px;background:#e9ecef;overflow:hidden}
+.pdf-progress-fill{height:100%;background:#dc3545;border-radius:99px}
+.pdf-progress.complete .pdf-progress-fill{background:#198754}
+.pdf-batch-progress .pdf-progress-track{height:4mm}
 .sc-detail{margin:0 0 6mm;break-inside:avoid-page}
 .sc-detail-head{display:flex;justify-content:space-between;gap:5mm;align-items:flex-start;border-left:2mm solid #dc3545;background:#fff5f5;padding:2.5mm 3mm;margin-bottom:2mm}
 .sc-kicker{font-size:7pt;color:#b02a37;font-weight:700;letter-spacing:.04em}
@@ -730,7 +733,7 @@ a{color:#176b3a;text-decoration:none;font-weight:700}
 </header>
 
 <div class="note">
-  <strong>Criterio del reporte.</strong> Avance por productos = líneas vigentes que ya tienen requisición registrada o que ya terminaron por recepción. Avance por piezas = piezas recibidas o cubiertas por requisición / piezas vigentes. Las cantidades canceladas se excluyen de la base. El detalle muestra únicamente productos que aún tienen piezas pendientes y no tienen requisición registrada.
+  <strong>Criterio del reporte.</strong> Avance por productos = líneas vigentes que ya tienen requisición registrada o que ya terminaron por recepción. Las cantidades canceladas se excluyen de la base. El detalle muestra únicamente productos que aún no tienen requisición registrada.
 </div>
 
 <section class="summary-grid">
@@ -738,15 +741,22 @@ a{color:#176b3a;text-decoration:none;font-weight:700}
   <div class="summary-card good"><span>SC completas</span><strong>${summary.completeSc}</strong></div>
   <div class="summary-card bad"><span>SC con faltantes</span><strong>${summary.incompleteSc}</strong></div>
   <div class="summary-card"><span>Avance productos</span><strong>${pctText(summary.productProgress)}</strong></div>
-  <div class="summary-card"><span>Avance piezas</span><strong>${pctText(summary.pieceProgress)}</strong></div>
-  <div class="summary-card bad"><span>Falta alta</span><strong>${summary.missingProducts} prod. / ${summary.missingPieces} pzas.</strong></div>
+  <div class="summary-card bad"><span>Falta requisición</span><strong>${summary.missingProducts} prod.</strong></div>
 </section>
+
+<div class="pdf-batch-progress">
+  <div class="pdf-batch-progress-head">
+    <strong>Avance global de productos · ${pctText(summary.productProgress)}</strong>
+    <span>Falta requisición · ${pctText(summary.productMissingPct)}</span>
+  </div>
+  <div class="pdf-progress-track"><div class="pdf-progress-fill" style="width:${clampPercent(summary.productProgress)}%"></div></div>
+</div>
 
 <h2>Resumen por SC</h2>
 <table class="summary-table">
   <thead>
     <tr>
-      <th>SC</th><th>Fecha</th><th class="num">Productos</th><th class="num">En requisición</th><th class="num">Recibidos</th><th class="num">Faltan alta</th><th class="num">Avance prod.</th><th class="num">Avance piezas</th><th>Estado</th>
+      <th>SC</th><th>Fecha</th><th class="num">Productos</th><th class="num">En requisición</th><th class="num">Recibidos</th><th class="num">Falta requisición</th><th>Avance productos</th><th>Estado</th>
     </tr>
   </thead>
   <tbody>${pdfSummaryRows(rows)}</tbody>
