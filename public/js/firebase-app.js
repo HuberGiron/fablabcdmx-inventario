@@ -51,6 +51,8 @@ if (currentPath.endsWith("compras.html")) {
     .then(() => import("./compras-request-progress.js"))
     // Reporte imprimible por SC/lote para detectar productos sin alta en requisición.
     .then(() => import("./compras-requisition-followup-report.js"))
+    // Seguimiento por SC de lo efectivamente recibido (sólo lectura, PDF).
+    .then(() => import("./compras-reception-followup-report.js"))
     .then(() => import("./compras-group-batch-actions.js"))
     .then(() => import("./compras-request-stage-tools.js"))
     // Corrige el estado persistente del botón Guardar precios y deja explícito
