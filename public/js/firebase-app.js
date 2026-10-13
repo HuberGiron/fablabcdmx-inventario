@@ -61,6 +61,8 @@ if (currentPath.endsWith("compras.html")) {
     .then(() => import("./compras-undo-requisition.js"))
     // Recepcion por varios SKU y reglas de acciones segun etapa.
     .then(() => import("./compras-recepcion-masiva.js"))
+    // Tabla compacta, búsqueda y selección filtrada para los tres procesos masivos.
+    .then(() => import("./compras-masivos-ui.js"))
     .then(() => import("./compras-global-money-charts.js"))
     .then(() => import("./compras-budget-money-charts.js"))
     .then(() => import("./compras-requisition-blue.js"))
