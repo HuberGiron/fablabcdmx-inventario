@@ -57,6 +57,8 @@ if (currentPath.endsWith("compras.html")) {
     // el flujo de precio confirmado después de enviar a requisición.
     .then(() => import("./compras-price-requisition-fix.js"))
     .then(() => import("./compras-request-wide-requisition.js"))
+    // Permite revertir requisiciones individuales y masivas de forma transaccional.
+    .then(() => import("./compras-undo-requisition.js"))
     .then(() => import("./compras-global-money-charts.js"))
     .then(() => import("./compras-budget-money-charts.js"))
     .then(() => import("./compras-requisition-blue.js"))
