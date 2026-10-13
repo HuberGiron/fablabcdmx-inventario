@@ -440,20 +440,45 @@ function overall(rows) {
   sums.progress = percent(sums.receivedPieces, sums.activePieces);
   return sums;
 }
+// La misma escala cromática del PDF de seguimiento de requisiciones.
+// 100% = verde; avance superior al 50% = amarillo; 0–50% = rojo.
+function pdfReceptionTone(progress, activePieces = 1) {
+  if (activePieces <= 0) return "none";
+  if (progress >= 99.999) return "complete";
+  if (progress > 50) return "warning";
+  return "critical";
+}
+function pdfReceptionProgress(progress, activePieces, compact = false) {
+  const valid = activePieces > 0;
+  const value = Math.max(0, Math.min(100, num(progress)));
+  const tone = pdfReceptionTone(value, activePieces);
+  return `<div class="pdf-progress ${tone}${compact ? " compact" : ""}">
+    <div class="pdf-progress-head">
+      <strong>${valid ? percentText(value) : "N/A"}</strong>
+      <span>${valid ? `Falta ${percentText(100 - value)}` : "Sin piezas vigentes"}</span>
+    </div>
+    <div class="pdf-progress-track" role="progressbar" aria-valuenow="${value.toFixed(1)}" aria-valuemin="0" aria-valuemax="100">
+      <div class="pdf-progress-fill" style="width:${valid ? value : 0}%"></div>
+    </div>
+  </div>`;
+}
 function pdfSummaryTable(rows) {
-  return rows.map(row => {
+  return [...rows].sort((a, b) => String(a.request.folio || a.request.id).localeCompare(
+    String(b.request.folio || b.request.id), "es", { numeric: true, sensitivity: "base" }
+  )).map(row => {
     const request = row.request;
     const folio = request.folio || request.id;
     const alias = String(request.alias || "").trim();
-    return `<tr>
-      <td><strong>${esc(folio)}</strong>${alias ? `<div class="muted">${esc(alias)}</div>` : ""}</td>
+    const tone = pdfReceptionTone(row.pieceProgress, row.activePieces);
+    return `<tr class="row-${tone}">
+      <td><strong>${esc(folio)}</strong>${alias ? `<div class="alias">${esc(alias)}</div>` : ""}</td>
       <td>${esc(dateText(request.sentAt || request.createdAt))}</td>
       <td class="num">${row.receivedProductCount} / ${row.activeProducts}</td>
-      <td class="num">${row.receivedPieces} / ${row.activePieces}</td>
+      <td class="num"><strong>${row.receivedPieces}</strong> / ${row.activePieces}</td>
       <td class="num">${row.pendingPieces}</td>
-      <td class="num">${percentText(row.pieceProgress)}</td>
-      <td class="num">${esc(moneyText(row.totals))}</td>
-      <td>${esc(row.label)}</td>
+      <td>${pdfReceptionProgress(row.pieceProgress, row.activePieces, true)}</td>
+      <td class="money">${esc(moneyText(row.totals))}</td>
+      <td><span class="pill ${tone}">${esc(row.label)}</span></td>
     </tr>`;
   }).join("");
 }
@@ -462,17 +487,25 @@ function pdfDetailTable(row) {
     const requested = qty(line.quantityRequested);
     const received = qty(line.quantityReceived);
     const cancelled = qty(line.quantityCancelled);
-    const pending = Math.max(requested - received - cancelled, 0);
+    const active = Math.max(requested - cancelled, 0);
+    const pending = Math.max(active - received, 0);
     const cost = receivedCost(line);
     const average = received ? cost.amount / received : 0;
     const currency = String(line.currency || "MXN").toUpperCase();
     const approx = cost.estimated ? "≈ " : "";
+    const receivedProgress = percent(received, active);
+    const tone = pdfReceptionTone(receivedProgress, active);
     return `<tr>
       <td><strong>${esc(line.sku || "")}</strong></td>
       <td>${esc(line.nombre || "Item")}</td>
       <td>${esc(areaText(line) || "—")}</td>
       <td class="num">${requested}</td>
-      <td class="num received"><strong>${received}</strong></td>
+      <td class="num received"><strong>${received}</strong>
+        <div class="sku-mini-progress ${tone}" title="${percentText(receivedProgress)} recibido">
+          <div style="width:${receivedProgress}%"></div>
+        </div>
+        <small>${percentText(receivedProgress)} recibido</small>
+      </td>
       <td class="num">${pending}</td>
       <td class="num">${esc(approx + currencyText(average, currency))}</td>
       <td class="num">${esc(approx + currencyText(cost.amount, currency))}</td>
@@ -482,23 +515,31 @@ function pdfDetailTable(row) {
 }
 function pdfReceivedSections(rows) {
   const withReceipts = rows.filter(row => row.receivedLines.length);
-  if (!withReceipts.length) return `<div class="empty-note">Ninguna de las SC seleccionadas tiene recepciones registradas.</div>`;
+  if (!withReceipts.length) {
+    return `<div class="empty-note">Ninguna de las SC seleccionadas tiene recepciones registradas.</div>`;
+  }
   return withReceipts.map(row => {
     const request = row.request;
     const folio = request.folio || request.id;
     const alias = String(request.alias || "").trim();
-    return `<section class="sc-detail">
+    const tone = pdfReceptionTone(row.pieceProgress, row.activePieces);
+    return `<section class="sc-detail ${tone}">
       <div class="detail-header">
-        <div><div class="kicker">ARTÍCULOS RECIBIDOS</div>
+        <div class="detail-heading">
+          <div class="sc-kicker">ARTÍCULOS RECIBIDOS</div>
           <h2>${esc(folio)}${alias ? ` · ${esc(alias)}` : ""}</h2>
           <div class="muted">${row.receivedProductCount} SKU · ${row.receivedPieces} piezas recibidas · ${row.pendingPieces} pendientes</div>
         </div>
-        <div class="detail-total"><span>Importe de recepciones</span><strong>${esc(moneyText(row.totals))}</strong></div>
+        <div class="detail-progress-box">
+          <span>Avance de recepción</span>
+          ${pdfReceptionProgress(row.pieceProgress, row.activePieces)}
+          <div class="detail-value">Recibido: ${esc(moneyText(row.totals))}</div>
+        </div>
       </div>
       <table class="detail-table">
         <thead><tr>
           <th>SKU</th><th>Producto</th><th>Zona / subzona / área</th>
-          <th class="num">Solicitado</th><th class="num">Recibido</th>
+          <th class="num">Solicitado</th><th class="num">Recibido / avance</th>
           <th class="num">Pendiente</th><th class="num">Costo real medio / pza.</th>
           <th class="num">Importe recibido</th><th>Última recepción</th>
         </tr></thead>
@@ -508,13 +549,14 @@ function pdfReceivedSections(rows) {
   }).join("");
 }
 function generatePdf(rows) {
-  // Se abre inmediatamente por la interacción del usuario para evitar bloqueos.
+  // Abrir la ventana desde el clic para evitar el bloqueo de ventanas emergentes.
   const popup = window.open("", "_blank");
   if (!popup) {
     alert("El navegador bloqueó el reporte. Permite ventanas emergentes e inténtalo de nuevo.");
     return;
   }
   const all = overall(rows);
+  const tone = pdfReceptionTone(all.progress, all.activePieces);
   const generated = new Date().toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" });
   popup.document.open();
   popup.document.write(`<!doctype html><html lang="es"><head>
@@ -523,28 +565,97 @@ function generatePdf(rows) {
 <style>
 @page{size:A4 landscape;margin:9mm}
 *{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
-body{font-family:Arial,sans-serif;color:#1a1a1a;background:#fff;margin:0;font-size:8pt}
+body{font-family:Arial,sans-serif;color:#171717;background:#fff;margin:0;font-size:8.5pt}
 .toolbar{display:flex;gap:8px;justify-content:flex-end;padding:10px;border-bottom:1px solid #ddd}
-.toolbar button{border:1px solid #aaa;padding:7px 12px;background:#fff;border-radius:4px;cursor:pointer}
-header{border-bottom:3px solid #c8102e;padding-bottom:3mm;margin-bottom:4mm}
-.kicker{font-weight:700;font-size:8pt;letter-spacing:.04em;color:#c8102e;text-transform:uppercase}
-h1{font-size:21pt;margin:1mm 0}h2{font-size:13pt;margin:0 0 1mm}
-.muted{color:#666;font-size:7.6pt}.note{padding:2.5mm 3mm;background:#f4f7fa;border-left:1.5mm solid #198754;margin:4mm 0}
-.summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2mm;margin:4mm 0}
-.summary>div{border:1px solid #ddd;border-radius:2mm;padding:2.5mm}
-.summary span{display:block;text-transform:uppercase;color:#666;font-size:7pt;font-weight:700}
-.summary strong{display:block;font-size:14pt;margin-top:1mm}.summary .good{background:#f0fff6;border-color:#a3cfbb}
-.value-list{border:1px solid #a3cfbb;background:#f6fffa;border-radius:2mm;padding:2mm 3mm;margin-bottom:5mm}
+.toolbar button{border:1px solid #aaa;padding:7px 12px;background:#fff;border-radius:5px;cursor:pointer}
+header{border-bottom:3px solid #c8102e;padding-bottom:4mm;margin-bottom:5mm}
+.kicker{font-weight:700;font-size:8.5pt;letter-spacing:.04em;color:#c8102e;text-transform:uppercase}
+h1{font-size:22pt;margin:1mm 0}h2{font-size:14pt;margin:0 0 1mm}
+.muted,.alias{color:#666;font-size:7.5pt}.alias{margin-top:.5mm}
+.note{padding:2.5mm 3mm;background:#f8f9fa;border-left:1.5mm solid #6c757d;margin:4mm 0;font-size:8.5pt}
+.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2.5mm;margin:4mm 0}
+.summary-card{border:1px solid #ddd;border-radius:2mm;padding:2.8mm;background:#fff}
+.summary-card span{display:block;text-transform:uppercase;color:#666;font-size:7pt;font-weight:700}
+.summary-card strong{display:block;font-size:15pt;margin-top:1mm}
+.summary-card.good{border-color:#a3cfbb;background:#f0fff6}
+.summary-card.warning{border-color:#ffe69c;background:#fff9e6}
+.summary-card.bad{border-color:#f1aeb5;background:#fff5f5}
+.value-list{border:1px solid #a3cfbb;background:#f6fffa;border-radius:2mm;padding:2.5mm 3mm;margin-bottom:5mm}
 .value-list strong{font-size:11pt}
-table{border-collapse:collapse;width:100%;font-size:7.2pt}
-th,td{border:1px solid #d9d9d9;padding:1.3mm 1.5mm;vertical-align:top}
-th{background:#f2f2f2;text-align:left}thead{display:table-header-group}tr{break-inside:avoid}
-.num{text-align:right;white-space:nowrap}.received{color:#176b3a;background:#f0fff6}
-.summary-table{margin-bottom:6mm}.sc-detail{margin:0 0 6mm}
-.detail-header{display:flex;justify-content:space-between;gap:5mm;align-items:flex-start;padding:2.5mm 3mm;margin:3mm 0 2mm;background:#f0fff6;border-left:2mm solid #198754;break-after:avoid}
-.detail-total{text-align:right;max-width:48%;min-width:35mm}.detail-total span{display:block;color:#666;font-size:7pt}.detail-total strong{display:block;font-size:10pt}
-.detail-table{font-size:6.9pt}.detail-table td:nth-child(2){max-width:46mm}.detail-table td:nth-child(3){max-width:48mm}
-.empty-note{padding:5mm;background:#f7f7f7;border:1px solid #ddd}.top-heading{font-size:13pt;margin:0 0 2mm}
+.pdf-batch-progress{border:1px solid #ddd;border-radius:2mm;padding:2.5mm 3mm;margin:0 0 5mm;background:#fff}
+.pdf-batch-progress-head{display:flex;justify-content:space-between;gap:4mm;align-items:center;margin-bottom:1.5mm}
+.pdf-batch-progress-head strong{font-size:11pt}
+.pdf-batch-progress-head span{font-size:8pt;font-weight:700}
+.pdf-batch-progress.complete{border-color:#a3cfbb;background:#f0fff6}
+.pdf-batch-progress.warning{border-color:#ffe69c;background:#fff9e6}
+.pdf-batch-progress.critical{border-color:#f1aeb5;background:#fff5f5}
+.pdf-batch-progress.none{background:#f8f9fa}
+.pdf-batch-progress.complete .pdf-batch-progress-head span{color:#176b3a}
+.pdf-batch-progress.warning .pdf-batch-progress-head span{color:#997404}
+.pdf-batch-progress.critical .pdf-batch-progress-head span{color:#b02a37}
+.pdf-progress{min-width:34mm}
+.pdf-progress-head{display:flex;justify-content:space-between;gap:2mm;font-size:7pt;margin-bottom:.8mm}
+.pdf-progress.complete .pdf-progress-head span{color:#176b3a;font-weight:700}
+.pdf-progress.warning .pdf-progress-head span{color:#997404;font-weight:700}
+.pdf-progress.critical .pdf-progress-head span{color:#b02a37;font-weight:700}
+.pdf-progress.none .pdf-progress-head span{color:#6c757d}
+.pdf-progress-track{height:3mm;border-radius:99px;background:#e9ecef;overflow:hidden}
+.pdf-progress-fill{height:100%;border-radius:99px}
+.pdf-progress.complete .pdf-progress-fill{background:#198754}
+.pdf-progress.warning .pdf-progress-fill{background:#ffc107}
+.pdf-progress.critical .pdf-progress-fill{background:#dc3545}
+.pdf-progress.none .pdf-progress-fill{background:#adb5bd}
+.pdf-batch-progress .pdf-progress-head{display:none}
+.pdf-batch-progress .pdf-progress-track{height:4mm}
+.pdf-progress.compact{min-width:35mm}
+.pdf-progress.compact .pdf-progress-track{height:2.5mm}
+table{border-collapse:collapse;width:100%}
+.summary-table,.detail-table{font-size:7.4pt}
+th,td{border:1px solid #d9d9d9;padding:1.5mm;vertical-align:top}
+th{background:#f2f2f2;text-align:left}
+thead{display:table-header-group}
+tr{break-inside:avoid}
+.num{text-align:right;white-space:nowrap}
+.money{text-align:right;font-size:7pt}
+.summary-table{margin-bottom:6mm}
+.row-complete{background:#f0fff6}
+.row-warning{background:#fff9e6}
+.row-critical{background:#fff7f7}
+.row-none{background:#f8f9fa}
+.pill{display:inline-block;border-radius:99px;padding:1mm 2mm;font-size:7pt;font-weight:700;white-space:nowrap}
+.pill.complete{background:#198754;color:#fff}
+.pill.warning{background:#ffc107;color:#212529}
+.pill.critical{background:#dc3545;color:#fff}
+.pill.none{background:#adb5bd;color:#212529}
+.sc-detail{margin:0 0 6mm;break-inside:auto}
+.detail-header{display:flex;justify-content:space-between;gap:5mm;align-items:flex-start;padding:3mm;margin:3mm 0 2mm;break-inside:avoid;break-after:avoid}
+.sc-detail.complete .detail-header{background:#f0fff6;border-left:2mm solid #198754}
+.sc-detail.warning .detail-header{background:#fff9e6;border-left:2mm solid #ffc107}
+.sc-detail.critical .detail-header{background:#fff5f5;border-left:2mm solid #dc3545}
+.sc-detail.none .detail-header{background:#f8f9fa;border-left:2mm solid #6c757d}
+.detail-heading{flex:1;min-width:0}
+.sc-kicker{font-size:7pt;font-weight:700;letter-spacing:.04em;color:#555}
+.sc-detail.complete .sc-kicker{color:#176b3a}
+.sc-detail.warning .sc-kicker{color:#997404}
+.sc-detail.critical .sc-kicker{color:#b02a37}
+.detail-progress-box{background:#fff;padding:2mm 3mm;border:1px solid #ddd;border-radius:2mm;min-width:45mm;max-width:48%;text-align:right}
+.detail-progress-box>span{display:block;color:#666;font-size:7pt;text-transform:uppercase;font-weight:700;margin-bottom:1mm}
+.detail-progress-box .pdf-progress{min-width:43mm}
+.detail-progress-box .pdf-progress-head strong{font-size:13pt}
+.detail-value{color:#555;font-size:7.2pt;max-width:74mm;overflow-wrap:anywhere;margin-top:1.5mm}
+.detail-table{font-size:6.8pt}
+.detail-table td:nth-child(2){max-width:42mm}
+.detail-table td:nth-child(3){max-width:44mm}
+.received{background:#f0fff6;color:#176b3a;min-width:22mm}
+.received small{display:block;font-size:6.1pt;color:#666;margin-top:.5mm}
+.sku-mini-progress{height:1.7mm;border-radius:99px;background:#e9ecef;margin-top:1mm;overflow:hidden}
+.sku-mini-progress>div{height:100%;border-radius:99px}
+.sku-mini-progress.complete>div{background:#198754}
+.sku-mini-progress.warning>div{background:#ffc107}
+.sku-mini-progress.critical>div{background:#dc3545}
+.sku-mini-progress.none>div{background:#adb5bd}
+.empty-note{padding:5mm;background:#f7f7f7;border:1px solid #ddd}
+.top-heading{font-size:14pt;margin:0 0 2mm;break-after:avoid-page;page-break-after:avoid}
 @media print{.toolbar{display:none!important}}
 </style></head><body>
 <div class="toolbar"><button onclick="window.print()">Imprimir / Guardar PDF</button><button onclick="window.close()">Cerrar</button></div>
@@ -552,26 +663,33 @@ th{background:#f2f2f2;text-align:left}thead{display:table-header-group}tr{break-
   <header>
     <div class="kicker">Universidad Iberoamericana Ciudad de México · FabLab</div>
     <h1>Seguimiento de recepciones por SC</h1>
-    <div class="muted">Generado: ${esc(generated)} · ${all.sc} SC seleccionadas</div>
+    <div class="muted">Generado: ${esc(generated)} · ${all.sc} SC seleccionada${all.sc === 1 ? "" : "s"}</div>
   </header>
   <div class="note"><strong>Criterio:</strong> el detalle incluye solamente artículos con al menos una pieza recibida.
-    Se muestran cantidades acumuladas por SKU/SC, incluyendo recepciones parciales; "Última recepción" no representa el historial de entregas individuales.
-    El avance de piezas excluye las canceladas.
+    Los indicadores muestran el avance de recepción por piezas vigentes (solicitadas menos canceladas).
+    Las entregas parciales cuentan sólo las piezas efectivamente recibidas; "Última recepción" no constituye un historial de entregas individuales.
     ${all.estimatedRows ? `<strong>≈</strong> indica importes reconstruidos en ${all.estimatedRows} SKU antiguos sin costo real acumulado registrado.` : ""}
   </div>
-  <div class="summary">
-    <div><span>SC seleccionadas</span><strong>${all.sc}</strong></div>
-    <div class="good"><span>SC con recepciones</span><strong>${all.scWithReceipt}</strong></div>
-    <div><span>SKU recibidos</span><strong>${all.receivedProducts}</strong></div>
-    <div class="good"><span>Piezas recibidas</span><strong>${all.receivedPieces}</strong></div>
-    <div><span>Piezas pendientes</span><strong>${all.pendingPieces}</strong></div>
+  <section class="summary-grid">
+    <div class="summary-card"><span>SC seleccionadas</span><strong>${all.sc}</strong></div>
+    <div class="summary-card good"><span>SC con recepciones</span><strong>${all.scWithReceipt}</strong></div>
+    <div class="summary-card"><span>SKU recibidos</span><strong>${all.receivedProducts}</strong></div>
+    <div class="summary-card good"><span>Piezas recibidas</span><strong>${all.receivedPieces}</strong></div>
+    <div class="summary-card ${all.pendingPieces > 0 ? "warning" : "good"}"><span>Piezas pendientes</span><strong>${all.pendingPieces}</strong></div>
+  </section>
+  <div class="pdf-batch-progress ${tone}">
+    <div class="pdf-batch-progress-head">
+      <strong>Avance global de recepción · ${all.activePieces > 0 ? percentText(all.progress) : "N/A"}</strong>
+      <span>${all.activePieces > 0 ? `Falta por recibir ${percentText(100 - all.progress)}` : "Sin piezas vigentes"}</span>
+    </div>
+    ${pdfReceptionProgress(all.progress, all.activePieces)}
   </div>
   <div class="value-list"><span>Importe de artículos recibidos:</span> <strong>${esc(moneyText(all.totals))}</strong></div>
   <h2 class="top-heading">Resumen por SC</h2>
   <table class="summary-table">
     <thead><tr><th>SC</th><th>Fecha</th><th class="num">SKU recibidos</th>
       <th class="num">Piezas recibidas</th><th class="num">Piezas pendientes</th>
-      <th class="num">Avance</th><th class="num">Importe recibido</th><th>Estado</th></tr></thead>
+      <th>Avance de recepción</th><th class="num">Importe recibido</th><th>Estado</th></tr></thead>
     <tbody>${pdfSummaryTable(rows)}</tbody>
   </table>
   <h2 class="top-heading">Detalle de lo que ya llegó</h2>
@@ -581,6 +699,7 @@ th{background:#f2f2f2;text-align:left}thead{display:table-header-group}tr{break-
 </body></html>`);
   popup.document.close();
 }
+
 function bindEvents() {
   document.addEventListener("click", event => {
     const target = event.target;
