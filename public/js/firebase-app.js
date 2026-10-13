@@ -59,6 +59,8 @@ if (currentPath.endsWith("compras.html")) {
     .then(() => import("./compras-request-wide-requisition.js"))
     // Permite revertir requisiciones individuales y masivas de forma transaccional.
     .then(() => import("./compras-undo-requisition.js"))
+    // Recepcion por varios SKU y reglas de acciones segun etapa.
+    .then(() => import("./compras-recepcion-masiva.js"))
     .then(() => import("./compras-global-money-charts.js"))
     .then(() => import("./compras-budget-money-charts.js"))
     .then(() => import("./compras-requisition-blue.js"))
