@@ -6,7 +6,7 @@
 import {auth,db} from './firebase-app.js';
 import {getUserProfile,waitForUser} from './common.js';
 import {collection,doc,getDoc,getDocs,getDocsFromServer,runTransaction,updateDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017f';
+import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017g';
 const $=sel=>document.querySelector(sel);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
@@ -42,35 +42,73 @@ async function listLines(onProgress=()=>{}){
  });await Promise.all(workers);allLines=found;
  return found;
 }
-function moneyGross(p){return p.quoted?.totalWithTax!=null&&p.quoted?.quantity>0?
- Math.round(p.quoted.totalWithTax/p.quoted.quantity*100)/100:null;}
+function moneyGross(p){
+ const q=p.quoted;
+ if(!q)return null;
+ // Reportes cotizados en USD requieren conversión verificada; no etiquetar USD como MXN.
+ if(String(q.currency||'MXN').toUpperCase()==='USD')return null;
+ if(Number.isFinite(q.totalWithTax)&&Number.isFinite(q.quantity)&&q.quantity>0)
+  return Math.round(q.totalWithTax/q.quantity*100)/100;
+ // El IVA del reporte es unitario: precio + IVA, NO suponer un 16% fijo.
+ if(q.currency!=='USD'&&Number.isFinite(q.unitPrice)&&Number.isFinite(q.vatTotal))
+  return Math.round((q.unitPrice+q.vatTotal)*100)/100;
+ return null;
+}
 function labelLine(l){return `${l.requestFolio} · ${l.sku||''} · ${l.nombre||''} (${n(l.quantityRequested)} solicitadas)`;}
-function currentLineHtml(l){return l?`<div class="imp-note mt-1"><strong>Actualmente:</strong> ${esc(currentStage(l))} · ${esc(amount(l.unitPrice,l.currency||'MXN'))} · fecha ${esc(l.externalExpectedDeliveryDate?dateText(l.externalExpectedDeliveryDate):'sin registrar')}</div>`:'<div class="imp-note">Vincula el artículo para ver los datos actuales.</div>';}
+function currentLineHtml(l){
+ if(!l)return '<div class="imp-unlinked">Aún no hay una coincidencia vinculada al FabLab. Selecciona el artículo correcto antes de aplicar.</div>';
+ return `<div class="imp-fablab-details">
+  <div class="imp-inline-meta"><strong>SC:</strong> ${esc(l.requestFolio||l.requestId||'—')}
+   ${l.requestAlias?`<span class="imp-alias">Alias: ${esc(l.requestAlias)}</span>`:''}</div>
+  <div class="imp-inline-meta"><strong>SKU FabLab:</strong> ${esc(l.sku||'—')} · <strong>Solicitado:</strong> ${n(l.quantityRequested)} · <strong>Pendiente:</strong> ${pending(l)}</div>
+  <div class="imp-fablab-name">${esc(l.nombre||'Sin nombre')}</div>
+  <div class="imp-description"><strong>Descripción del inventario FabLab:</strong> ${esc(l.descripcion||'No registrada')}</div>
+  <div class="imp-note mt-2"><strong>Actualmente:</strong> ${esc(currentStage(l))} · ${esc(amount(l.unitPrice,l.currency||'MXN'))} · fecha ${esc(l.externalExpectedDeliveryDate?dateText(l.externalExpectedDeliveryDate):'sin registrar')}</div>
+ </div>`;
+}
 function sourceLabel(p){return `${p.externalCode} · ${p.description}`;}
 function makeStyles(){if($('#iberoImportStyle'))return;const s=document.createElement('style');s.id='iberoImportStyle';s.textContent=`
-  #iberoImportModal .modal-dialog{max-width:1520px}
-  #iberoImportModal .imp-table{font-size:.85rem;min-width:1350px}
-  #iberoImportModal .imp-table td{vertical-align:top}
-  #iberoImportModal .imp-source{min-width:225px;max-width:330px}
-  #iberoImportModal .imp-select{min-width:250px}
-  #iberoImportModal .imp-meta{min-width:235px}
-  #iberoImportModal .imp-money{min-width:175px}
-  #iberoImportModal .imp-stage{min-width:175px}
-  #iberoImportModal .imp-note{font-size:.76rem;color:#677483}
-  #iberoImportModal .imp-ambiguous{background:#fff4ea}
-  #iberoImportModal .imp-confidence{font-weight:700}
-  #iberoImportModal .imp-conf-high{color:#198754}.imp-conf-medium{color:#b36b00}.imp-conf-low{color:#b02a37}
-  #iberoImportModal .imp-status-area{max-height:170px;overflow:auto}
-  #iberoImportModal .imp-check{transform:scale(1.15)}
-  #iberoImportModal .imp-progress{font-size:.86rem}
-  #iberoImportModal .imp-banner{border-left:4px solid #0d6efd;background:#f0f5fd;padding:.7rem 1rem}
-  #iberoDeliveryBoardModal .modal-dialog{max-width:1250px}
-  #iberoDeliveryBoardModal .delivery-overdue{background:#fff1f0}
-  #iberoDeliveryBoardModal .delivery-soon{background:#fff9e8}
-  #iberoDeliveryBoardModal .delivery-warehouse{background:#fff0e2}
-  #iberoDeliveryBoardModal .delivery-date{font-weight:700;white-space:nowrap}
-  #iberoDeliveryBoardModal .table{font-size:.85rem}
-  @media(max-width:768px){#iberoImportModal .modal-dialog,#iberoDeliveryBoardModal .modal-dialog{margin:.3rem}}
+ #iberoImportModal .modal-dialog{max-width:1580px;width:min(96vw,1580px);margin-left:auto;margin-right:auto}
+ #iberoImportModal .modal-body{overflow-x:hidden}
+ #iberoImportModal .imp-products{display:grid;gap:1rem}
+ #iberoImportModal .imp-row{background:#fff;border:1px solid #cdd5df;border-radius:11px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+ #iberoImportModal .imp-row-heading{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;padding:.85rem 1rem;background:#f5f7fa;border-bottom:1px solid #dee3ea}
+ #iberoImportModal .imp-row-heading .form-check{margin:0}
+ #iberoImportModal .imp-compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1rem;padding:1rem}
+ #iberoImportModal .imp-source,#iberoImportModal .imp-select{min-width:0;border-radius:8px;padding:1rem;border:1px solid #d9e0ea;background:#fff}
+ #iberoImportModal .imp-target{display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0}
+ #iberoImportModal .imp-source{border-left:5px solid #5b6575}
+ #iberoImportModal .imp-select{border-left:5px solid #c8102e}
+ #iberoImportModal .imp-section-title{font-size:.73rem;letter-spacing:.05em;text-transform:uppercase;font-weight:800;margin-bottom:.6rem;color:#4b5563}
+ #iberoImportModal .imp-product-name{font-size:1rem;line-height:1.45;font-weight:750;overflow-wrap:anywhere}
+ #iberoImportModal .imp-description{font-size:.84rem;line-height:1.5;white-space:normal;overflow-wrap:anywhere;margin-top:.5rem}
+ #iberoImportModal .imp-fablab-name{font-size:.96rem;font-weight:750;line-height:1.4;margin-top:.5rem;overflow-wrap:anywhere}
+ #iberoImportModal .imp-inline-meta{font-size:.79rem;margin-top:.35rem;overflow-wrap:anywhere}
+ #iberoImportModal .imp-alias{display:inline-block;background:#fff3cd;color:#362706;border-radius:5px;padding:.15rem .35rem;margin-left:.4rem}
+ #iberoImportModal .imp-unlinked{font-size:.84rem;font-weight:650;color:#8b1e28;border:1px dashed #d9a4aa;background:#fff7f7;border-radius:6px;padding:.6rem;margin-top:.5rem}
+ #iberoImportModal .imp-match-suggestion{font-size:.8rem;margin-top:.5rem;padding:.55rem;border:1px solid #d8e0ee;background:#f9fbff;border-radius:6px;overflow-wrap:anywhere}
+ #iberoImportModal .imp-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem;padding:0 1rem 1rem}
+ #iberoImportModal .imp-data-box{min-width:0;border:1px solid #dee3e9;border-radius:8px;padding:.8rem .85rem;background:#fff}
+ #iberoImportModal .imp-data-box .form-control,#iberoImportModal .imp-data-box .form-select{width:100%;min-width:0}
+ #iberoImportModal .imp-note{font-size:.76rem;color:#596575;line-height:1.45}
+ #iberoImportModal .imp-confidence{border-radius:7px;border:2px solid transparent;padding:.38rem .65rem;display:inline-flex;gap:.35rem;align-items:center;white-space:normal;font-size:.84rem;font-weight:800}
+ #iberoImportModal .imp-conf-high{background:#146c43;border-color:#0e5030;color:#fff}
+ #iberoImportModal .imp-conf-medium{background:#ffca2c;border-color:#9d6500;color:#191919}
+ #iberoImportModal .imp-conf-low{background:#a61d32;border-color:#771226;color:#fff}
+ #iberoImportModal .imp-ambiguous{border-left:5px solid #b02a37}
+ #iberoImportModal .imp-check{transform:scale(1.12)}
+ #iberoImportModal .imp-banner{border-left:4px solid #0d6efd;background:#f0f5fd;padding:.7rem 1rem}
+ #iberoImportModal .imp-progress{font-size:.86rem}
+ #iberoImportModal .imp-receipt-box{border-left:4px solid #198754;background:#f0faf4;padding:.65rem;margin-top:.6rem;border-radius:5px}
+ #iberoImportModal .imp-data-box[hidden],#iberoImportModal .imp-receipt-box[hidden]{display:none!important}
+ #iberoDeliveryBoardModal .modal-dialog{max-width:1250px}
+ #iberoDeliveryBoardModal .delivery-overdue{background:#fff1f0}
+ #iberoDeliveryBoardModal .delivery-soon{background:#fff9e8}
+ #iberoDeliveryBoardModal .delivery-warehouse{background:#fff0e2}
+ #iberoDeliveryBoardModal .delivery-date{font-weight:700;white-space:nowrap}
+ #iberoDeliveryBoardModal .table{font-size:.85rem}
+ @media(max-width:1050px){#iberoImportModal .imp-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+ @media(max-width:760px){#iberoImportModal .modal-dialog,#iberoDeliveryBoardModal .modal-dialog{width:calc(100vw - 1rem);margin:.5rem}#iberoImportModal .imp-compare,#iberoImportModal .imp-actions{grid-template-columns:minmax(0,1fr)}#iberoImportModal .imp-row-heading{align-items:flex-start}#iberoImportModal .imp-source,#iberoImportModal .imp-select{padding:.8rem}}
  `;document.head.append(s);}
 function ensureModal(){
  let m=$('#iberoImportModal');if(m)return m;
@@ -122,34 +160,95 @@ async function parsePdf(file){
  return {report,hash:hex};
 }
 function productRow(p,i){
- const suggestion=proposals[i],best=suggestion?.options?.[0],target=suggestion.suggested;
+ const suggestion=proposals[i]||{options:[],suggested:'',ambiguous:true},best=suggestion.options?.[0],target=suggestion.suggested||'';
  const conf=best?.score||0,confClass=conf>=.83?'high':conf>=.62?'medium':'low';
- const options=suggestion.options.map(l=>`<option value="${esc(lineKey(l))}" ${target===lineKey(l)?'selected':''}>${esc(labelLine(l))} · ${Math.round(l.score*100)}%</option>`).join('');
- const s=externalStage(p.externalStatus);const gross=moneyGross(p),v=(gross??p.quoted?.unitPrice??best?.unitPrice??0);
- const obs=p.quantity==null?'Cantidad no legible':`PDF: ${p.quantity} ${esc(p.purchaseUnit||'unidad(es)')}`;
- return `<tr class="imp-row ${suggestion.ambiguous?'imp-ambiguous':''}" data-index="${i}">
- <td class="text-center"><input type="checkbox" class="form-check-input imp-apply imp-check" aria-label="Aplicar ${esc(p.description)}"></td>
- <td class="imp-source"><strong>${esc(p.description)}</strong><div class="small text-muted">Código externo: ${esc(p.externalCode)} · ${esc(obs)}</div><div class="small">OC: ${esc(p.purchaseOrder||'—')}</div><div class="small text-primary">${esc(p.externalStatus)}</div></td>
- <td class="imp-select"><select class="form-select form-select-sm imp-target"><option value="">${suggestion.ambiguous?'Selecciona coincidencia':'No vincular'}</option>${options}</select>
- <button class="btn btn-link btn-sm p-0 imp-find" type="button">Buscar otro SKU / SC</button>
- <div class="imp-confidence imp-conf-${confClass}">${best?`Mejor coincidencia: ${Math.round(conf*100)}%`:'Sin coincidencia'}</div>
- ${suggestion.ambiguous?'<div class="imp-note">Requiere confirmación manual.</div>':''}<div class="imp-current">${currentLineHtml(allLines.find(x=>lineKey(x)===target))}</div></td>
- <td class="imp-meta"><div>Requisición: <strong>${esc(p.folio)}</strong></div><div>Fecha estimada: <strong>${esc(dateText(p.expectedDate))}</strong></div>
- <label class="d-flex gap-2 align-items-center mt-2"><input type="checkbox" class="form-check-input imp-date" ${p.expectedDate?'checked':'disabled'}> Guardar fecha</label>
- <label class="small mt-1">Modificar fecha si es necesario</label><input class="form-control form-control-sm imp-date-value" type="date" value="${esc(p.expectedDate)}"></td>
- <td class="imp-money"><div class="small">Sin IVA (${esc(p.quoted?.currency||'MXN')}): ${p.quoted?.unitPrice!=null?esc(amount(p.quoted.unitPrice,p.quoted.currency||'MXN')):'—'}</div><div class="small">Con IVA / unidad: <strong>${gross!=null?esc(amount(gross)):'—'}</strong></div>
- <label class="d-flex gap-2 mt-1"><input class="form-check-input imp-price" type="checkbox" ${p.quoted?.unitPrice!=null?'':'disabled'}> Actualizar precio</label>
- <label class="small">Precio unitario a registrar (MXN, IVA incluido)</label><input class="form-control form-control-sm imp-price-value" type="number" step="0.01" min="0" value="${Number(v).toFixed(2)}"></td>
- <td class="imp-stage"><label class="small">Estado propuesto</label><select class="form-select form-select-sm imp-stage-select">
- <option value="requisition" ${s==='requisition'?'selected':''}>En requisición</option>
- <option value="warehouse" ${s==='warehouse'?'selected':''}>En almacén</option>
- <option value="received" ${s==='received'?'selected':''}>Entregado al usuario</option>
- <option value="partial" ${s==='partial'?'selected':''}>Entrega parcial</option>
- <option value="none" ${s==='unknown'?'selected':''}>No cambiar estado</option></select>
- <label class="d-flex gap-2 mt-2"><input type="checkbox" class="form-check-input imp-receive"> <strong>Confirmo recepción física</strong></label>
- <label class="small">Piezas a ingresar al FabLab</label><input type="number" class="form-control form-control-sm imp-receive-qty" min="0" step="1" value="0">
- <div class="imp-note">Sin confirmación no se aumenta inventario ni gasto ejercido. La etapa institucional quedará como última actualización.</div></td>
- </tr>`;
+ const selectedLine=allLines.find(x=>lineKey(x)===target);
+ const options=(suggestion.options||[]).map(l=>`<option value="${esc(lineKey(l))}" ${target===lineKey(l)?'selected':''}>${esc(labelLine(l))} · ${Math.round(l.score*100)}%</option>`).join('');
+ const s=externalStage(p.externalStatus),gross=moneyGross(p);
+ const priceValid=gross!==null&&Number.isFinite(gross)&&gross>=0;
+ const quoteUnit=String(p.quoted?.currency||'MXN').toUpperCase();
+ const priceText=priceValid?Number(gross).toFixed(2):'';
+ const obs=p.quantity==null?'Cantidad no legible':`PDF: ${p.quantity} ${p.purchaseUnit||'unidad(es)'}`;
+ const confLabel=best?`${Math.round(conf*100)}% de similitud`:'Sin coincidencia';
+ const suggested=best?`<div class="imp-match-suggestion"><strong>Mejor propuesta (no vinculada):</strong> ${esc(best.nombre||'Sin nombre')}<br><strong>SC:</strong> ${esc(best.requestFolio||'—')} ${best.requestAlias?`· <strong>Alias:</strong> ${esc(best.requestAlias)}`:''}<br><strong>SKU:</strong> ${esc(best.sku||'—')}</div>`:'';
+ return `<article class="imp-row ${suggestion.ambiguous?'imp-ambiguous':''}" data-index="${i}">
+  <div class="imp-row-heading">
+    <label class="form-check d-flex gap-2 align-items-center fw-bold"><input type="checkbox" class="form-check-input imp-apply imp-check" checked aria-label="Aplicar ${esc(p.description)}"> Agregar o actualizar este artículo</label>
+    <span class="imp-confidence imp-conf-${confClass}" role="status">${esc(confLabel)}</span>
+  </div>
+  <div class="imp-compare">
+    <section class="imp-source" aria-label="Datos institucionales de Compras">
+      <div class="imp-section-title">Descripción del reporte institucional de Compras</div>
+      <div class="imp-product-name">${esc(p.description||'Sin descripción')}</div>
+      <div class="imp-inline-meta"><strong>Código de Compras:</strong> ${esc(p.externalCode||'—')} · ${esc(obs)}</div>
+      <div class="imp-inline-meta"><strong>Orden de compra:</strong> ${esc(p.purchaseOrder||'—')}</div>
+      <div class="imp-inline-meta"><strong>Estado institucional:</strong> ${esc(p.externalStatus||'—')}</div>
+    </section>
+    <section class="imp-select" aria-label="Propuesta de correspondencia del FabLab">
+      <div class="imp-section-title">Descripción propuesta del inventario FabLab</div>
+      <label class="form-label small fw-semibold mb-1">Seleccionar SC y SKU correspondientes</label>
+      <select class="form-select form-select-sm imp-target"><option value="">Selecciona una coincidencia</option>${options}</select>
+      <button class="btn btn-link btn-sm p-0 mt-2 imp-find" type="button">Buscar otro SKU / SC</button>
+      <div class="imp-suggested">${!target?suggested:''}</div>
+      <div class="imp-current">${currentLineHtml(selectedLine)}</div>
+    </section>
+  </div>
+  <div class="imp-actions">
+    <section class="imp-data-box"><div class="imp-section-title">Requisición y fecha estimada</div>
+      <div><strong>Requisición:</strong> ${esc(p.folio||'—')}</div><div class="small mt-1">Entrega esperada: ${esc(dateText(p.expectedDate))}</div>
+      <label class="d-flex gap-2 align-items-center mt-2"><input type="checkbox" class="form-check-input imp-date" ${p.expectedDate?'checked':'disabled'}> Guardar fecha estimada</label>
+      <label class="form-label small mt-2 mb-1">Ajustar fecha, si es necesario</label><input class="form-control form-control-sm imp-date-value" type="date" value="${esc(p.expectedDate)}">
+    </section>
+    <section class="imp-data-box"><div class="imp-section-title">Cotización final de Compras</div>
+      <div class="small">Sin IVA (${esc(quoteUnit)}): <strong>${p.quoted?.unitPrice!=null?esc(amount(p.quoted.unitPrice,quoteUnit==='USD'?'USD':'MXN')):'—'}</strong></div>
+      <div class="small mt-1">Con IVA / unidad en MXN: <strong>${priceValid?esc(amount(gross)):'No disponible'}</strong></div>
+      <label class="d-flex gap-2 align-items-center mt-2"><input class="form-check-input imp-price" type="checkbox" ${priceValid?'checked':'disabled'}> <strong>Actualizar precio</strong></label>
+      <label class="form-label small mt-2 mb-1">Precio unitario a registrar (MXN, IVA incluido)</label><input class="form-control form-control-sm imp-price-value" type="number" step="0.01" min="0" value="${priceText}" ${priceValid?'':'disabled'}>
+      ${!priceValid?'<div class="imp-note mt-2 text-danger fw-semibold">El PDF no permite calcular con certeza el precio unitario con IVA. Se omite la actualización del precio hasta revisarlo.</div>':''}
+    </section>
+    <section class="imp-data-box"><div class="imp-section-title">Etapa propuesta y recepción física</div>
+      <label class="form-label small mb-1">Estado institucional que se guardará</label>
+      <select class="form-select form-select-sm imp-stage-select">
+       <option value="requisition" ${s==='requisition'?'selected':''}>En requisición</option>
+       <option value="warehouse" ${s==='warehouse'?'selected':''}>En almacén</option>
+       <option value="received" ${s==='received'?'selected':''}>Entregado al usuario</option>
+       <option value="partial" ${s==='partial'?'selected':''}>Entregado parcial (informativo)</option>
+       <option value="none" ${s==='unknown'?'selected':''}>No cambiar etapa</option>
+      </select>
+      <div class="imp-receipt-box" ${s==='received'?'':'hidden'}>
+        <label class="d-flex gap-2 align-items-center"><input type="checkbox" class="form-check-input imp-receive"> <strong>Confirmo recepción física en FabLab</strong></label>
+        <label class="form-label small mt-2 mb-1">Piezas que efectivamente recibimos</label><input type="number" class="form-control form-control-sm imp-receive-qty" min="0" step="1" value="0">
+        <div class="imp-note mt-1">Solamente esta confirmación aumenta existencias y registra gasto real.</div>
+      </div>
+      <div class="imp-note mt-2">Los demás estados guardan el seguimiento sin recibir material. Las entregas parciales se confirman mediante el registro normal de recepciones.</div>
+    </section>
+  </div>
+ </article>`;
+}
+function refreshMatchCard(row){
+ if(!row)return;
+ const index=Number(row.dataset.index),product=parsed?.products?.[index];
+ const selected=allLines.find(l=>lineKey(l)===row.querySelector('.imp-target')?.value);
+ const best=proposals[index]?.options?.[0];
+ const score=selected&&product?matchingScore(product,selected):(best?.score||0);
+ const tone=score>=.83?'high':score>=.62?'medium':'low';
+ const badge=row.querySelector('.imp-confidence');
+ if(badge){badge.className=`imp-confidence imp-conf-${tone}`;badge.textContent=best||selected?`${Math.round(score*100)}% de similitud`:'Sin coincidencia';}
+ const box=row.querySelector('.imp-suggested');
+ if(box)box.hidden=Boolean(selected);
+ const current=row.querySelector('.imp-current');
+ if(current)current.innerHTML=currentLineHtml(selected);
+ row.classList.toggle('imp-ambiguous',!selected||score<.83);
+}
+function syncReceiptVisibility(row){
+ if(!row)return;
+ const show=row.querySelector('.imp-stage-select')?.value==='received';
+ const section=row.querySelector('.imp-receipt-box');if(section)section.hidden=!show;
+ const check=row.querySelector('.imp-receive');
+ const qty=row.querySelector('.imp-receive-qty');
+ if(!show){if(check)check.checked=false;if(qty)qty.value='0';}
+ if(check)check.disabled=!show;
+ if(qty)qty.disabled=!show;
 }
 let searchingRow=-1;
 function chooseModal(){let m=$('#iberoImportMatchModal');if(m)return m;
@@ -175,8 +274,9 @@ async function reviewFile(){if(isBusy)return;const file=$('#iberoImportFile')?.f
   proposals=suggestMatches(parsed.products,allLines);
   $('#iberoImportResults').innerHTML=`<div class="alert alert-light border mb-3"><strong>Requisición institucional ${esc(parsed.folio)}</strong> · Reporte del ${esc(parsed.reportDate||'día no identificado')} · ${parsed.products.length} artículos · ${allLines.length} líneas de ${allRequests.length} SC · ${esc(parsed.observations||'Sin observaciones')}
   ${parsed.notes.length?`<div class="text-warning">${parsed.notes.map(esc).join(' · ')}</div>`:''}</div>
-  <div class="d-flex gap-2 align-items-center flex-wrap mb-2"><button class="btn btn-outline-primary btn-sm" id="iberoImportSelectClear" type="button">Seleccionar coincidencias claras</button><button class="btn btn-outline-secondary btn-sm" id="iberoImportClear" type="button">Deseleccionar todo</button><span class="small text-muted">Ningún cambio se realiza hasta pulsar «Aplicar».</span></div>
-  <div class="table-responsive"><table class="table table-sm table-bordered imp-table"><thead><tr><th>Aplicar</th><th>Artículo del PDF</th><th>Coincidencia FabLab</th><th>Datos externos</th><th>Cotización / precio</th><th>Estado / recepción</th></tr></thead><tbody>${parsed.products.map(productRow).join('')}</tbody></table></div>`;
+  <div class="d-flex gap-2 align-items-center flex-wrap mb-3"><button class="btn btn-outline-primary btn-sm" id="iberoImportSelectClear" type="button">Seleccionar todos</button><button class="btn btn-outline-secondary btn-sm" id="iberoImportOnlyLinked" type="button">Sólo artículos vinculados</button><button class="btn btn-outline-secondary btn-sm" id="iberoImportClear" type="button">Deseleccionar todo</button><span class="small text-muted">Los artículos y los precios disponibles vienen seleccionados. Revisa la correspondencia SC/SKU antes de aplicar; ninguna escritura es automática.</span></div>
+  <div class="imp-products">${parsed.products.map(productRow).join('')}</div>`;
+  document.querySelectorAll('#iberoImportResults .imp-row').forEach(syncReceiptVisibility);
   setProgress(`Análisis completo: ${proposals.filter(p=>p.suggested).length} coincidencias claras; ${proposals.filter(p=>!p.suggested).length} artículos requieren revisión manual.`);
   $('#iberoImportSave').disabled=!admin();if(!admin())setProgress('Supervisor: puedes analizar, pero sólo el administrador puede aplicar cambios.');
   updateFooter();
@@ -199,7 +299,7 @@ function draftChanges(){
   if(changePrice&&(!Number.isFinite(unitPrice)||unitPrice<0))throw new Error(`Precio inválido: ${product.description}`);
   const saveDate=tr.querySelector('.imp-date').checked,expectedDate=tr.querySelector('.imp-date-value').value;
   if(saveDate && expectedDate && !/^\d{4}-\d{2}-\d{2}$/.test(expectedDate))throw new Error(`Fecha inválida: ${product.description}`);
-  const receive=tr.querySelector('.imp-receive').checked,receiveQty=Number(tr.querySelector('.imp-receive-qty').value);
+  const receive=proposedStage==='received'&&tr.querySelector('.imp-receive').checked,receiveQty=Number(tr.querySelector('.imp-receive-qty').value);
   // El PDF puede expresar cajas, paquetes o juegos: una caja NO equivale
   // automáticamente a una pieza del inventario.
   const unit=String(product.purchaseUnit||'').toUpperCase();
@@ -217,7 +317,7 @@ function draftChanges(){
   }
   const externallyAvailable=Math.max(0,n(product.quantity||line.quantityRequested)-n(line.quantityReceived));
   if(receive && (!Number.isInteger(receiveQty)||receiveQty<1||receiveQty>pending(line)||receiveQty>externallyAvailable))throw new Error(`Indica una recepción válida para ${product.description}: máximo ${Math.min(pending(line),externallyAvailable)} según cantidad del PDF y recepciones ya registradas.`);
-  if(receive && (proposedStage==='none'||proposedStage==='requisition'))throw new Error(`Para recibir ${product.description}, selecciona primero «Entregado al usuario» o «Entrega parcial».`);
+  if(receive && proposedStage!=='received')throw new Error(`La recepción física de ${product.description} sólo se permite con el estado «Entregado al usuario».`);
   if(line.requisitionNumber && line.requisitionNumber!==product.folio && proposedStage!=='none'){
    if(!confirm(`ATENCIÓN: ${line.sku} ya pertenece a la requisición ${line.requisitionNumber}, pero el PDF corresponde a ${product.folio}. ¿Reasignar el artículo conservando historial?`))continue;
   }
@@ -382,16 +482,26 @@ function bind(){makeStyles();ensureModal();boardModal();chooseModal();injectButt
   if(t.closest?.('#iberoDeliveryBoardLauncher'))void showBoard();
   if(t.closest?.('.iberoMatchClose'))chooseModal().close();
   if(t.closest?.('#iberoImportRead'))void reviewFile();
-  if(t.closest?.('#iberoImportSelectClear')){document.querySelectorAll('.imp-row').forEach(row=>{const key=row.querySelector('.imp-target')?.value;row.querySelector('.imp-apply').checked=Boolean(key);});updateFooter();}
+  if(t.closest?.('#iberoImportSelectClear')){document.querySelectorAll('#iberoImportResults .imp-apply').forEach(e=>e.checked=true);updateFooter();}
+  if(t.closest?.('#iberoImportOnlyLinked')){document.querySelectorAll('#iberoImportResults .imp-row').forEach(row=>{row.querySelector('.imp-apply').checked=Boolean(row.querySelector('.imp-target')?.value);});updateFooter();}
   if(t.closest?.('#iberoImportClear')){document.querySelectorAll('.imp-apply').forEach(e=>e.checked=false);updateFooter();}
   if(t.closest?.('#iberoImportSave'))void applySelected();
   const find=t.closest?.('.imp-find');if(find){const tr=find.closest('.imp-row');searchingRow=Number(tr.dataset.index);$('#iberoMatchDescription').textContent=sourceLabel(parsed.products[searchingRow]);$('#iberoMatchSearch').value=parsed.products[searchingRow].description.split(' ').slice(0,2).join(' ');renderCandidates();chooseModal().showModal();}
-  const choice=t.closest?.('.iberoMatchChoice');if(choice){const tr=document.querySelector(`.imp-row[data-index="${searchingRow}"]`);let select=tr?.querySelector('.imp-target');const l=allLines.find(x=>lineKey(x)===choice.dataset.key);if(select&&l){const o=document.createElement('option');o.value=lineKey(l);o.textContent=labelLine(l);select.append(o);select.value=o.value;tr.classList.remove('imp-ambiguous');tr.querySelector('.imp-apply').checked=true;tr.querySelector('.imp-current').innerHTML=currentLineHtml(l);updateFooter();}chooseModal().close();}
+  const choice=t.closest?.('.iberoMatchChoice');if(choice){const tr=document.querySelector(`.imp-row[data-index="${searchingRow}"]`);let select=tr?.querySelector('.imp-target');const l=allLines.find(x=>lineKey(x)===choice.dataset.key);if(select&&l){const o=document.createElement('option');o.value=lineKey(l);o.textContent=labelLine(l);select.append(o);select.value=o.value;tr.querySelector('.imp-apply').checked=true;refreshMatchCard(tr);updateFooter();}chooseModal().close();}
   if(t.closest?.('#iberoBoardRefresh'))void showBoard();
   if(t.closest?.('#iberoBoardPrint'))printBoard();
  });
  document.addEventListener('input',e=>{if(e.target?.id==='iberoMatchSearch')renderCandidates();if(e.target?.id==='iberoBoardSearch')drawBoard();});
- document.addEventListener('change',e=>{if(e.target?.matches?.('.imp-apply,.imp-target')){const tr=e.target.closest('.imp-row');if(e.target.matches('.imp-target')&&tr){const target=allLines.find(l=>lineKey(l)===e.target.value);tr.querySelector('.imp-current').innerHTML=currentLineHtml(target);}updateFooter();}if(e.target?.id==='iberoBoardFilter'){boardMode=e.target.value;drawBoard();}});
+ document.addEventListener('change',e=>{
+  if(e.target?.matches?.('.imp-apply,.imp-target')){
+   const tr=e.target.closest('.imp-row');if(e.target.matches('.imp-target')&&tr){
+    refreshMatchCard(tr);
+   }
+   updateFooter();
+  }
+  if(e.target?.matches?.('.imp-stage-select'))syncReceiptVisibility(e.target.closest('.imp-row'));
+  if(e.target?.id==='iberoBoardFilter'){boardMode=e.target.value;drawBoard();}
+ });
  const observer=new MutationObserver(()=>injectButtons());observer.observe(document.body,{childList:true,subtree:true});
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();

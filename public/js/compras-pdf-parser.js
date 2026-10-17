@@ -24,14 +24,21 @@ function dateISO(str){const m=String(str).match(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2
  if(!m)return '';const d=+m[1],mo=+m[2];return d>=1&&d<=31&&mo>=1&&mo<=12?`${m[3]}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`:'';
 }
 function parseMoneyBand(line){
+ // PDF.js agrupa a veces «1 PZA» en un único fragmento; no se puede depender
+ // de que cantidad y unidad sean tokens independientes del texto.
  const unitIndex=line.tokens.findIndex(t=>/^(?:PZA|PZAS|CAJA|CAJAS|PAQ|PAQUETE|JGO|JUEGO|LT|LTS|ROLLO|METRO|MTS)$/i.test(t.str));
- const quantity=unitIndex>0?number(line.tokens[unitIndex-1].str):null;
- const unit=line.tokens[unitIndex]?.str||'';
+ const combined=line.text.match(/\b(\d+(?:[.,]\d+)?)\s+(PZA|PZAS|CAJA|CAJAS|PAQ|PAQUETE|JGO|JUEGO|LT|LTS|ROLLO|METRO|MTS)\b/i);
+ const quantity=unitIndex>0?number(line.tokens[unitIndex-1].str):combined?number(combined[1]):null;
+ const unit=line.tokens[unitIndex]?.str||combined?.[2]||'';
  const currencyText=inRange(line,218,265);
- const currency=/\b(?:DLLS|USD|DOLARES)\b/i.test(currencyText)?'USD':'MXN';
+ const currency=/\b(?:DLLS|USD|DOLARES)\b/i.test(currencyText+' '+line.text)?'USD':'MXN';
+ const values=[...line.text.matchAll(/\$\s*([\d,]+(?:\.\d{1,2})?)/g)].map(m=>number(m[1]));
+ const validBand=values.length>=4;
  return {
-  quantity,unit,unitPrice:moneyRange(line,162,220),
-  vatTotal:moneyRange(line,294,340),totalWithTax:moneyRange(line,340,410),
+  quantity,unit,
+  unitPrice:validBand?values[0]:moneyRange(line,162,220),
+  vatTotal:validBand?values[2]:moneyRange(line,294,340),
+  totalWithTax:validBand?values[3]:moneyRange(line,340,410),
   currency,expectedDate:dateISO(line.text),
  };
 }
