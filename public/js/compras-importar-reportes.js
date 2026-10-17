@@ -378,8 +378,8 @@ function openImportModal(m){
 function bind(){makeStyles();ensureModal();boardModal();chooseModal();injectButtons();void loadUser().catch(e=>console.warn('Rol de Compras:',e.message));
  document.addEventListener('click',event=>{
   const t=event.target;
-  if(t.closest?.('#iberoProcurementImportLauncher')){void loadUser().then(()=>{if(!admin()){alert('El supervisor puede consultar, pero sólo el administrador puede importar actualizaciones.');return;}openImportModal(ensureModal());}).catch(e=>alert(e.message));}
-  if(t.closest?.('#iberoDeliveryBoardLauncher'))void showBoard();
+  if(t.closest?.('#iberoProcurementImportLauncher, #iberoProcurementImportLauncherTop')){void loadUser().then(()=>{if(!admin()){alert('El supervisor puede consultar, pero sólo el administrador puede importar actualizaciones.');return;}openImportModal(ensureModal());}).catch(e=>alert(e.message));}
+  if(t.closest?.('#iberoDeliveryBoardLauncher, #iberoDeliveryBoardLauncherTop'))void showBoard();
   if(t.closest?.('.iberoMatchClose'))chooseModal().close();
   if(t.closest?.('#iberoImportRead'))void reviewFile();
   if(t.closest?.('#iberoImportSelectClear')){document.querySelectorAll('.imp-row').forEach(row=>{const key=row.querySelector('.imp-target')?.value;row.querySelector('.imp-apply').checked=Boolean(key);});updateFooter();}

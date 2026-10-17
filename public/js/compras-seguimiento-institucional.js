@@ -115,7 +115,7 @@ function show(){const m=modal();const panel=$('#iberoRequisitionsPanel');const f
 async function init(){const user=auth.currentUser||await waitForUser();if(!user)return;const profile=await getUserProfile(user.uid);role=profile?.appRole||profile?.role||'';if(!['admin','supervisor'].includes(role))return;
  css();modal();launcher();const observer=new MutationObserver(launcher);observer.observe(document.body,{childList:true,subtree:true});
  document.addEventListener('click',e=>{const target=e.target;if(!(target instanceof Element))return;
-  if(target.closest('#iberoFollowupOpen'))show();
+  if(target.closest('#iberoFollowupOpen, #iberoFollowupOpenTop'))show();
   else if(target.closest('#iberoFollowupRefresh'))void load();
   else if(target.closest('#iberoFollowupPrint'))printView();
   else if(target.closest('#iberoFollowupAll')){selectedFolios=new Set(records.map(folioOf));drawCheckboxes();render();}

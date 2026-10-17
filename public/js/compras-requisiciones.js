@@ -391,6 +391,7 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
   window.setTimeout(()=>{const b=[...document.querySelectorAll('.request-history-view')].find(x=>x.dataset.requestId===id);if(b)b.click();else alert('Actualiza las solicitudes de compra para abrir esta SC.');},350);}
 }
 async function init(){const user=await waitForUser();if(!user)return;profile=await getUserProfile(user.uid);role=String(profile?.appRole||profile?.role||'');if(role!=='admin'&&role!=='supervisor')return;
+ const quickTools=document.getElementById('iberoRequisitionQuickTools');if(quickTools)quickTools.hidden=false;
  ensureStyle();ensureReadPanel();injectLauncher();ensureDetailButton();
  const obs=new MutationObserver(()=>{injectLauncher();ensureDetailButton();});obs.observe(document.querySelector('.inventory-hero')||document.body,{childList:true,subtree:true});
  document.addEventListener('click',capture,true);document.addEventListener('click',ordinaryClick);
