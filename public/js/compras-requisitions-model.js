@@ -13,7 +13,13 @@ export function amounts(l) {
   return {requested:q(l.quantityRequested),received,cancelled:q(l.quantityCancelled),pending:outstanding,
     spent,committed:outstanding*unit,used:spent+outstanding*unit,currency:String(l.currency||'MXN').toUpperCase()};
 }
+// Aviso logístico: NO es recepción física ni gasto ejecutado. Sólo tiene
+// vigencia para piezas pendientes de una línea ya requisitada.
+export const warehouseReady = l => l.requisitionStatus==='requisitioned' && pending(l)>0 && l.warehousePickupPending===true;
+export const stateTone = l => warehouseReady(l)?'warehouse':pending(l)>0?'requisition':q(l.quantityReceived)>0?'received':'cancelled';
+export const stateRank = l => ({warehouse:0,requisition:1,received:2,cancelled:3})[stateTone(l)];
 export function stage(l) {
+  if(warehouseReady(l))return 'En almacén · por recoger';
   const t=amounts(l);
   if(t.pending>0&&t.received>0)return 'Recepción parcial';
   if(t.pending>0&&t.cancelled>0)return 'Requisición parcial / cancelación';
@@ -41,4 +47,43 @@ export function groupRequisitions(requestBundles) {
     }
   }
   return [...groups.values()].sort((a,b)=>(a.unassigned-b.unassigned)||a.folio.localeCompare(b.folio,'es',{numeric:true})||a.key.localeCompare(b.key));
+}
+
+
+// Los importes se ordenan sólo dentro de una misma moneda. La comparación
+// entre MXN y otras divisas sería incorrecta sin tipo de cambio.
+const collate=(a,b)=>String(a||'').localeCompare(String(b||''),'es',{numeric:true,sensitivity:'base'});
+const moneyCurrency=l=>String(l.currency||'MXN').toUpperCase();
+const currencyOrder=(a,b)=>a===b?0:((a==='MXN'?-1:b==='MXN'?1:0)||collate(a,b));
+const fallback=(a,b)=>collate(a.nombre,b.nombre)||collate(a.sku,b.sku)||collate(a.requestFolio,b.requestFolio);
+export function sortRequisitionLines(lines, mode='folio') {
+  return [...lines].sort((a,b)=>{
+    if(mode==='estado')return stateRank(a)-stateRank(b)||fallback(a,b);
+    if(mode==='nombre')return fallback(a,b);
+    if(mode==='gasto_desc'||mode==='gasto_asc'){
+      const currency=currencyOrder(moneyCurrency(a),moneyCurrency(b));
+      if(currency)return currency;
+      const difference=amounts(a).spent-amounts(b).spent;
+      return (mode==='gasto_desc'?-difference:difference)||fallback(a,b);
+    }
+    return collate(a.sku,b.sku)||fallback(a,b);
+  });
+}
+export function sortRequisitionGroups(groups,mode='folio') {
+  const out=groups.map(g=>({...g,lines:sortRequisitionLines(g.lines,mode)}));
+  const groupCurrency=g=>[...g.currencies.keys()].sort(currencyOrder)[0]||'MXN';
+  const groupSpent=g=>n(g.currencies.get(groupCurrency(g))?.spent);
+  const groupName=g=>[...g.lines].map(l=>String(l.nombre||'')).sort(collate)[0]||'';
+  const byFolio=(a,b)=>Number(a.unassigned)-Number(b.unassigned)||collate(a.folio,b.folio)||collate(a.key,b.key);
+  return out.sort((a,b)=>{
+    if(mode==='estado')return Math.min(...a.lines.map(stateRank))-Math.min(...b.lines.map(stateRank))||byFolio(a,b);
+    if(mode==='nombre')return collate(groupName(a),groupName(b))||byFolio(a,b);
+    if(mode==='gasto_desc'||mode==='gasto_asc'){
+      const c=currencyOrder(groupCurrency(a),groupCurrency(b));
+      if(c)return c;
+      const delta=groupSpent(a)-groupSpent(b);
+      return (mode==='gasto_desc'?-delta:delta)||byFolio(a,b);
+    }
+    return byFolio(a,b);
+  });
 }

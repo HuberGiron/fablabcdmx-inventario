@@ -4,8 +4,8 @@
    Ninguna escritura cambia stock, cantidades recibidas o gasto real histórico. */
 import { auth,db } from './firebase-app.js';
 import { getUserProfile,waitForUser } from './common.js';
-import { collection,doc,getDoc,getDocsFromServer,runTransaction,serverTimestamp,updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import { n,q,pending,folioKey,cleanFolio,amounts,stage,groupRequisitions } from './compras-requisitions-model.js';
+import { collection,doc,getDoc,getDocFromServer,getDocsFromServer,runTransaction,serverTimestamp,updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+import { n,q,pending,folioKey,cleanFolio,amounts,stage,groupRequisitions,warehouseReady,stateTone,sortRequisitionGroups } from './compras-requisitions-model.js';
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=(amount,currency='MXN')=>{try{return new Intl.NumberFormat('es-MX',{style:'currency',currency}).format(n(amount));}catch{return `${n(amount).toFixed(2)} ${currency}`;}};
@@ -14,6 +14,7 @@ const lineRef=(id,lineId)=>doc(db,'purchaseRequests',id,'items',lineId);
 const linesRef=id=>collection(db,'purchaseRequests',id,'items');
 const stamp=()=>new Date().toISOString();
 let role='',profile=null,busy=false,restoreDetailId='',lastBundles=[],viewFilter='';
+let requisitionSortMode='folio', warehouseOnly=false, reportLoading=false;
 const admin=()=>role==='admin';
 function requireAdmin(){if(!admin()||!auth.currentUser)throw new Error('Sólo el administrador puede registrar o editar números de requisición.');}
 function validateFolio(raw){const value=cleanFolio(raw);if(value.length>80)throw new Error('El número de requisición excede 80 caracteres.');if(/[\u0000-\u001f]/.test(value))throw new Error('El folio contiene caracteres no permitidos.');return value;}
@@ -97,6 +98,24 @@ function ensureStyle(){if(document.getElementById('iberoRequisitionFolioStyles')
   .req-number-input{max-width:540px}
   #iberoRequisitionsPanel .offcanvas-body{background:#fff}
   #iberoRequisitionEditor .modal-dialog{max-width:980px}
+  #iberoRequisitionsPanel .req-warehouse-controls{display:flex;align-items:end;gap:.7rem;flex-wrap:wrap;margin:.7rem 0 1rem}
+  #iberoRequisitionsPanel .req-warehouse-controls .form-select{width:min(280px,100%)}
+  #iberoRequisitionsPanel .req-report-card{border-left:5px solid #0d6efd}
+  #iberoRequisitionsPanel .req-report-card.req-group-warehouse{border-left-color:#d35400}
+  #iberoRequisitionsPanel .req-report-card.req-group-received{border-left-color:#198754}
+  #iberoRequisitionsPanel .req-report-card.req-group-cancelled{border-left-color:#6c757d}
+  #iberoRequisitionsPanel .req-state-pill{display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1.25;border-radius:6px;padding:.35rem .55rem;font-size:.8rem;font-weight:700}
+  #iberoRequisitionsPanel .req-state-warehouse{color:#fff!important;background:#d35400!important;border:1px solid #b64400}
+  #iberoRequisitionsPanel .req-state-requisition{color:#fff!important;background:#0d6efd!important;border:1px solid #0849b3}
+  #iberoRequisitionsPanel .req-state-received{color:#fff!important;background:#198754!important;border:1px solid #12633c}
+  #iberoRequisitionsPanel .req-state-cancelled{color:#fff!important;background:#6c757d!important;border:1px solid #545b62}
+  #iberoRequisitionsPanel .req-row-warehouse>td{background:#fff4e8!important}
+  #iberoRequisitionsPanel .req-row-received>td{background:#f0f8f2!important}
+  #iberoRequisitionsPanel .req-pickup-check{width:1.2rem;height:1.2rem;cursor:pointer;accent-color:#d35400}
+  #iberoRequisitionsPanel .req-pickup-check:disabled{cursor:not-allowed}
+  #iberoRequisitionsPanel .req-pickup-cell{min-width:95px;text-align:center}
+  #iberoRequisitionsPanel .req-report-card .table td{vertical-align:middle}
+  #iberoRequisitionsPanel .req-warehouse-hint{color:#5b6168;font-size:.84rem}
   @media(max-width:760px){#iberoRequisitionsPanel{width:100vw!important}.req-report-card .table{min-width:940px}}
 `;document.head.append(s);}
 function modalBase(id,title,footer){let m=document.getElementById(id);if(m)return m;m=document.createElement('div');m.id=id;m.className='modal fade';m.tabIndex=-1;m.innerHTML=`<div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
@@ -118,7 +137,7 @@ function reopenAfter(m,requestId){
 function finishModal(m){window.bootstrap.Modal.getOrCreateInstance(m).hide();}
 
 async function openIndividual(requestId,lineId){
- try {requireAdmin();const snap=await getDoc(lineRef(requestId,lineId));if(!snap.exists())throw new Error('No se encontró el artículo.');
+ try {requireAdmin();const snap=await getDocFromServer(lineRef(requestId,lineId));if(!snap.exists())throw new Error('No se encontró el artículo.');
  const l=snap.data();if(!lineEligible(l))throw new Error('El artículo ya no cumple los requisitos para registrar requisición.');
  const m=modalBase('iberoRequisitionIndividual','Registrar requisición',`<button type="button" class="btn btn-primary" id="iberoRequisitionIndividualSave">Registrar</button>`);
  m.dataset.requestId=requestId;m.dataset.lineId=lineId;
@@ -230,29 +249,120 @@ async function getBundles(){
 function ensureReadPanel(){let panel=document.getElementById('iberoRequisitionsPanel');if(panel)return panel;
  panel=document.createElement('div');panel.id='iberoRequisitionsPanel';panel.className='offcanvas offcanvas-end';panel.tabIndex=-1;panel.style.width='min(1250px,96vw)';panel.setAttribute('aria-labelledby','iberoRequisitionsTitle');
  panel.innerHTML=`<div class="offcanvas-header"><div><h2 id="iberoRequisitionsTitle" class="h4 mb-0">Requisiciones de Compras</h2><small class="text-muted">Vista informativa agrupada por número asignado por Compras</small></div><button class="btn-close" type="button" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button></div>
- <div class="offcanvas-body"><div class="d-flex gap-2 flex-wrap align-items-center mb-3"><input id="iberoRequisitionSearch" type="search" class="form-control flex-grow-1" placeholder="Buscar requisición, SKU, producto, SC o alias" style="max-width:580px"><button id="iberoRequisitionRefresh" class="btn btn-outline-primary" type="button">Actualizar</button></div><div id="iberoRequisitionsContent"><p class="text-muted">Consulta pendiente…</p></div></div>`;
+ <div class="offcanvas-body">
+ <div class="d-flex gap-2 flex-wrap align-items-center mb-2"><input id="iberoRequisitionSearch" type="search" class="form-control flex-grow-1" placeholder="Buscar requisición, SKU, producto, SC o alias" style="max-width:580px"><button id="iberoRequisitionRefresh" class="btn btn-outline-primary" type="button">Actualizar</button></div>
+ <div class="req-warehouse-controls">
+   <div><label class="form-label small mb-1" for="iberoRequisitionSort">Ordenar por</label><select class="form-select" id="iberoRequisitionSort"><option value="folio">Número de requisición</option><option value="estado">Estado (almacén primero)</option><option value="gasto_desc">Gasto real: mayor a menor</option><option value="gasto_asc">Gasto real: menor a mayor</option><option value="nombre">Nombre de artículo (A–Z)</option></select></div>
+   <label class="form-check d-flex align-items-center gap-2 mb-2"><input type="checkbox" id="iberoRequisitionOnlyWarehouse" class="form-check-input"><span class="form-check-label">Sólo por recoger en almacén</span></label>
+   <button class="btn btn-outline-warning mb-1" type="button" id="iberoRequisitionPrintWarehouse"><span aria-hidden="true">🖨️</span> Imprimir por recoger</button>
+ </div>
+ <div class="d-flex gap-2 flex-wrap mb-2"><span class="req-state-pill req-state-warehouse">En almacén</span><span class="req-state-pill req-state-requisition">En requisición</span><span class="req-state-pill req-state-received">Recibido</span></div>
+ <p class="req-warehouse-hint">La casilla indica que Compras avisó que el artículo está listo para recoger en almacén. No registra una recepción, no modifica existencias ni genera gasto. Sólo el administrador puede cambiarla; el supervisor puede consultar e imprimir.</p>
+ <div id="iberoRequisitionsContent"><p class="text-muted">Consulta pendiente…</p></div>
+ </div>`;
  document.body.append(panel);return panel;
 }
-function groupHtml(g,index){
- const data=[...g.currencies.entries()].map(([currency,v])=>`<div class="border rounded p-2 small"><strong>${esc(currency)}</strong><div>Gasto real: <strong>${esc(money(v.spent,currency))}</strong></div><div>Compromiso: <strong>${esc(money(v.committed,currency))}</strong></div><div>Total utilizado: <strong>${esc(money(v.used,currency))}</strong></div></div>`).join('');
- const statuses=new Set(g.lines.map(stage));
- return `<details class="req-report-card" data-search="${esc([g.folio,...g.lines.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
- <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(g.lines[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${g.lines.length} SKU · ${g.requestIds.size} SC</span></summary>
- <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
- <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
- ${g.lines.map(l=>{const t=amounts(l);return `<tr><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td>${esc(stage(l))}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td></tr>`;}).join('')}</tbody></table></div></div></details>`;
+function dateText(value){
+  if(!value)return '—';
+  const d=typeof value?.toDate==='function'?value.toDate():new Date(value);
+  return Number.isNaN(d.getTime())?'—':d.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'});
 }
-function drawPanel(){const content=document.getElementById('iberoRequisitionsContent');if(!content)return;
- const groups=groupRequisitions(lastBundles);const allLines=groups.flatMap(g=>g.lines),spentBy=new Map(),commitBy=new Map();
- for(const l of allLines){const t=amounts(l);spentBy.set(t.currency,(spentBy.get(t.currency)||0)+t.spent);commitBy.set(t.currency,(commitBy.get(t.currency)||0)+t.committed);}
+function currencySummary(lines){
+  const map=new Map();
+  for(const l of lines){const a=amounts(l);if(!map.has(a.currency))map.set(a.currency,{spent:0,committed:0,used:0});
+    const t=map.get(a.currency);t.spent+=a.spent;t.committed+=a.committed;t.used+=a.used;}
+  return map;
+}
+function groupHtml(g){
+ const shown=warehouseOnly?g.lines.filter(warehouseReady):g.lines;
+ if(!shown.length)return '';
+ const data=[...currencySummary(shown).entries()].map(([currency,v])=>`<div class="border rounded p-2 small"><strong>${esc(currency)}</strong><div>Gasto real: <strong>${esc(money(v.spent,currency))}</strong></div><div>Compromiso: <strong>${esc(money(v.committed,currency))}</strong></div><div>Total utilizado: <strong>${esc(money(v.used,currency))}</strong></div></div>`).join('');
+ const statuses=new Set(shown.map(stage)),pickup=shown.filter(warehouseReady).length;
+ const tone=shown.some(warehouseReady)?'warehouse':shown.some(l=>pending(l)>0)?'requisition':shown.some(l=>q(l.quantityReceived)>0)?'received':'cancelled';
+ const groupTone=`req-group-${tone}`;
+ return `<details class="req-report-card ${groupTone}" data-group-key="${esc(g.key)}" data-search="${esc([g.folio,...shown.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
+ <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''}</summary>
+ <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
+ <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
+ ${shown.map(l=>{const t=amounts(l),color=stateTone(l),ready=warehouseReady(l),allowToggle=admin()&&t.pending>0;
+ return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td></tr>`;}).join('')}</tbody></table></div></div></details>`;
+}
+function drawPanel(){
+ const content=document.getElementById('iberoRequisitionsContent');if(!content)return;
+ const expanded=new Set([...content.querySelectorAll('.req-report-card[open]')].map(el=>el.dataset.groupKey));
+ const groups=sortRequisitionGroups(groupRequisitions(lastBundles),requisitionSortMode);
+ const allLines=groups.flatMap(g=>g.lines),visibleLines=warehouseOnly?allLines.filter(warehouseReady):allLines;
+ const spentBy=new Map(),commitBy=new Map();
+ for(const l of visibleLines){const t=amounts(l);spentBy.set(t.currency,(spentBy.get(t.currency)||0)+t.spent);commitBy.set(t.currency,(commitBy.get(t.currency)||0)+t.committed);}
  const currencies=[...new Set([...spentBy.keys(),...commitBy.keys()])];
- content.innerHTML=`<div class="small text-muted mb-2">${groups.length} grupos de requisición · ${allLines.length} líneas · ${new Set(allLines.map(l=>l.requestId)).size} solicitudes con requisición</div>
+ const pickupCount=allLines.filter(warehouseReady).length;
+ const rendered=groups.map(groupHtml).filter(Boolean);
+ content.innerHTML=`<div class="small text-muted mb-2">${warehouseOnly?'Vista: por recoger · ':''}${rendered.length} requisiciones visibles · ${visibleLines.length} líneas visibles · ${new Set(visibleLines.map(l=>l.requestId)).size} SC · <strong>${pickupCount} artículo${pickupCount===1?'':'s'} por recoger</strong></div>
  <div class="req-report-summary">${currencies.map(c=>`<span><strong>${esc(c)}</strong> · Gasto real ${esc(money(spentBy.get(c)||0,c))} · Comprometido ${esc(money(commitBy.get(c)||0,c))}</span>`).join('')}</div>
- ${groups.length?groups.map(groupHtml).join(''):'<p class="alert alert-info">No hay artículos registrados en requisición.</p>'}`;
+ ${(requisitionSortMode==='gasto_asc'||requisitionSortMode==='gasto_desc')?'<p class="small text-muted">Montos ordenados dentro de cada moneda, sin conversión entre divisas. En grupos con varias divisas se toma MXN como referencia principal.</p>':''}
+ ${rendered.length?rendered.join(''):'<p class="alert alert-info">No hay artículos que coincidan con el filtro.</p>'}`;
+ content.querySelectorAll('.req-report-card').forEach(el=>{if(expanded.has(el.dataset.groupKey))el.open=true;});
  filterReport();
 }
 function filterReport(){const search=document.getElementById('iberoRequisitionSearch');const raw=(search?.value||'').trim().toLocaleLowerCase('es-MX');const tokens=raw.split(/\s+/).filter(Boolean);
  document.querySelectorAll('#iberoRequisitionsContent .req-report-card').forEach(card=>{card.hidden=tokens.length>0&&!tokens.every(t=>card.dataset.search.includes(t));});}
+// Guardamos el aviso en la propia línea; toda la operación es atómica.
+// No tocamos quantityReceived, stockAlmacen ni actualCostTotal.
+async function saveWarehouseNotice(requestId,id,checked){
+ requireAdmin();
+ await runTransaction(db,async tx=>{
+   const ref=lineRef(requestId,id),snap=await tx.get(ref);
+   if(!snap.exists())throw new Error('La línea de requisición ya no existe.');
+   const l=snap.data();
+   if(l.requisitionStatus!=='requisitioned')throw new Error('Este artículo aún no está en requisición.');
+   if(checked&&pending(l)<=0)throw new Error('El artículo ya no tiene piezas pendientes de recepción.');
+   const old=Boolean(l.warehousePickupPending);
+   if(old===checked)return;
+   const history=Array.isArray(l.warehousePickupHistory)?l.warehousePickupHistory:[];
+   if(history.length>=150)throw new Error('Se alcanzó el límite de auditoría de avisos. Consulta al administrador.');
+   tx.update(ref,{
+     warehousePickupPending:checked,
+     warehousePickupSetAt:checked?serverTimestamp():null,
+     warehousePickupUpdatedAt:serverTimestamp(),
+     warehousePickupUpdatedBy:auth.currentUser.uid,
+     warehousePickupUpdatedByName:profile?.nombre||auth.currentUser.email||'',
+     warehousePickupHistory:[...history,{from:old,to:checked,at:stamp(),by:auth.currentUser.uid}],
+     updatedAt:serverTimestamp(),
+   });
+ });
+}
+async function toggleWarehouse(checkbox){
+ if(checkbox.disabled)return;
+ const requestId=checkbox.dataset.requestId,lineId=checkbox.dataset.lineId,desired=checkbox.checked;
+ checkbox.disabled=true;
+ try{
+   await saveWarehouseNotice(requestId,lineId,desired);
+   // Confirmar el dato en el servidor, para no simular una escritura exitosa.
+   const snap=await getDocFromServer(lineRef(requestId,lineId));
+   if(!snap.exists())throw new Error('La línea dejó de existir después de la actualización.');
+   for(const bundle of lastBundles)if(bundle.request.id===requestId){const i=bundle.lines.findIndex(l=>l.id===lineId);if(i>=0)bundle.lines[i]={id:lineId,...snap.data()};}
+   drawPanel();
+ }catch(e){console.error('Aviso almacén',e);checkbox.checked=!desired;alert(`No se pudo guardar el aviso de almacén: ${e.message}`);checkbox.disabled=false;}
+}
+function printWarehouseReport(){
+ // Se abre inmediatamente por acción del usuario, antes de consultar Firestore.
+ const popup=window.open('','_blank');if(!popup){alert('Permite ventanas emergentes para imprimir este reporte.');return;}
+ popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Requisiciones por recoger</title></head><body style="font-family:Arial;padding:20px">Consultando avisos vigentes del almacén…</body></html>');popup.document.close();
+ (async()=>{
+   const bundles=await getBundles();
+   const groups=sortRequisitionGroups(groupRequisitions(bundles),'folio')
+     .map(g=>({...g,lines:g.lines.filter(warehouseReady)})).filter(g=>g.lines.length);
+   const total=groups.reduce((sum,g)=>sum+g.lines.length,0),now=new Date().toLocaleString('es-MX');
+   popup.document.open();popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>FabLab IBERO · Artículos por recoger</title>
+ <style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}body{font-family:Arial,sans-serif;color:#1f2328;margin:0}header{border-bottom:4px solid #d35400;padding:0 0 14px}h1{margin:3px 0 7px;font-size:24px}.overline{font-size:12px;text-transform:uppercase;letter-spacing:.04em;font-weight:bold;color:#ad4000}.muted{color:#626a72;font-size:12px}.toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px}.summary{padding:12px;border:1px solid #d8dee3;background:#fff4e8;border-radius:6px;margin:18px 0;font-size:15px}.reqgroup{break-inside:avoid;margin:18px 0}.reqtitle{background:#d35400;color:#fff;padding:9px;font-size:17px;font-weight:700;border-radius:4px 4px 0 0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #dadfe4;padding:7px;text-align:left;vertical-align:top}th{background:#fff4e8}td.qty{text-align:center;font-weight:bold}.warning{margin:14px 0;font-size:12px;color:#626a72}@media print{.toolbar{display:none}}</style></head>
+ <body><div class="toolbar"><button onclick="window.print()">Imprimir / Guardar PDF</button><button onclick="window.close()">Cerrar</button></div><header><div class="overline">Universidad Iberoamericana Ciudad de México · FabLab</div><h1>Artículos por recoger en almacén</h1><div class="muted">Generado: ${esc(now)} · Avisos activos por número de requisición</div></header>
+ <div class="summary"><strong>${groups.length}</strong> requisiciones · <strong>${total}</strong> artículos pendientes de recoger</div>
+ ${groups.length?groups.map(g=>`<section class="reqgroup"><div class="reqtitle">Requisición ${esc(g.folio||'Sin número asignado')} · ${g.lines.length} SKU</div><table><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Área</th><th>Fecha del aviso</th><th>Piezas pendientes de SC</th></tr></thead><tbody>${g.lines.map(l=>`<tr><td>${esc(l.requestFolio||'')}${l.requestAlias?`<div class="muted">${esc(l.requestAlias)}</div>`:''}</td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td>${esc([l.zoneName,l.subzoneName,l.locationName].filter(Boolean).join(' · '))}</td><td>${esc(dateText(l.warehousePickupSetAt))}</td><td class="qty">${pending(l)}</td></tr>`).join('')}</tbody></table></section>`).join(''):'<p>No hay artículos con aviso de almacén activo y piezas pendientes de recepción.</p>'}
+ <p class="warning">Un aviso de almacén no equivale a recepción del FabLab. La cantidad pendiente de la SC no garantiza que todas esas piezas estén físicamente disponibles para recoger. Confirma las unidades entregadas con almacén.</p>
+ <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));<\/script></body></html>`);
+   popup.document.close();
+ })().catch(e=>{console.error(e);popup.document.open();popup.document.write(`<p>No se pudo generar el reporte: ${esc(e.message)}</p>`);popup.document.close();});
+}
 async function loadPanel(){const content=document.getElementById('iberoRequisitionsContent');if(!content)return;content.innerHTML='<p class="text-muted">Consultando solicitudes y requisiciones en Firestore…</p>';
  try{lastBundles=await getBundles();drawPanel();}catch(e){console.error(e);content.innerHTML=`<div class="alert alert-danger">No se pudo obtener la información actual de Firestore: ${esc(e.message)}</div>`;}
 }
@@ -273,6 +383,7 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
  else if(t.closest('#iberoRequisitionEditorSave'))void saveEditor();
  else if(t.closest('#iberoRequisitionEditButton')){const id=document.querySelector('#purchaseRequestDetailPdf')?.dataset.requestId;if(id)void openEditor(id);}
  else if(t.closest('#iberoRequisitionRefresh'))void loadPanel();
+ else if(t.closest('#iberoRequisitionPrintWarehouse'))printWarehouseReport();
  else if(t.closest('#iberoRequisitionSelectAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-row:not([hidden]) .req-edit-select').forEach(x=>x.checked=true);
  else if(t.closest('#iberoRequisitionClearAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-select').forEach(x=>x.checked=false);
  else if(t.closest('.req-open-sc')){const id=t.closest('.req-open-sc').dataset.requestId;window.bootstrap.Offcanvas.getOrCreateInstance(document.getElementById('iberoRequisitionsPanel')).hide();
@@ -285,6 +396,7 @@ async function init(){const user=await waitForUser();if(!user)return;profile=awa
  document.addEventListener('shown.bs.modal',e=>addMassFolioInput(e.target));
  document.addEventListener('purchase-request-detail-rendered',e=>{ensureDetailButton();const id=String(e.detail?.requestId||'');if(id)void showDetailRequisitionNumbers(id);});
  document.addEventListener('show.bs.offcanvas',e=>{if(e.target?.id==='iberoRequisitionsPanel')void loadPanel();});
+ document.addEventListener('change',e=>{if(e.target?.id==='iberoRequisitionSort'){requisitionSortMode=e.target.value;drawPanel();}else if(e.target?.id==='iberoRequisitionOnlyWarehouse'){warehouseOnly=e.target.checked;drawPanel();}else if(e.target?.matches?.('#iberoRequisitionsPanel .req-pickup-check'))void toggleWarehouse(e.target);});
  document.addEventListener('input',e=>{if(e.target?.id==='iberoRequisitionSearch')filterReport();if(e.target?.id==='iberoRequisitionEditSearch'){
   const tokens=e.target.value.trim().toLocaleLowerCase('es-MX').split(/\s+/).filter(Boolean);
   document.querySelectorAll('#iberoRequisitionEditor .req-edit-row').forEach(row=>row.hidden=tokens.length>0&&!tokens.every(t=>row.dataset.search.includes(t)));
