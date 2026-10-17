@@ -1,8 +1,9 @@
 /*
  * FabLab IBERO · Reportes y corrección de gastos reales (2026-10-17).
- * Complementa compras-status, agrupación y compras-financial-integrity.
- * No modifica ni sustituye el PDF extendido/agrupado: incorpora a sus ventanas
- * la conciliación financiera ANTES de que se imprima, conservando fotos y diseño.
+ * Mantiene la conciliación financiera al INICIO de los PDF extendido y agrupado.
+ * No añade tablas financieras por SKU al final de esos PDF.
+ * Conserva fotografías, fichas, resumen e impresión originales; el desglose
+ * detallado sigue disponible en el Excel financiero y en el historial de compras.
  * Las correcciones jamás modifican stock ni la cantidad de artículos recibidos.
  */
 import { auth, db } from './firebase-app.js';
@@ -171,13 +172,7 @@ function financialPdfCss(){return `
 .finance-summary-grid strong{font-size:11pt;color:#171717;display:block;margin-top:3px;}
 .finance-currency-title{font-size:9pt;font-weight:700;margin:5px 0;}
 .finance-summary-balance{font-size:8pt;margin:5px 0 8px;}
-.finance-pdf-details{margin:14px 0;break-before:auto;}
-.finance-pdf-details h2{font-size:12pt;}
-.finance-pdf-details table{font-size:8pt;width:100%;border-collapse:collapse;}
-.finance-pdf-details th,.finance-pdf-details td{padding:4px;border:1px solid #d9dfe7;text-align:left;vertical-align:top;}
-.finance-pdf-details th{background:#e6edf7;color:#17283c;}
-.finance-pdf-details tr{break-inside:avoid;}
-@media print{.finance-pdf-overview,.finance-pdf-details{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+@media print{.finance-pdf-overview{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
 `;}
 function injectPdfFinance(popup,bundle){
   try {
@@ -193,11 +188,6 @@ function injectPdfFinance(popup,bundle){
     <p style="font-size:8pt;margin:3px 0">Gasto real = recepción registrada; compromiso pendiente = unidades no recibidas ni canceladas × costo vigente. Las cantidades canceladas no comprometen presupuesto. No equivale necesariamente a facturas pagadas.</p>`;
     const originalSummary=root.querySelector('.summary,.top-summary');
     (originalSummary||header).insertAdjacentElement('afterend',section);
-    const detail=dom.createElement('section');detail.className='finance-pdf-details';
-    detail.innerHTML=`<h2>Gasto real y compromiso por SKU</h2>
-    <table><thead><tr><th>SKU / artículo</th><th>Solicitado</th><th>Recibido</th><th>Cancelado</th><th>Pendiente</th><th>Gasto real</th><th>Compromiso</th><th>Utilizado</th></tr></thead>
-    <tbody>${bundle.lines.map(l=>{const t=totals(l);return `<tr><td><strong>${esc(l.sku||l.id)}</strong><div>${esc(l.nombre||'')}</div></td><td>${t.requested}</td><td>${t.received}</td><td>${t.cancelled}</td><td>${t.pending}</td><td>${esc(fmt(t.spent,t.currency))}</td><td>${esc(fmt(t.commitment,t.currency))}</td><td><strong>${esc(fmt(t.active,t.currency))}</strong></td></tr>`;}).join('')}</tbody></table>`;
-    root.append(detail);
     return true;
   }catch(error){console.error('No se pudo enriquecer el PDF:',error);return false;}
 }
