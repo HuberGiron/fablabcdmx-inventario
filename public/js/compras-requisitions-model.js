@@ -14,7 +14,7 @@ export function amounts(l) {
     spent,committed:outstanding*unit,used:spent+outstanding*unit,currency:String(l.currency||'MXN').toUpperCase()};
 }
 // Aviso logístico: NO es recepción física ni gasto ejecutado. Sólo tiene
-// vigencia para piezas pendientes de una línea ya requisitada.
+// vigencia para piezas pendientes de una línea que está en requisición.
 export const warehouseReady = l => l.requisitionStatus==='requisitioned' && pending(l)>0 && l.warehousePickupPending===true;
 export const stateTone = l => warehouseReady(l)?'warehouse':pending(l)>0?'requisition':q(l.quantityReceived)>0?'received':'cancelled';
 export const stateRank = l => ({warehouse:0,requisition:1,received:2,cancelled:3})[stateTone(l)];

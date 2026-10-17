@@ -48,7 +48,7 @@ async function refreshAggregate(requestId){
   });
 }
 // Cada SKU se registra en una transacción con el folio: nunca queda la etapa
-// requisitada sin su folio cuando el usuario proporciona uno.
+// en requisición, sin su folio, cuando el usuario proporciona uno.
 async function registerOne(requestId,lineId,cost,folio){
   requireAdmin();const unit=Number(cost);if(!Number.isFinite(unit)||unit<0)throw new Error('Costo unitario inválido.');
   const number=validateFolio(folio);
@@ -215,7 +215,7 @@ function ensureDetailButton(){if(!admin())return;const modal=document.getElement
  footer.prepend(button);
 }
 async function openEditor(requestId,focusLine=''){
- try{requireAdmin();const lines=(await fetchLines(requestId)).filter(l=>l.requisitionStatus==='requisitioned');if(!lines.length)throw new Error('Esta SC todavía no tiene artículos requisitados.');
+ try{requireAdmin();const lines=(await fetchLines(requestId)).filter(l=>l.requisitionStatus==='requisitioned');if(!lines.length)throw new Error('Esta SC todavía no tiene artículos en requisición.');
  const m=modalBase('iberoRequisitionEditor','Editar número de requisición',`<button id="iberoRequisitionEditorSave" type="button" class="btn btn-primary">Guardar folio en seleccionados</button>`);
  m.dataset.requestId=requestId;
  m.querySelector('.modal-body').innerHTML=`<div class="alert alert-info py-2">Selecciona los SKU que pertenecen a la misma requisición externa. Esta edición sólo cambia su número y conserva cantidades, inventario, precios y gasto.</div>
