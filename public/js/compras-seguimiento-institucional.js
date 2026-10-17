@@ -5,7 +5,7 @@
 import {db,auth} from './firebase-app.js';
 import {waitForUser,getUserProfile} from './common.js';
 import {collection,getDocsFromServer} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {STATUS_META,statusKey,statusInfo,summarize,selectLines} from './compras-seguimiento-model.mjs';
+import {STATUS_META,statusKey,statusInfo,summarize,selectLines} from './compras-seguimiento-model.js?v=20261017f';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const amount=(n,c)=>new Intl.NumberFormat('es-MX',{style:'currency',currency:c||'MXN'}).format(Number(n)||0);
@@ -115,7 +115,7 @@ function show(){const m=modal();const panel=$('#iberoRequisitionsPanel');const f
 async function init(){const user=auth.currentUser||await waitForUser();if(!user)return;const profile=await getUserProfile(user.uid);role=profile?.appRole||profile?.role||'';if(!['admin','supervisor'].includes(role))return;
  css();modal();launcher();const observer=new MutationObserver(launcher);observer.observe(document.body,{childList:true,subtree:true});
  document.addEventListener('click',e=>{const target=e.target;if(!(target instanceof Element))return;
-  if(target.closest('#iberoFollowupOpen, #iberoFollowupOpenTop'))show();
+  if(target.closest('#iberoFollowupOpen'))show();
   else if(target.closest('#iberoFollowupRefresh'))void load();
   else if(target.closest('#iberoFollowupPrint'))printView();
   else if(target.closest('#iberoFollowupAll')){selectedFolios=new Set(records.map(folioOf));drawCheckboxes();render();}

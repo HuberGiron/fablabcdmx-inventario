@@ -6,7 +6,7 @@
 import {auth,db} from './firebase-app.js';
 import {getUserProfile,waitForUser} from './common.js';
 import {collection,doc,getDoc,getDocs,getDocsFromServer,runTransaction,updateDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.mjs?v=20261017d';
+import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017f';
 const $=sel=>document.querySelector(sel);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
@@ -378,8 +378,8 @@ function openImportModal(m){
 function bind(){makeStyles();ensureModal();boardModal();chooseModal();injectButtons();void loadUser().catch(e=>console.warn('Rol de Compras:',e.message));
  document.addEventListener('click',event=>{
   const t=event.target;
-  if(t.closest?.('#iberoProcurementImportLauncher, #iberoProcurementImportLauncherTop')){void loadUser().then(()=>{if(!admin()){alert('El supervisor puede consultar, pero sólo el administrador puede importar actualizaciones.');return;}openImportModal(ensureModal());}).catch(e=>alert(e.message));}
-  if(t.closest?.('#iberoDeliveryBoardLauncher, #iberoDeliveryBoardLauncherTop'))void showBoard();
+  if(t.closest?.('#iberoProcurementImportLauncher')){void loadUser().then(()=>{if(!admin()){alert('El supervisor puede consultar, pero sólo el administrador puede importar actualizaciones.');return;}openImportModal(ensureModal());}).catch(e=>alert(e.message));}
+  if(t.closest?.('#iberoDeliveryBoardLauncher'))void showBoard();
   if(t.closest?.('.iberoMatchClose'))chooseModal().close();
   if(t.closest?.('#iberoImportRead'))void reviewFile();
   if(t.closest?.('#iberoImportSelectClear')){document.querySelectorAll('.imp-row').forEach(row=>{const key=row.querySelector('.imp-target')?.value;row.querySelector('.imp-apply').checked=Boolean(key);});updateFooter();}

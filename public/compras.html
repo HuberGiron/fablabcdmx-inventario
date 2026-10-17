@@ -66,25 +66,6 @@
 
   <section class="inventory-catalog-section purchase-catalog-section">
     <div class="container-fluid px-4 px-lg-5">
-      <!-- Accesos persistentes para Administrador y Supervisor de Compras.
-           El modulo de requisiciones los habilita solamente tras comprobar el rol. -->
-      <section id="iberoRequisitionQuickTools" class="card mb-4 border-primary-subtle" hidden aria-label="Herramientas de requisiciones">
-        <div class="card-body">
-          <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
-            <div>
-              <h2 class="h5 mb-1">Herramientas de requisiciones</h2>
-              <p class="small text-muted mb-0">Importa reportes institucionales, revisa sus propuestas y consulta los avances por requisicion.</p>
-            </div>
-            <div class="d-flex flex-wrap gap-2" role="group" aria-label="Acciones de requisiciones">
-              <button type="button" id="iberoRequisitionLauncherTop" class="btn btn-outline-primary btn-sm" data-bs-toggle="offcanvas" data-bs-target="#iberoRequisitionsPanel" aria-controls="iberoRequisitionsPanel">Ver requisiciones</button>
-              <button type="button" id="iberoProcurementImportLauncherTop" class="btn btn-primary btn-sm">Importar PDF Compras</button>
-              <button type="button" id="iberoDeliveryBoardLauncherTop" class="btn btn-outline-secondary btn-sm">Fechas de entrega</button>
-              <button type="button" id="iberoFollowupOpenTop" class="btn btn-outline-dark btn-sm">Seguimiento de estados</button>
-            </div>
-          </div>
-          <div class="small text-muted mt-2">La importación exige revisión y aprobación del administrador. Los tableros no modifican inventario ni presupuesto.</div>
-        </div>
-      </section>
       <section class="card filter-card mb-4"><div class="card-body">
         <div class="row g-3 align-items-end">
           <div class="col-lg-4 col-md-6">
@@ -232,12 +213,12 @@
 <script type="module" src="js/compras-pdf-status-colors.js"></script>
 <script type="module" src="js/compras-masivos-ui.js"></script>
 <script type="module" src="js/compras-financial-reports-v2.js?v=20261017"></script>
-<script type="module" src="js/compras-requisiciones.js?v=20261017e"></script>
+<script type="module" src="js/compras-requisiciones.js?v=20261017f"></script>
 <!-- Fichas individuales para Compras: un PDF por SKU dentro de un ZIP -->
 <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script type="module" src="js/compras-fichas-individuales.js?v=20261017a"></script>
 <!-- Importación supervisada de PDF institucional y fechas esperadas -->
-<script type="module" src="js/compras-importar-reportes.js?v=20261017e"></script>
-<script type="module" src="js/compras-seguimiento-institucional.js?v=20261017e"></script>
+<script type="module" src="js/compras-importar-reportes.js?v=20261017f"></script>
+<script type="module" src="js/compras-seguimiento-institucional.js?v=20261017f"></script>
 </body></html>

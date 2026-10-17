@@ -367,9 +367,36 @@ function printWarehouseReport(){
 async function loadPanel(){const content=document.getElementById('iberoRequisitionsContent');if(!content)return;content.innerHTML='<p class="text-muted">Consultando solicitudes y requisiciones en Firestore…</p>';
  try{lastBundles=await getBundles();drawPanel();}catch(e){console.error(e);content.innerHTML=`<div class="alert alert-danger">No se pudo obtener la información actual de Firestore: ${esc(e.message)}</div>`;}
 }
-function injectLauncher(){if(!role)return;ensureReadPanel();let container=document.querySelector('.purchase-request-launcher')?.parentElement||document.querySelector('.inventory-hero .inventory-lead')?.parentElement;if(!container)return;
- if(container.querySelector('#iberoRequisitionLauncher'))return;
- const box=document.createElement('div');box.className='mt-2';box.innerHTML=`<button type="button" class="btn btn-outline-primary" id="iberoRequisitionLauncher" data-bs-toggle="offcanvas" data-bs-target="#iberoRequisitionsPanel" aria-controls="iberoRequisitionsPanel">Requisiciones</button>`;container.append(box);
+function injectLauncher(){
+ if(!role)return;
+ ensureReadPanel();
+ const container=document.querySelector('.purchase-request-launcher')?.parentElement
+   ||document.querySelector('.inventory-hero .inventory-lead')?.parentElement;
+ if(!container)return;
+ // Los cuatro accesos comparten el lugar del botón Requisiciones mostrado
+ // junto a Solicitudes de compra y Presupuestos; no quedan debajo de filtros.
+ let requisitionButton=container.querySelector('#iberoRequisitionLauncher');
+ let box=requisitionButton?.parentElement;
+ if(!box){
+  box=document.createElement('div');
+  box.className='mt-2 d-flex flex-wrap align-items-center gap-2';
+  box.innerHTML=`<button type="button" class="btn btn-outline-primary" id="iberoRequisitionLauncher" data-bs-toggle="offcanvas" data-bs-target="#iberoRequisitionsPanel" aria-controls="iberoRequisitionsPanel">Requisiciones</button>`;
+  container.append(box);
+ }
+ box.classList.add('d-flex','flex-wrap','align-items-center','gap-2');
+ const actions=[
+  ['iberoProcurementImportLauncherHero','Importar PDF Compras','btn btn-primary'],
+  ['iberoDeliveryBoardLauncherHero','Fechas de entrega','btn btn-outline-secondary'],
+  ['iberoFollowupOpenHero','Seguimiento de estados','btn btn-outline-dark']
+ ];
+ for(const [id,title,classes] of actions){
+  if(document.getElementById(id))continue;
+  const button=document.createElement('button');
+  button.id=id;button.type='button';button.className=classes;
+  button.textContent=title;
+  button.setAttribute('aria-label',title);
+  box.append(button);
+ }
 }
 function stop(e){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();}
 function capture(e){const t=e.target;if(!(t instanceof Element))return;
@@ -380,6 +407,21 @@ function capture(e){const t=e.target;if(!(t instanceof Element))return;
  }
 }
 function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
+ // Los botones del encabezado reutilizan los mismos flujos comprobados
+ // que los botones originales en el panel lateral.
+ const bridge=[
+  ['#iberoProcurementImportLauncherHero','#iberoProcurementImportLauncher','importación PDF'],
+  ['#iberoDeliveryBoardLauncherHero','#iberoDeliveryBoardLauncher','tablero de fechas'],
+  ['#iberoFollowupOpenHero','#iberoFollowupOpen','seguimiento institucional']
+ ];
+ for(const [hero,original,description] of bridge){
+  if(t.closest(hero)){
+   const target=document.querySelector(original);
+   if(target){target.click();}
+   else alert(`No se inició el módulo de ${description}. Revisa que todos los archivos JS de la actualización estén en public/js/ y consulta la consola del navegador (F12).`);
+   return;
+  }
+ }
  if(t.closest('#iberoRequisitionIndividualSave'))void saveIndividual();
  else if(t.closest('#iberoRequisitionEditorSave'))void saveEditor();
  else if(t.closest('#iberoRequisitionEditButton')){const id=document.querySelector('#purchaseRequestDetailPdf')?.dataset.requestId;if(id)void openEditor(id);}
@@ -391,7 +433,6 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
   window.setTimeout(()=>{const b=[...document.querySelectorAll('.request-history-view')].find(x=>x.dataset.requestId===id);if(b)b.click();else alert('Actualiza las solicitudes de compra para abrir esta SC.');},350);}
 }
 async function init(){const user=await waitForUser();if(!user)return;profile=await getUserProfile(user.uid);role=String(profile?.appRole||profile?.role||'');if(role!=='admin'&&role!=='supervisor')return;
- const quickTools=document.getElementById('iberoRequisitionQuickTools');if(quickTools)quickTools.hidden=false;
  ensureStyle();ensureReadPanel();injectLauncher();ensureDetailButton();
  const obs=new MutationObserver(()=>{injectLauncher();ensureDetailButton();});obs.observe(document.querySelector('.inventory-hero')||document.body,{childList:true,subtree:true});
  document.addEventListener('click',capture,true);document.addEventListener('click',ordinaryClick);
