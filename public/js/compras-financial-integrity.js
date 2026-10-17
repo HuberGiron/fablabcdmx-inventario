@@ -134,6 +134,67 @@ async function registerReceipt(requestId,lineId,quantity,unitCost) {
     tx.update(rr,{updatedAt:serverTimestamp()});
   });
 }
+// Recepción individual: el formulario original guardaba el total sin receiptHistory.
+// Esta versión utiliza el mismo motor transaccional que la recepción masiva.
+function individualReceiptDialog() {
+  let modal=document.getElementById("financeIndividualReceiptModal");
+  if(modal)return modal;
+  modal=document.createElement("div");modal.id="financeIndividualReceiptModal";modal.className="modal fade";modal.tabIndex=-1;
+  modal.innerHTML=`<div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title">Registrar recepción y gasto real</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button></div>
+    <div class="modal-body"><div class="mb-2" id="financeIndividualReceiptName"></div>
+      <label class="form-label" for="financeIndividualReceiptQty">Piezas recibidas</label>
+      <input id="financeIndividualReceiptQty" type="number" class="form-control mb-3" min="1" step="1">
+      <label class="form-label" for="financeIndividualReceiptCost">Costo unitario real de esta recepción</label>
+      <input id="financeIndividualReceiptCost" type="number" class="form-control" min="0" step="0.01">
+      <div class="small text-muted mt-2">Se actualizarán inventario, gasto real y presupuesto. Se conservará el costo de esta recepción para futuras correcciones.</div>
+    </div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+      <button id="financeIndividualReceiptSave" class="btn btn-success" type="button">Registrar recepción</button></div>
+  </div></div>`;
+  document.body.append(modal);
+  modal.querySelector("#financeIndividualReceiptSave").addEventListener("click",async()=>{
+    if(busy)return;
+    const rid=modal.dataset.requestId,lid=modal.dataset.lineId;
+    const quantity=Number(modal.querySelector("#financeIndividualReceiptQty").value);
+    const unitCost=Number(modal.querySelector("#financeIndividualReceiptCost").value);
+    if(!Number.isSafeInteger(quantity)||quantity<1||quantity>Number(modal.dataset.pending)||!Number.isFinite(unitCost)||unitCost<0){
+      alert("Captura una cantidad entera entre 1 y el pendiente, y un costo no negativo.");return;
+    }
+    if(!confirm(`¿Registrar la recepción de ${quantity} pieza(s) a ${format(unitCost,modal.dataset.currency)} cada una?`))return;
+    const button=modal.querySelector("#financeIndividualReceiptSave");busy=true;button.disabled=true;
+    try{
+      await registerReceipt(rid,lid,quantity,unitCost);
+      await refreshRequestTotals(rid);
+      bootstrap.Modal.getOrCreateInstance(modal).hide();
+      await reload(rid);
+      alert("Recepción registrada con historial y gasto real actualizado.");
+    }catch(e){console.error(e);alert(`No fue posible guardar la recepción: ${e.message}`);}
+    finally{busy=false;button.disabled=false;}
+  });
+  return modal;
+}
+async function openIndividualReceipt(requestId,lineId){
+  if(role!=="admin"||busy)return;
+  try{
+    const snapshot=await getDoc(lineRef(requestId,lineId));
+    if(!snapshot.exists())throw new Error("No se encontró el SKU solicitado.");
+    const line=snapshot.data(),remain=pending(line);
+    if(remain<1)throw new Error("El producto ya no tiene piezas pendientes.");
+    if(line.requisitionStatus!=="requisitioned")throw new Error("Primero debe registrarse la requisición de este artículo.");
+    const modal=individualReceiptDialog();
+    modal.dataset.requestId=requestId;modal.dataset.lineId=lineId;
+    modal.dataset.pending=String(remain);modal.dataset.currency=line.currency||"MXN";
+    modal.querySelector("#financeIndividualReceiptName").textContent=`${line.sku||lineId} · ${line.nombre||"Artículo"} · Pendiente: ${remain}`;
+    const input=modal.querySelector("#financeIndividualReceiptQty");input.max=String(remain);input.value=String(remain);
+    modal.querySelector("#financeIndividualReceiptCost").value=String(amount(line.lastActualUnitCost??line.requisitionUnitCost??line.unitPrice));
+    const detail=document.querySelector("#purchaseRequestDetailModal");
+    if(detail?.classList.contains("show")){
+      detail.addEventListener("hidden.bs.modal",()=>bootstrap.Modal.getOrCreateInstance(modal).show(),{once:true});
+      bootstrap.Modal.getOrCreateInstance(detail).hide();
+    }else bootstrap.Modal.getOrCreateInstance(modal).show();
+  }catch(e){alert(`No se pudo abrir la recepción: ${e.message}`);}
+}
+
 async function saveOfficialPrices() {
   if(busy || role!=="admin")return;
   const modal=document.getElementById("purchaseRequestPriceModal");
@@ -319,13 +380,30 @@ async function syncCatalogUnitCost(l,marker) {
 function watchDetail(requestId) {
   if(!requestId||requestId===detailId)return;
   unsubscribeLines?.();unsubscribeLines=null;detailId=requestId;initialLineSnapshot=true;
+  const priceMarkers=new Map();
+  const stampMillis=marker=>{
+    if(!marker)return 0;
+    const n=marker?.toMillis?.() ?? Date.parse(marker);
+    return Number.isFinite(n)?n:0;
+  };
+  const markerMillis=record=>Math.max(stampMillis(record.priceChangedAt),stampMillis(record.requisitionedAt));
+  const latestMarker=record=>stampMillis(record.priceChangedAt)>=stampMillis(record.requisitionedAt)
+    ? record.priceChangedAt : record.requisitionedAt;
   unsubscribeLines=onSnapshot(linesCollection(requestId),snap=>{
-    if(initialLineSnapshot){initialLineSnapshot=false;return;}
+    if(initialLineSnapshot){
+      initialLineSnapshot=false;
+      snap.docs.forEach(d=>priceMarkers.set(d.id,markerMillis(d.data())));
+      return;
+    }
     for(const change of snap.docChanges()){
-      if(change.type!=="modified")continue;
-      const l=change.doc.data();
-      if(l.priceChangedAt)syncCatalogUnitCost(l,l.priceChangedAt).catch(console.warn);
-      else if(l.requisitionedAt)syncCatalogUnitCost(l,l.requisitionedAt).catch(console.warn);
+      const l=change.doc.data(),marker=markerMillis(l);
+      const previous=priceMarkers.get(change.doc.id)||0;
+      priceMarkers.set(change.doc.id,marker);
+      // Sólo sincronizar catálogo cuando cambie REALMENTE el precio oficial.
+      // Modificar gasto de una recepción antigua no debe alterar el precio actual.
+      if(change.type==="modified" && marker>previous){
+        syncCatalogUnitCost(l,latestMarker(l)).catch(console.warn);
+      }
     }
     showDetailFinancials(requestId).catch(console.warn);
   },e=>console.warn("Escucha SC",e));
@@ -402,6 +480,12 @@ function eventCapture(e) {
   if(financeExcel){stopOriginal(e);void exportFinancialRequest(financeExcel.dataset.requestId,"xlsx");return;}
   const financePdf=target.closest("#financeDetailPdf");
   if(financePdf){stopOriginal(e);void exportFinancialRequest(financePdf.dataset.requestId,"pdf");return;}
+  const individualReceipt=target.closest(".request-line-receive");
+  if(individualReceipt){
+    stopOriginal(e);
+    void openIndividualReceipt(individualReceipt.dataset.requestId,individualReceipt.dataset.lineId);
+    return;
+  }
   const receipt=target.closest("#massReceiptSave");
   if(receipt){stopOriginal(e);void saveReceiptsFromExisting(receipt.closest("#massReceiptModal")||receipt.closest(".modal"),"mass");return;}
   const grouped=target.closest("#purchaseGroupBatchSave");
