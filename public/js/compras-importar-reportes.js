@@ -57,6 +57,27 @@ function moneyGross(p){
   }
  return null;
 }
+// Validación automática: la unidad institucional puede representar una caja,
+// paquete o juego. Si la SC solicita exactamente la misma cantidad de unidades
+// de compra, no es necesario pedir una confirmación repetitiva por artículo.
+// Si el conteo difiere o no se conoce, se bloquean precio y recepción (no folio,
+// fecha ni seguimiento), evitando conversiones de unidad inventadas.
+function unitConflict(product,line){
+ const unit=String(product?.purchaseUnit||'').trim().toUpperCase();
+ if(!unit||['PZA','PZAS','PZ','PIEZA','PIEZAS'].includes(unit))return '';
+ const externalQty=Number(product?.quantity),internalQty=Number(line?.quantityRequested);
+ if(!Number.isFinite(externalQty)||externalQty<=0||!Number.isFinite(internalQty)||internalQty<=0)
+  return `Presentación ${unit}: no es posible cotejar automáticamente la cantidad del PDF con la SC. Puedes conservar folio, etapa y fecha, pero desmarca «Actualizar precio» y no registres recepción hasta aclarar la equivalencia.`;
+ if(Math.abs(externalQty-internalQty)>0.000001)
+  return `Presentación ${unit}: Compras reporta ${externalQty} unidad(es), pero la SC solicita ${internalQty}. No se puede asumir una conversión. Corrige la vinculación o desmarca precio/recepción para guardar solamente el seguimiento.`;
+ return '';
+}
+function bindingDifference(line,product){
+ if(!line||!product)return false;
+ const existingFolio=String(line.requisitionNumber||'').trim(),existingCode=String(line.externalProcurementItemCode||'').trim();
+ return Boolean((existingFolio&&existingFolio!==String(product.folio||'').trim())
+  ||(existingCode&&existingCode!==String(product.externalCode||'').trim()));
+}
 function receiptState(line){
  const received=Math.max(0,n(line?.quantityReceived)), remaining=line?pending(line):0;
  return {received,remaining,fullyReceived:received>0&&remaining===0,
@@ -86,8 +107,8 @@ function checkRow(tr,checkDuplicates=true){
    const oldRank=institutionalRank(line.externalReportedStatus),newRank=institutionalRank(product.externalStatus);
    if(oldRank>=0 && newRank>=0 && newRank<oldRank)errors.push(`El último seguimiento era «${line.externalReportedStatus}». No se permite retroceder a «${product.externalStatus}».`);
    if(parsed?.reportDate && line.externalReportDate && parsed.reportDate<String(line.externalReportDate))errors.push(`Existe un reporte más reciente (${line.externalReportDate}); no puede sobrescribirse.`);
-   if(line.requisitionNumber&&String(line.requisitionNumber)!==String(product.folio) && !tr.querySelector('.imp-confirm-reassign')?.checked)errors.push(`La línea pertenece a la requisición ${line.requisitionNumber}. Confirma expresamente la reasignación.`);
-   if(line.externalProcurementItemCode&&String(line.externalProcurementItemCode)!==String(product.externalCode) && !tr.querySelector('.imp-confirm-reassign')?.checked)errors.push(`Código institucional diferente: ${line.externalProcurementItemCode}. Confirma su reasignación.`);
+   // Los cambios de vínculo se registran automáticamente con el vínculo anterior
+   // en el historial institucional. No requieren otra casilla de autorización.
    const receiptControl=tr.querySelector('.imp-receive');
    const receive=proposedStage==='received'&&receiptControl?.checked;
    const qtyRaw=tr.querySelector('.imp-receive-qty')?.value||'';
@@ -102,8 +123,8 @@ function checkRow(tr,checkDuplicates=true){
    const receiptEvidence=`${product.folio}:${product.externalCode}:${product.externalStatus}:${product.quantity}:${product.expectedDate}`;
    const receiptId=`${digest.slice(0,24)}:${product.externalCode}`;
    if(receive&&(refs(line.externalImportReceiptFingerprints).includes(receiptId)||prior.includes(receiptEvidence)))errors.push('Esta recepción del reporte ya fue aplicada anteriormente.');
-   const unit=String(product.purchaseUnit||'').toUpperCase();
-   if((priceActive||receive)&&unit&&unit!=='PZA'&&unit!=='PZAS'&&!tr.querySelector('.imp-verify-units')?.checked)errors.push(`La presentación institucional es ${unit}. Confirma su equivalencia con la unidad del FabLab.`);
+   const mismatch=unitConflict(product,line);
+   if((priceActive||receive)&&mismatch)errors.push(mismatch);
  }
  return errors;
 }
@@ -153,7 +174,8 @@ function makeStyles(){if($('#iberoImportStyle'))return;const s=document.createEl
   #iberoImportModal .imp-validation{margin:0 1rem 1rem;padding:.65rem .9rem;border:1px solid #dc3545;background:#fff6f6;color:#7a1825;border-radius:7px;font-size:.85rem}
   #iberoImportModal .imp-validation.is-valid{border-color:#198754;background:#f2faf5;color:#0e5e38}
   #iberoImportModal .imp-locked{margin-top:.45rem;padding:.55rem .65rem;border-radius:7px;background:#fff3cd;color:#5d4200;border:1px solid #ddb653;font-size:.8rem}
-  #iberoImportModal .imp-controls{border-top:1px solid #e0e5ea;padding:.65rem 1rem;background:#f9fafb}
+  #iberoImportModal .imp-auto-checks{border-top:1px solid #e0e5ea;padding:.6rem 1rem;background:#f6faff;color:#23436f;font-size:.86rem}
+  #iberoImportModal .imp-auto-checks .imp-auto-warning{color:#8d5209;font-weight:650}
  #iberoImportModal .imp-check{transform:scale(1.12)}
  #iberoImportModal .imp-banner{border-left:4px solid #0d6efd;background:#f0f5fd;padding:.7rem 1rem}
  #iberoImportModal .imp-progress{font-size:.86rem}
@@ -284,10 +306,7 @@ function productRow(p,i){
       <div class="imp-receipt-accounted imp-locked" ${s==='received'&&selectedLine&&receiptState(selectedLine).fullyReceived?'':'hidden'}>Recepción ya contabilizada en FabLab. No se volverán a agregar unidades ni a registrar gasto.</div>
     </section>
   </div>
-  <div class="imp-controls">
-   <label class="d-flex gap-2 align-items-center small imp-unit-verification" hidden><input type="checkbox" class="form-check-input imp-verify-units"> Confirmo que revisé la equivalencia entre la presentación del PDF y la unidad registrada en FabLab.</label>
-   <label class="d-flex gap-2 align-items-center small imp-reassign-verification" hidden><input type="checkbox" class="form-check-input imp-confirm-reassign"> Autorizo corregir el folio o código institucional asociado anteriormente a este SKU.</label>
-  </div>
+  <div class="imp-auto-checks" hidden role="status" aria-live="polite"></div>
   <div class="imp-validation" role="status" aria-live="polite"></div>
  </article>`;
 }
@@ -319,13 +338,16 @@ function syncReceiptVisibility(row){
  if(check)check.disabled=!show;
  if(qty){qty.disabled=!show;qty.max=String(state.remaining);}
  if(line && state.fullyReceived&&sel && !['none','received'].includes(sel.value))sel.value='none';
- const unit=String(product?.purchaseUnit||'').toUpperCase();
- const needUnit=Boolean(unit&&unit!=='PZA'&&unit!=='PZAS'&&(row.querySelector('.imp-price')?.checked||check?.checked));
- const unitField=row.querySelector('.imp-unit-verification');if(unitField)unitField.hidden=!needUnit;
- if(!needUnit){const confirm=row.querySelector('.imp-verify-units');if(confirm)confirm.checked=false;}
- const needsReassign=Boolean(line&&((line.requisitionNumber&&String(line.requisitionNumber)!==String(product?.folio))||(line.externalProcurementItemCode&&String(line.externalProcurementItemCode)!==String(product?.externalCode))));
- const reassignField=row.querySelector('.imp-reassign-verification');if(reassignField)reassignField.hidden=!needsReassign;
- if(!needsReassign){const confirm=row.querySelector('.imp-confirm-reassign');if(confirm)confirm.checked=false;}
+ const notice=row.querySelector('.imp-auto-checks');
+ if(notice){
+  const notices=[];
+  if(line&&bindingDifference(line,product))notices.push(`El vínculo institucional anterior (${esc(line.requisitionNumber||'sin folio')} / ${esc(line.externalProcurementItemCode||'sin código')}) se corregirá a ${esc(product.folio)} / ${esc(product.externalCode)}. La corrección quedará en el historial.`);
+  const mismatch=line?unitConflict(product,line):'';
+  if(mismatch&&(row.querySelector('.imp-price')?.checked||check?.checked))notices.push(`<span class="imp-auto-warning">${esc(mismatch)}</span>`);
+  else if(line&&String(product?.purchaseUnit||'').trim()&&!['PZA','PZAS','PZ','PIEZA','PIEZAS'].includes(String(product.purchaseUnit).trim().toUpperCase()))notices.push(`Cantidad institucional y SC coinciden: ${esc(product.quantity)} ${esc(product.purchaseUnit)}. Se verificó el conteo automáticamente; revisa la descripción del producto antes de aplicar.`);
+  notice.hidden=!notices.length;
+  notice.innerHTML=notices.join('<div class="mt-1"></div>');
+ }
 }
 function renderValidation(){
  const seen=new Map();let blocked=0,valid=0;
@@ -337,7 +359,7 @@ function renderValidation(){
   const box=row.querySelector('.imp-validation');
   if(box){box.hidden=!selected;
    box.classList.toggle('is-valid',selected&&!errors.length);
-   box.innerHTML=selected?(errors.length?`<strong>Pendiente de corregir:</strong><ul class="mb-0 mt-1">${errors.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<strong>Lista para aplicar.</strong> Datos y confirmaciones completos.'):'';
+   box.innerHTML=selected?(errors.length?`<strong>Pendiente de corregir:</strong><ul class="mb-0 mt-1">${errors.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<strong>Lista para aplicar.</strong> Validaciones automáticas completas.'):'';
   }
   row.classList.toggle('imp-ambiguous',selected&&errors.length>0);
   if(selected){if(errors.length)blocked++;else valid++;}
@@ -401,10 +423,8 @@ function draftChanges(){
   const saveDate=tr.querySelector('.imp-date').checked,expectedDate=tr.querySelector('.imp-date-value').value;
   if(saveDate && (!expectedDate || !/^\d{4}-\d{2}-\d{2}$/.test(expectedDate)))throw new Error(`Fecha inválida: ${product.description}`);
   const receive=proposedStage==='received'&&tr.querySelector('.imp-receive').checked,receiveQty=Number(tr.querySelector('.imp-receive-qty').value);
-  // El PDF puede expresar cajas, paquetes o juegos: una caja NO equivale
-  // automáticamente a una pieza del inventario.
-  const unit=String(product.purchaseUnit||'').toUpperCase();
-  if((receive||changePrice)&&unit&&unit!=='PZA'&&unit!=='PZAS'&&!tr.querySelector('.imp-verify-units')?.checked)throw new Error(`Verifica explícitamente las unidades de ${product.description}.`);
+  const mismatch=unitConflict(product,line);
+  if((receive||changePrice)&&mismatch)throw new Error(`${product.description}: ${mismatch}`);
   const storedDate=String(line.externalReportDate||'');
   if(parsed.reportDate&&storedDate&&parsed.reportDate<storedDate){
    alert(`Se omitirá ${line.sku}: el PDF corresponde al ${parsed.reportDate}, pero el registro ya contiene un reporte más reciente (${storedDate}).`);
@@ -415,8 +435,7 @@ function draftChanges(){
   const externallyAvailable=Math.max(0,n(product.quantity||line.quantityRequested)-n(line.quantityReceived));
   if(receive && (!Number.isInteger(receiveQty)||receiveQty<1||receiveQty>pending(line)||receiveQty>externallyAvailable))throw new Error(`Indica una recepción válida para ${product.description}: máximo ${Math.min(pending(line),externallyAvailable)} según cantidad del PDF y recepciones ya registradas.`);
   if(receive && proposedStage!=='received')throw new Error(`La recepción física de ${product.description} sólo se permite con el estado «Entregado al usuario».`);
-  if(((line.requisitionNumber&&String(line.requisitionNumber)!==String(product.folio))||(line.externalProcurementItemCode&&String(line.externalProcurementItemCode)!==String(product.externalCode)))&&!tr.querySelector('.imp-confirm-reassign')?.checked)throw new Error(`${line.sku}: confirma expresamente el cambio del vínculo institucional.`);
-  changes.push({product,line,proposedStage,changePrice,unitPrice,saveDate,expectedDate,receive,receiveQty,confirmUnits:Boolean(tr.querySelector('.imp-verify-units')?.checked),confirmReassign:Boolean(tr.querySelector('.imp-confirm-reassign')?.checked)});
+  changes.push({product,line,proposedStage,changePrice,unitPrice,saveDate,expectedDate,receive,receiveQty});
  }
  return changes;
 }
@@ -440,8 +459,8 @@ async function applyChange(c){
   if(n(l.quantityReceived)>0&&q===0&&externalStage(p.externalStatus)!=='received')throw new Error(`${choice.sku}: recibido previamente; el PDF está en etapa anterior y no se actualizará.`);
   if(n(l.quantityReceived)>0&&q===0&&stage!=='none'&&stage!=='received')throw new Error(`${choice.sku}: la recepción ya fue contabilizada. No puede volver a una etapa anterior.`);
   if(q===0&&n(l.quantityReceived)===0&&stage!=='none')throw new Error(`${choice.sku}: el artículo está cancelado.`);
-  if(((l.requisitionNumber&&String(l.requisitionNumber)!==String(p.folio))||(l.externalProcurementItemCode&&String(l.externalProcurementItemCode)!==String(p.externalCode)))&&!c.confirmReassign)throw new Error(`${choice.sku}: se requiere confirmar el cambio de vínculo institucional.`);
-  if((receive||changePrice)&&String(p.purchaseUnit||'').toUpperCase()&&!['PZA','PZAS'].includes(String(p.purchaseUnit).toUpperCase())&&!c.confirmUnits)throw new Error(`${choice.sku}: falta verificar la unidad de compra.`);
+  const mismatch=unitConflict(p,l);
+  if((receive||changePrice)&&mismatch)throw new Error(`${choice.sku}: ${mismatch}`);
   if(receive&&q<=0)throw new Error(`${choice.sku}: la recepción ya está contabilizada, no hay unidades pendientes.`);
   if(receive&&(receiveQty>q||receiveQty>Math.max(0,n(p.quantity||l.quantityRequested)-n(l.quantityReceived))))throw new Error(`${choice.sku}: la recepción propuesta supera el pendiente o la cantidad del documento descontando lo ya recibido.`);
   // Una segunda consulta dentro de la transacción evita que la fecha haya
@@ -456,6 +475,8 @@ async function applyChange(c){
   if(receive && (oldReceipt.includes(receiptId)||priorEvidence.includes(receiptEvidence)))
    throw new Error(`${choice.sku}: ya existe una recepción importada con los mismos datos institucionales, aunque se haya vuelto a imprimir el PDF. Verifica el registro antes de recibir otra vez.`);
   const oldPrice=n(l.unitPrice),newPrice=changePrice?unitPrice:oldPrice;
+  const previousFolio=String(l.requisitionNumber||'').trim(),previousCode=String(l.externalProcurementItemCode||'').trim();
+  const bindingCorrected=bindingDifference(l,p);
   const itemId=String(choice.itemId||choice.id),linePatch={
     externalRequisitionNumber:p.folio,externalProcurementItemCode:p.externalCode,
     externalPurchaseOrderNumber:p.purchaseOrder||'',externalReportedStatus:p.externalStatus,
@@ -463,7 +484,7 @@ async function applyChange(c){
     externalQuotedUnitCostGross:moneyGross(p),externalReportFile:activePdfName,
     externalReportDate:parsed.reportDate||l.externalReportDate||'', 
     externalReportLastImportedAt:serverTimestamp(),
-    externalProcurementHistory:[...imported,{file:activePdfName,fileDigest:digest,code:p.externalCode,folio:p.folio,status:p.externalStatus,at:changeStamp,uid:auth.currentUser.uid,priceChanged:changePrice,warehouseFlag:stage==='warehouse',receiptQuantity:receive?receiveQty:0,notes:'Importación aprobada artículo por artículo'}],
+    externalProcurementHistory:[...imported,{file:activePdfName,fileDigest:digest,code:p.externalCode,folio:p.folio,status:p.externalStatus,at:changeStamp,uid:auth.currentUser.uid,priceChanged:changePrice,warehouseFlag:stage==='warehouse',receiptQuantity:receive?receiveQty:0,previousFolio,previousExternalCode:previousCode,bindingCorrected,notes:'Importación aprobada artículo por artículo'}],
     updatedAt:serverTimestamp()
   };
   if(saveDate){linePatch.externalExpectedDeliveryDate=expectedDate||null;linePatch.externalExpectedDeliveryAtUpdated=serverTimestamp();}
@@ -538,7 +559,9 @@ async function applySelected(){if(isBusy||!admin())return;
  updateFooter();if($('#iberoImportSave')?.disabled)return;
  let changes;try{changes=draftChanges();if(!changes.length){alert('Selecciona productos y verifica sus correspondencias.');return;}}catch(e){alert(e.message);return;}
  const receipts=changes.filter(c=>c.receive).length,prices=changes.filter(c=>c.changePrice).length;
- if(!confirm(`¿Aplicar ${changes.length} actualizaciones de la requisición ${parsed.folio}?\n\nCambios de precios: ${prices}. Recepciones físicas explícitamente confirmadas: ${receipts}.\n\nEl proceso guarda cada artículo en una transacción; si falla uno, no se revertirán los anteriores. ¿Continuar?`))return;
+ const bindingCorrections=changes.filter(c=>bindingDifference(c.line,c.product));
+ const bindingPreview=bindingCorrections.slice(0,5).map(c=>`• ${c.line.sku||c.line.id}: ${c.line.requisitionNumber||'sin folio'} / ${c.line.externalProcurementItemCode||'sin código'} → ${c.product.folio} / ${c.product.externalCode}`).join('\n');
+ if(!confirm(`¿Aplicar ${changes.length} actualizaciones de la requisición ${parsed.folio}?\n\nCambios de precios: ${prices}. Recepciones físicas explícitamente confirmadas: ${receipts}. Correcciones de folio/código: ${bindingCorrections.length}.${bindingCorrections.length?`\n${bindingPreview}${bindingCorrections.length>5?`\n...y ${bindingCorrections.length-5} más.`:''}`:''}\n\nLos vínculos corregidos conservan sus valores anteriores en el historial. Cada artículo se guarda mediante una transacción individual; si falla uno, no se revertirán los anteriores. ¿Continuar?`))return;
  isBusy=true;$('#iberoImportSave').disabled=true;$('#iberoImportRead').disabled=true;
  let done=0;const errors=[],touched=new Set();
  try{
@@ -606,7 +629,7 @@ function bind(){makeStyles();ensureModal();boardModal();chooseModal();injectButt
    updateFooter();
   }
   if(e.target?.matches?.('.imp-stage-select,.imp-price,.imp-receive,.imp-target'))syncReceiptVisibility(e.target.closest('.imp-row'));
-  if(e.target?.matches?.('.imp-stage-select,.imp-price,.imp-receive,.imp-target,.imp-receive-qty,.imp-price-value,.imp-date,.imp-date-value,.imp-verify-units,.imp-confirm-reassign'))updateFooter();
+  if(e.target?.matches?.('.imp-stage-select,.imp-price,.imp-receive,.imp-target,.imp-receive-qty,.imp-price-value,.imp-date,.imp-date-value'))updateFooter();
   if(e.target?.id==='iberoBoardFilter'){boardMode=e.target.value;drawBoard();}
  });
  const observer=new MutationObserver(()=>injectButtons());observer.observe(document.body,{childList:true,subtree:true});
