@@ -6,7 +6,7 @@
 import {auth,db} from './firebase-app.js';
 import {getUserProfile,waitForUser} from './common.js';
 import {collection,doc,getDoc,getDocs,getDocsFromServer,runTransaction,updateDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017h';
+import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017i';
 const $=sel=>document.querySelector(sel);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};

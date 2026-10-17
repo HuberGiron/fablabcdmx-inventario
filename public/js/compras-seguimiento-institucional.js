@@ -5,7 +5,7 @@
 import {db,auth} from './firebase-app.js';
 import {waitForUser,getUserProfile} from './common.js';
 import {collection,getDocsFromServer} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {STATUS_META,statusKey,statusInfo,summarize,selectLines} from './compras-seguimiento-model.js?v=20261017f';
+import {STATUS_META,statusKey,statusInfo,summarize,selectLines} from './compras-seguimiento-model.js?v=20261017i';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const amount=(n,c)=>new Intl.NumberFormat('es-MX',{style:'currency',currency:c||'MXN'}).format(Number(n)||0);

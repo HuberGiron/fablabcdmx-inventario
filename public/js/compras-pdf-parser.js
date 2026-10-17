@@ -49,6 +49,7 @@ const STATUSES=[
  ['Por Surtir',/por\s+surtir/i],
  ['Firma Electrónica',/firma\s+electr[oó]nica/i],
  ['No Generada',/no\s+generada/i],
+ ['Generada',/\bgenerada\b/i],
 ];
 function parseRawItem(segment,record,notes){
  const desc=[];let status='',order='',estimated=null,quoted=null;
@@ -127,12 +128,13 @@ export function externalStage(status){
  if(/entregado parcial al usuario/.test(v))return 'partial';
  if(/entregado al usuario/.test(v))return 'received';
  if(/en almacen|entregado al almacen/.test(v))return 'warehouse';
- if(/no generada|firma electronica|por surtir|cotiz|pendiente|autorizado|requisicion/.test(v))return 'requisition';
+ if(/(?:no )?generada|firma electronica|por surtir|cotiz|pendiente|autorizado|requisicion/.test(v))return 'requisition';
  return 'unknown';
 }
 export function institutionalRank(status){
  const v=norm(status);
  if(/no generada/.test(v))return 0;
+ if(/^generada$/.test(v))return 0.5;
  if(/firma electronica/.test(v))return 1;
  if(/por surtir/.test(v))return 2;
  if(/en almacen/.test(v))return 3;

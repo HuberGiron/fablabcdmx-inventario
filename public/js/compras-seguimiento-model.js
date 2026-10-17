@@ -1,6 +1,7 @@
 /** Vista analítica pura de estados institucionales. No realiza escrituras. */
 export const STATUS_META = [
  {key:'no_generada',label:'No Generada',color:'#64748b',order:0,local:'En requisición'},
+ {key:'generada',label:'Generada',color:'#607d8b',order:0.5,local:'En requisición'},
  {key:'firma',label:'Firma Electrónica',color:'#8053bd',order:1,local:'En requisición'},
  {key:'surtir',label:'Por Surtir',color:'#0d6efd',order:2,local:'En requisición'},
  {key:'almacen',label:'En Almacén',color:'#d35400',order:3,local:'En almacén'},
@@ -20,11 +21,12 @@ export function statusKey(line){
  if(/por\s+surtir/.test(s))return 'surtir';
  if(/firma\s+electronica/.test(s))return 'firma';
  if(/no\s+generada/.test(s))return 'no_generada';
+ if(/^generada$/.test(s))return 'generada';
  // Si el aviso manual de almacén está activo, mostrarlo aun sin PDF importado.
  if(q>0&&line.warehousePickupPending===true)return 'almacen';
  return 'sin_reporte';
 }
-export const statusInfo=line=>STATUS_META.find(s=>s.key===statusKey(line))||STATUS_META[6];
+export const statusInfo=line=>STATUS_META.find(s=>s.key===statusKey(line))||STATUS_META.find(s=>s.key==='sin_reporte');
 export function summarize(lines){
  const counts=Object.fromEntries(STATUS_META.map(s=>[s.key,0]));
  const requisitions=new Set(),scs=new Set();let requested=0,received=0,pending=0,spent=0,committed=0;
