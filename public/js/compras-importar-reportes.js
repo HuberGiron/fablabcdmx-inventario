@@ -6,7 +6,7 @@
 import {auth,db} from './firebase-app.js';
 import {getUserProfile,waitForUser} from './common.js';
 import {collection,doc,getDoc,getDocs,getDocsFromServer,runTransaction,updateDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017g';
+import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017h';
 const $=sel=>document.querySelector(sel);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
@@ -49,11 +49,65 @@ function moneyGross(p){
  if(String(q.currency||'MXN').toUpperCase()==='USD')return null;
  if(Number.isFinite(q.totalWithTax)&&Number.isFinite(q.quantity)&&q.quantity>0)
   return Math.round(q.totalWithTax/q.quantity*100)/100;
- // El IVA del reporte es unitario: precio + IVA, NO suponer un 16% fijo.
- if(q.currency!=='USD'&&Number.isFinite(q.unitPrice)&&Number.isFinite(q.vatTotal))
-  return Math.round((q.unitPrice+q.vatTotal)*100)/100;
+  // Se toma el IVA desglosado cuando exista; si falta, se calcula con el 16%.
+  // Sólo sobre la cotización REAL (nunca sobre el presupuesto Estimado).
+  if(Number.isFinite(q.unitPrice)&&q.unitPrice>=0){
+    const iva = Number.isFinite(q.vatTotal)&&q.vatTotal>=0 ? q.vatTotal : q.unitPrice * 0.16;
+    return Math.round((q.unitPrice + iva)*100)/100;
+  }
  return null;
 }
+function receiptState(line){
+ const received=Math.max(0,n(line?.quantityReceived)), remaining=line?pending(line):0;
+ return {received,remaining,fullyReceived:received>0&&remaining===0,
+   partiallyReceived:received>0&&remaining>0};
+}
+function checkRow(tr,checkDuplicates=true){
+ const errors=[],product=parsed?.products?.[Number(tr.dataset.index)];
+ const key=tr.querySelector('.imp-target')?.value||'';
+ const line=allLines.find(l=>lineKey(l)===key);
+ const proposedStage=tr.querySelector('.imp-stage-select')?.value||'none';
+ if(!product){errors.push('El producto del PDF no está disponible.');return errors;}
+ if(!line)errors.push('Vincula una solicitud de compra y SKU del FabLab.');
+ const dateActive=tr.querySelector('.imp-date')?.checked;
+ const dateValue=tr.querySelector('.imp-date-value')?.value||'';
+ if(dateActive&&(!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)||Number.isNaN(Date.parse(dateValue))))errors.push('Completa una fecha estimada válida o desmarca su actualización.');
+ const priceActive=tr.querySelector('.imp-price')?.checked;
+ const priceRaw=tr.querySelector('.imp-price-value')?.value||'';
+ const priceValue=Number(priceRaw);
+ if(priceActive&&(!priceRaw.trim()||!Number.isFinite(priceValue)||priceValue<0))errors.push('Completa un precio unitario válido con IVA.');
+ if(!['none','requisition','warehouse','received','partial'].includes(proposedStage))errors.push('Selecciona un estado válido.');
+ if(line){
+   const stock=receiptState(line),actualState=currentStage(line);
+   if(stock.remaining>0 && externalStage(product.externalStatus)==='received' && proposedStage!=='received')errors.push('Compras indica «Entregado al usuario». Debes confirmar la recepción pendiente o deseleccionar el artículo; no se puede omitir la confirmación cambiando la etapa.');
+   if(stock.fullyReceived && externalStage(product.externalStatus)!=='received')errors.push(`Ya existe recepción en FabLab (${stock.received} pieza(s)) y el PDF trae «${product.externalStatus}». Se bloquea la actualización para no retroceder. Desmarca este artículo.`);
+   if(stock.fullyReceived && proposedStage!=='none'&&proposedStage!=='received')errors.push(`Ya contabilizado: ${stock.received} pieza(s) recibidas. No se permite retroceder «${actualState}» a una etapa anterior.`);
+   if(stock.remaining===0 && stock.received===0 && proposedStage!=='none')errors.push('Esta línea está cancelada; no se puede cambiar a un estado operativo activo.');
+   const oldRank=institutionalRank(line.externalReportedStatus),newRank=institutionalRank(product.externalStatus);
+   if(oldRank>=0 && newRank>=0 && newRank<oldRank)errors.push(`El último seguimiento era «${line.externalReportedStatus}». No se permite retroceder a «${product.externalStatus}».`);
+   if(parsed?.reportDate && line.externalReportDate && parsed.reportDate<String(line.externalReportDate))errors.push(`Existe un reporte más reciente (${line.externalReportDate}); no puede sobrescribirse.`);
+   if(line.requisitionNumber&&String(line.requisitionNumber)!==String(product.folio) && !tr.querySelector('.imp-confirm-reassign')?.checked)errors.push(`La línea pertenece a la requisición ${line.requisitionNumber}. Confirma expresamente la reasignación.`);
+   if(line.externalProcurementItemCode&&String(line.externalProcurementItemCode)!==String(product.externalCode) && !tr.querySelector('.imp-confirm-reassign')?.checked)errors.push(`Código institucional diferente: ${line.externalProcurementItemCode}. Confirma su reasignación.`);
+   const receiptControl=tr.querySelector('.imp-receive');
+   const receive=proposedStage==='received'&&receiptControl?.checked;
+   const qtyRaw=tr.querySelector('.imp-receive-qty')?.value||'';
+   const qty=Number(qtyRaw);
+   if(proposedStage==='received' && stock.remaining>0){
+     if(!receive)errors.push('Confirma explícitamente la recepción física para guardar «Entregado al usuario».');
+     if(receive && (!qtyRaw.trim()||!Number.isInteger(qty)||qty<1||qty>stock.remaining))errors.push(`Indica una cantidad nueva válida (1–${stock.remaining}).`);
+     if(receive && product.quantity!=null && Number.isFinite(Number(product.quantity)) && qty>Math.max(0,Number(product.quantity)-stock.received))errors.push('La cantidad excede el total institucional después de descontar lo ya recibido.');
+   }
+   if(stock.fullyReceived&&receive)errors.push('Esta recepción ya está contabilizada. No se puede volver a ingresar inventario.');
+   const prior=refs(line.externalImportReceiptEvidence);
+   const receiptEvidence=`${product.folio}:${product.externalCode}:${product.externalStatus}:${product.quantity}:${product.expectedDate}`;
+   const receiptId=`${digest.slice(0,24)}:${product.externalCode}`;
+   if(receive&&(refs(line.externalImportReceiptFingerprints).includes(receiptId)||prior.includes(receiptEvidence)))errors.push('Esta recepción del reporte ya fue aplicada anteriormente.');
+   const unit=String(product.purchaseUnit||'').toUpperCase();
+   if((priceActive||receive)&&unit&&unit!=='PZA'&&unit!=='PZAS'&&!tr.querySelector('.imp-verify-units')?.checked)errors.push(`La presentación institucional es ${unit}. Confirma su equivalencia con la unidad del FabLab.`);
+ }
+ return errors;
+}
+
 function labelLine(l){return `${l.requestFolio} · ${l.sku||''} · ${l.nombre||''} (${n(l.quantityRequested)} solicitadas)`;}
 function currentLineHtml(l){
  if(!l)return '<div class="imp-unlinked">Aún no hay una coincidencia vinculada al FabLab. Selecciona el artículo correcto antes de aplicar.</div>';
@@ -96,6 +150,10 @@ function makeStyles(){if($('#iberoImportStyle'))return;const s=document.createEl
  #iberoImportModal .imp-conf-medium{background:#ffca2c;border-color:#9d6500;color:#191919}
  #iberoImportModal .imp-conf-low{background:#a61d32;border-color:#771226;color:#fff}
  #iberoImportModal .imp-ambiguous{border-left:5px solid #b02a37}
+  #iberoImportModal .imp-validation{margin:0 1rem 1rem;padding:.65rem .9rem;border:1px solid #dc3545;background:#fff6f6;color:#7a1825;border-radius:7px;font-size:.85rem}
+  #iberoImportModal .imp-validation.is-valid{border-color:#198754;background:#f2faf5;color:#0e5e38}
+  #iberoImportModal .imp-locked{margin-top:.45rem;padding:.55rem .65rem;border-radius:7px;background:#fff3cd;color:#5d4200;border:1px solid #ddb653;font-size:.8rem}
+  #iberoImportModal .imp-controls{border-top:1px solid #e0e5ea;padding:.65rem 1rem;background:#f9fafb}
  #iberoImportModal .imp-check{transform:scale(1.12)}
  #iberoImportModal .imp-banner{border-left:4px solid #0d6efd;background:#f0f5fd;padding:.7rem 1rem}
  #iberoImportModal .imp-progress{font-size:.86rem}
@@ -168,6 +226,7 @@ function productRow(p,i){
  const priceValid=gross!==null&&Number.isFinite(gross)&&gross>=0;
  const quoteUnit=String(p.quoted?.currency||'MXN').toUpperCase();
  const priceText=priceValid?Number(gross).toFixed(2):'';
+ const isVatEstimated=Boolean(p.quoted && !Number.isFinite(p.quoted.totalWithTax) && !Number.isFinite(p.quoted.vatTotal) && Number.isFinite(p.quoted.unitPrice));
  const obs=p.quantity==null?'Cantidad no legible':`PDF: ${p.quantity} ${p.purchaseUnit||'unidad(es)'}`;
  const confLabel=best?`${Math.round(conf*100)}% de similitud`:'Sin coincidencia';
  const suggested=best?`<div class="imp-match-suggestion"><strong>Mejor propuesta (no vinculada):</strong> ${esc(best.nombre||'Sin nombre')}<br><strong>SC:</strong> ${esc(best.requestFolio||'—')} ${best.requestAlias?`· <strong>Alias:</strong> ${esc(best.requestAlias)}`:''}<br><strong>SKU:</strong> ${esc(best.sku||'—')}</div>`:'';
@@ -202,6 +261,7 @@ function productRow(p,i){
     <section class="imp-data-box"><div class="imp-section-title">Cotización final de Compras</div>
       <div class="small">Sin IVA (${esc(quoteUnit)}): <strong>${p.quoted?.unitPrice!=null?esc(amount(p.quoted.unitPrice,quoteUnit==='USD'?'USD':'MXN')):'—'}</strong></div>
       <div class="small mt-1">Con IVA / unidad en MXN: <strong>${priceValid?esc(amount(gross)):'No disponible'}</strong></div>
+      ${isVatEstimated?'<div class="small mt-1 text-primary fw-semibold">IVA no desglosado: se calculó el 16% sobre el precio real institucional.</div>':''}
       <label class="d-flex gap-2 align-items-center mt-2"><input class="form-check-input imp-price" type="checkbox" ${priceValid?'checked':'disabled'}> <strong>Actualizar precio</strong></label>
       <label class="form-label small mt-2 mb-1">Precio unitario a registrar (MXN, IVA incluido)</label><input class="form-control form-control-sm imp-price-value" type="number" step="0.01" min="0" value="${priceText}" ${priceValid?'':'disabled'}>
       ${!priceValid?'<div class="imp-note mt-2 text-danger fw-semibold">El PDF no permite calcular con certeza el precio unitario con IVA. Se omite la actualización del precio hasta revisarlo.</div>':''}
@@ -218,11 +278,17 @@ function productRow(p,i){
       <div class="imp-receipt-box" ${s==='received'?'':'hidden'}>
         <label class="d-flex gap-2 align-items-center"><input type="checkbox" class="form-check-input imp-receive"> <strong>Confirmo recepción física en FabLab</strong></label>
         <label class="form-label small mt-2 mb-1">Piezas que efectivamente recibimos</label><input type="number" class="form-control form-control-sm imp-receive-qty" min="0" step="1" value="0">
-        <div class="imp-note mt-1">Solamente esta confirmación aumenta existencias y registra gasto real.</div>
+        <div class="imp-note mt-1">Confirma únicamente las piezas nuevas que todavía no se hayan registrado. Esta acción aumenta existencias y gasto real una sola vez.</div>
       </div>
-      <div class="imp-note mt-2">Los demás estados guardan el seguimiento sin recibir material. Las entregas parciales se confirman mediante el registro normal de recepciones.</div>
+      <div class="imp-note mt-2">Los demás estados guardan seguimiento sin recibir material. Si el artículo ya está recibido, no se duplica inventario y no se permite retroceder de estado.</div>
+      <div class="imp-receipt-accounted imp-locked" ${s==='received'&&selectedLine&&receiptState(selectedLine).fullyReceived?'':'hidden'}>Recepción ya contabilizada en FabLab. No se volverán a agregar unidades ni a registrar gasto.</div>
     </section>
   </div>
+  <div class="imp-controls">
+   <label class="d-flex gap-2 align-items-center small imp-unit-verification" hidden><input type="checkbox" class="form-check-input imp-verify-units"> Confirmo que revisé la equivalencia entre la presentación del PDF y la unidad registrada en FabLab.</label>
+   <label class="d-flex gap-2 align-items-center small imp-reassign-verification" hidden><input type="checkbox" class="form-check-input imp-confirm-reassign"> Autorizo corregir el folio o código institucional asociado anteriormente a este SKU.</label>
+  </div>
+  <div class="imp-validation" role="status" aria-live="polite"></div>
  </article>`;
 }
 function refreshMatchCard(row){
@@ -242,13 +308,48 @@ function refreshMatchCard(row){
 }
 function syncReceiptVisibility(row){
  if(!row)return;
- const show=row.querySelector('.imp-stage-select')?.value==='received';
+ const product=parsed?.products?.[Number(row.dataset.index)];
+ const line=allLines.find(l=>lineKey(l)===row.querySelector('.imp-target')?.value);
+ const state=receiptState(line),sel=row.querySelector('.imp-stage-select');
+ const show=sel?.value==='received'&&(!line||state.remaining>0);
  const section=row.querySelector('.imp-receipt-box');if(section)section.hidden=!show;
- const check=row.querySelector('.imp-receive');
- const qty=row.querySelector('.imp-receive-qty');
+ const accounted=row.querySelector('.imp-receipt-accounted');if(accounted)accounted.hidden=sel?.value!=='received'||!state.fullyReceived;
+ const check=row.querySelector('.imp-receive'),qty=row.querySelector('.imp-receive-qty');
  if(!show){if(check)check.checked=false;if(qty)qty.value='0';}
  if(check)check.disabled=!show;
- if(qty)qty.disabled=!show;
+ if(qty){qty.disabled=!show;qty.max=String(state.remaining);}
+ if(line && state.fullyReceived&&sel && !['none','received'].includes(sel.value))sel.value='none';
+ const unit=String(product?.purchaseUnit||'').toUpperCase();
+ const needUnit=Boolean(unit&&unit!=='PZA'&&unit!=='PZAS'&&(row.querySelector('.imp-price')?.checked||check?.checked));
+ const unitField=row.querySelector('.imp-unit-verification');if(unitField)unitField.hidden=!needUnit;
+ if(!needUnit){const confirm=row.querySelector('.imp-verify-units');if(confirm)confirm.checked=false;}
+ const needsReassign=Boolean(line&&((line.requisitionNumber&&String(line.requisitionNumber)!==String(product?.folio))||(line.externalProcurementItemCode&&String(line.externalProcurementItemCode)!==String(product?.externalCode))));
+ const reassignField=row.querySelector('.imp-reassign-verification');if(reassignField)reassignField.hidden=!needsReassign;
+ if(!needsReassign){const confirm=row.querySelector('.imp-confirm-reassign');if(confirm)confirm.checked=false;}
+}
+function renderValidation(){
+ const seen=new Map();let blocked=0,valid=0;
+ for(const row of document.querySelectorAll('#iberoImportResults .imp-row')){
+  const selected=row.querySelector('.imp-apply')?.checked;
+  const errors=selected?checkRow(row):[];
+  const key=row.querySelector('.imp-target')?.value||'';
+  if(selected&&key){if(seen.has(key)){errors.push('Este SKU ya está asignado a otro artículo seleccionado.');const previous=seen.get(key);const prev=row.querySelector('.imp-validation');if(prev)prev.innerHTML='';previous.dataset.duplicate='true';}else seen.set(key,row);}
+  const box=row.querySelector('.imp-validation');
+  if(box){box.hidden=!selected;
+   box.classList.toggle('is-valid',selected&&!errors.length);
+   box.innerHTML=selected?(errors.length?`<strong>Pendiente de corregir:</strong><ul class="mb-0 mt-1">${errors.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<strong>Lista para aplicar.</strong> Datos y confirmaciones completos.'):'';
+  }
+  row.classList.toggle('imp-ambiguous',selected&&errors.length>0);
+  if(selected){if(errors.length)blocked++;else valid++;}
+ }
+ // Duplicados detectados después del primer seleccionado: invalidar también al primero.
+ for(const row of document.querySelectorAll('#iberoImportResults .imp-row[data-duplicate="true"]')){
+  const box=row.querySelector('.imp-validation');if(box){box.hidden=false;box.classList.remove('is-valid');box.textContent='Pendiente de corregir: este SKU ya está asignado a otro artículo seleccionado.';}
+  row.classList.add('imp-ambiguous');row.removeAttribute('data-duplicate');blocked++;valid=Math.max(0,valid-1);
+ }
+ const selected=selectedRows().length;
+ const footer=$('#iberoImportFooter');if(footer)footer.textContent=`${selected} de ${parsed?.products?.length||0} seleccionados · ${valid} completos · ${blocked} pendientes de corregir`;
+ const save=$('#iberoImportSave');if(save){save.disabled=!admin()||isBusy||!selected||blocked>0;save.title=blocked?`${blocked} artículos seleccionados requieren completar o corregir datos.`:'';}
 }
 let searchingRow=-1;
 function chooseModal(){let m=$('#iberoImportMatchModal');if(m)return m;
@@ -278,17 +379,17 @@ async function reviewFile(){if(isBusy)return;const file=$('#iberoImportFile')?.f
   <div class="imp-products">${parsed.products.map(productRow).join('')}</div>`;
   document.querySelectorAll('#iberoImportResults .imp-row').forEach(syncReceiptVisibility);
   setProgress(`Análisis completo: ${proposals.filter(p=>p.suggested).length} coincidencias claras; ${proposals.filter(p=>!p.suggested).length} artículos requieren revisión manual.`);
-  $('#iberoImportSave').disabled=!admin();if(!admin())setProgress('Supervisor: puedes analizar, pero sólo el administrador puede aplicar cambios.');
+  $('#iberoImportSave').disabled=true;if(!admin())setProgress('Supervisor: puedes analizar, pero sólo el administrador puede aplicar cambios.');
   updateFooter();
  }catch(e){console.error(e);setProgress(`No se pudo analizar: ${e.message}`);alert(`Error al analizar el reporte: ${e.message}`);}
  finally{isBusy=false;$('#iberoImportRead').disabled=false;}
 }
 function selectedRows(){return [...document.querySelectorAll('#iberoImportResults .imp-row')].filter(r=>r.querySelector('.imp-apply')?.checked);}
-function updateFooter(){const selected=selectedRows().length;const el=$('#iberoImportFooter');if(el)el.textContent=`${selected} de ${parsed?.products?.length||0} artículos seleccionados para revisión y actualización`;
- if($('#iberoImportSave'))$('#iberoImportSave').disabled=!admin()||isBusy||!selected;}
+function updateFooter(){renderValidation();}
 function draftChanges(){
  const changes=[],keys=new Set();
  for(const tr of selectedRows()){
+  const errors=checkRow(tr);if(errors.length)throw new Error(`No se puede aplicar: ${errors.join(' ')}`);
   const i=Number(tr.dataset.index),product=parsed.products[i],key=tr.querySelector('.imp-target').value;
   if(!key)throw new Error(`Selecciona el SKU/SC correspondiente a «${product.description}».`);
   if(keys.has(key))throw new Error(`Una línea del FabLab fue seleccionada para más de un producto externo (${key}).`);keys.add(key);
@@ -298,33 +399,24 @@ function draftChanges(){
   const unitPrice=Number(tr.querySelector('.imp-price-value').value);
   if(changePrice&&(!Number.isFinite(unitPrice)||unitPrice<0))throw new Error(`Precio inválido: ${product.description}`);
   const saveDate=tr.querySelector('.imp-date').checked,expectedDate=tr.querySelector('.imp-date-value').value;
-  if(saveDate && expectedDate && !/^\d{4}-\d{2}-\d{2}$/.test(expectedDate))throw new Error(`Fecha inválida: ${product.description}`);
+  if(saveDate && (!expectedDate || !/^\d{4}-\d{2}-\d{2}$/.test(expectedDate)))throw new Error(`Fecha inválida: ${product.description}`);
   const receive=proposedStage==='received'&&tr.querySelector('.imp-receive').checked,receiveQty=Number(tr.querySelector('.imp-receive-qty').value);
   // El PDF puede expresar cajas, paquetes o juegos: una caja NO equivale
   // automáticamente a una pieza del inventario.
   const unit=String(product.purchaseUnit||'').toUpperCase();
-  if((receive||changePrice)&&unit&&unit!=='PZA'&&unit!=='PZAS'){
-   if(!confirm(`ATENCIÓN: «${product.description}» está cotizado por ${unit}, pero el inventario podría medir piezas. ¿Confirmas que revisaste la presentación y que el precio/cantidad corresponden a la unidad del FabLab?`))continue;
-  }
+  if((receive||changePrice)&&unit&&unit!=='PZA'&&unit!=='PZAS'&&!tr.querySelector('.imp-verify-units')?.checked)throw new Error(`Verifica explícitamente las unidades de ${product.description}.`);
   const storedDate=String(line.externalReportDate||'');
   if(parsed.reportDate&&storedDate&&parsed.reportDate<storedDate){
    alert(`Se omitirá ${line.sku}: el PDF corresponde al ${parsed.reportDate}, pero el registro ya contiene un reporte más reciente (${storedDate}).`);
    continue;
   }
   const oldRank=institutionalRank(line.externalReportedStatus),newRank=institutionalRank(product.externalStatus);
-  if(oldRank>=0&&newRank>=0&&newRank<oldRank && (!parsed.reportDate||!storedDate||parsed.reportDate<=storedDate)){
-   if(!confirm(`ATENCIÓN: ${line.sku} retrocedería de «${line.externalReportedStatus}» a «${product.externalStatus}». ¿Revisaste que el cambio reportado sea correcto?`))continue;
-  }
+  if(oldRank>=0&&newRank>=0&&newRank<oldRank)throw new Error(`${line.sku}: no se permite retroceder de «${line.externalReportedStatus}» a «${product.externalStatus}».`);
   const externallyAvailable=Math.max(0,n(product.quantity||line.quantityRequested)-n(line.quantityReceived));
   if(receive && (!Number.isInteger(receiveQty)||receiveQty<1||receiveQty>pending(line)||receiveQty>externallyAvailable))throw new Error(`Indica una recepción válida para ${product.description}: máximo ${Math.min(pending(line),externallyAvailable)} según cantidad del PDF y recepciones ya registradas.`);
   if(receive && proposedStage!=='received')throw new Error(`La recepción física de ${product.description} sólo se permite con el estado «Entregado al usuario».`);
-  if(line.requisitionNumber && line.requisitionNumber!==product.folio && proposedStage!=='none'){
-   if(!confirm(`ATENCIÓN: ${line.sku} ya pertenece a la requisición ${line.requisitionNumber}, pero el PDF corresponde a ${product.folio}. ¿Reasignar el artículo conservando historial?`))continue;
-  }
-  if(line.externalProcurementItemCode && line.externalProcurementItemCode!==product.externalCode){
-   if(!confirm(`ATENCIÓN: ${line.sku} estaba vinculado al código institucional ${line.externalProcurementItemCode} y el PDF propone ${product.externalCode}. ¿Corregir ese vínculo?`))continue;
-  }
-  changes.push({product,line,proposedStage,changePrice,unitPrice,saveDate,expectedDate,receive,receiveQty});
+  if(((line.requisitionNumber&&String(line.requisitionNumber)!==String(product.folio))||(line.externalProcurementItemCode&&String(line.externalProcurementItemCode)!==String(product.externalCode)))&&!tr.querySelector('.imp-confirm-reassign')?.checked)throw new Error(`${line.sku}: confirma expresamente el cambio del vínculo institucional.`);
+  changes.push({product,line,proposedStage,changePrice,unitPrice,saveDate,expectedDate,receive,receiveQty,confirmUnits:Boolean(tr.querySelector('.imp-verify-units')?.checked),confirmReassign:Boolean(tr.querySelector('.imp-confirm-reassign')?.checked)});
  }
  return changes;
 }
@@ -342,6 +434,15 @@ async function applyChange(c){
   if(!ls.exists()||!rs.exists()||!is.exists())throw new Error(`${choice.sku}: línea, SC o inventario no encontrados.`);
   if(rs.data().status==='draft')throw new Error(`${choice.sku}: la solicitud está en borrador.`);
   const l=ls.data(),req=rs.data(),item=is.data();const q=pending(l);
+  const oldRank=institutionalRank(l.externalReportedStatus),newRank=institutionalRank(p.externalStatus);
+  if(oldRank>=0&&newRank>=0&&newRank<oldRank)throw new Error(`${choice.sku}: el estado institucional en Firestore está más avanzado. No se admite un retroceso.`);
+  if(q>0 && externalStage(p.externalStatus)==='received' && stage!=='received')throw new Error(`${choice.sku}: falta confirmar la recepción del material entregado antes de actualizar.`);
+  if(n(l.quantityReceived)>0&&q===0&&externalStage(p.externalStatus)!=='received')throw new Error(`${choice.sku}: recibido previamente; el PDF está en etapa anterior y no se actualizará.`);
+  if(n(l.quantityReceived)>0&&q===0&&stage!=='none'&&stage!=='received')throw new Error(`${choice.sku}: la recepción ya fue contabilizada. No puede volver a una etapa anterior.`);
+  if(q===0&&n(l.quantityReceived)===0&&stage!=='none')throw new Error(`${choice.sku}: el artículo está cancelado.`);
+  if(((l.requisitionNumber&&String(l.requisitionNumber)!==String(p.folio))||(l.externalProcurementItemCode&&String(l.externalProcurementItemCode)!==String(p.externalCode)))&&!c.confirmReassign)throw new Error(`${choice.sku}: se requiere confirmar el cambio de vínculo institucional.`);
+  if((receive||changePrice)&&String(p.purchaseUnit||'').toUpperCase()&&!['PZA','PZAS'].includes(String(p.purchaseUnit).toUpperCase())&&!c.confirmUnits)throw new Error(`${choice.sku}: falta verificar la unidad de compra.`);
+  if(receive&&q<=0)throw new Error(`${choice.sku}: la recepción ya está contabilizada, no hay unidades pendientes.`);
   if(receive&&(receiveQty>q||receiveQty>Math.max(0,n(p.quantity||l.quantityRequested)-n(l.quantityReceived))))throw new Error(`${choice.sku}: la recepción propuesta supera el pendiente o la cantidad del documento descontando lo ya recibido.`);
   // Una segunda consulta dentro de la transacción evita que la fecha haya
   // cambiado entre la revisión y la aprobación de las propuestas.
@@ -360,6 +461,7 @@ async function applyChange(c){
     externalPurchaseOrderNumber:p.purchaseOrder||'',externalReportedStatus:p.externalStatus,
     externalQuotedUnitCost:p.quoted?.unitPrice??null,externalQuotedTotalGross:p.quoted?.totalWithTax??null,
     externalQuotedUnitCostGross:moneyGross(p),externalReportFile:activePdfName,
+    externalReportDate:parsed.reportDate||l.externalReportDate||'', 
     externalReportLastImportedAt:serverTimestamp(),
     externalProcurementHistory:[...imported,{file:activePdfName,fileDigest:digest,code:p.externalCode,folio:p.folio,status:p.externalStatus,at:changeStamp,uid:auth.currentUser.uid,priceChanged:changePrice,warehouseFlag:stage==='warehouse',receiptQuantity:receive?receiveQty:0,notes:'Importación aprobada artículo por artículo'}],
     updatedAt:serverTimestamp()
@@ -367,13 +469,15 @@ async function applyChange(c){
   if(saveDate){linePatch.externalExpectedDeliveryDate=expectedDate||null;linePatch.externalExpectedDeliveryAtUpdated=serverTimestamp();}
   let willRequisition=stage!=='none';
   if(willRequisition){
-   linePatch.requisitionStatus='requisitioned';linePatch.requisitionNumber=p.folio;
+   if(q>0)linePatch.requisitionStatus='requisitioned';
+   linePatch.requisitionNumber=p.folio;
    if(l.requisitionNumber && String(l.requisitionNumber)!==p.folio){const history=refs(l.requisitionNumberHistory);if(history.length>=200)throw new Error(`${choice.sku}: historial de folios lleno.`);linePatch.requisitionNumberHistory=[...history,{previous:String(l.requisitionNumber),current:p.folio,at:changeStamp,by:auth.currentUser.uid,reason:'Reporte PDF institucional'}];}
    if(l.requisitionStatus!=='requisitioned'){
     linePatch.requisitionedAt=serverTimestamp();linePatch.requisitionedBy=auth.currentUser.uid;linePatch.requisitionedByName=profile?.nombre||auth.currentUser.email||'';
    }
   }
   if(changePrice){
+   if(n(l.quantityReceived)>0 && l.actualCostTotal==null)linePatch.actualCostTotal=n(l.quantityReceived)*n(l.lastActualUnitCost??l.unitPrice);
    linePatch.unitPrice=newPrice;linePatch.requisitionUnitCost=newPrice;
    if(!Object.prototype.hasOwnProperty.call(l,'originalUnitPrice'))linePatch.originalUnitPrice=oldPrice;
    linePatch.priceChangedAt=serverTimestamp();linePatch.priceChangedBy=auth.currentUser.uid;
@@ -383,7 +487,7 @@ async function applyChange(c){
   let receiptUnits=0;
   if(receive){
    receiptUnits=receiveQty;const currentReceived=n(l.quantityReceived);
-   const actualUnitCost=p.quoted?.unitPrice!=null && Number.isFinite(unitPrice)&&unitPrice>=0?unitPrice:n(l.lastActualUnitCost??l.unitPrice);
+   const actualUnitCost=changePrice?unitPrice:n(l.lastActualUnitCost??l.unitPrice);
    const oldSpent=Object.prototype.hasOwnProperty.call(l,'actualCostTotal')?n(l.actualCostTotal):currentReceived*n(l.lastActualUnitCost??l.unitPrice);
    const history=refs(l.receiptHistory);
    if(history.length>=200)throw new Error(`${choice.sku}: historial de recepciones lleno; requiere revisión administrativa.`);
@@ -431,6 +535,7 @@ async function refreshRequestTotals(requestId){
   status:remain?(received||cancelled?'partial':'sent'):(received?'completed':'cancelled'),updatedAt:serverTimestamp()});
 }
 async function applySelected(){if(isBusy||!admin())return;
+ updateFooter();if($('#iberoImportSave')?.disabled)return;
  let changes;try{changes=draftChanges();if(!changes.length){alert('Selecciona productos y verifica sus correspondencias.');return;}}catch(e){alert(e.message);return;}
  const receipts=changes.filter(c=>c.receive).length,prices=changes.filter(c=>c.changePrice).length;
  if(!confirm(`¿Aplicar ${changes.length} actualizaciones de la requisición ${parsed.folio}?\n\nCambios de precios: ${prices}. Recepciones físicas explícitamente confirmadas: ${receipts}.\n\nEl proceso guarda cada artículo en una transacción; si falla uno, no se revertirán los anteriores. ¿Continuar?`))return;
@@ -441,6 +546,7 @@ async function applySelected(){if(isBusy||!admin())return;
    try{await applyChange(c);done++;touched.add(c.line.requestId);
     const tr=[...document.querySelectorAll('.imp-row')].find(r=>Number(r.dataset.index)===c.product.ordinal-1);
     if(tr){tr.querySelector('.imp-apply').checked=false;tr.classList.add('table-success');}
+    Object.assign(c.line,{requisitionNumber:c.product.folio,externalProcurementItemCode:c.product.externalCode,externalReportedStatus:c.product.externalStatus,externalReportDate:parsed.reportDate,...(c.changePrice?{unitPrice:c.unitPrice}:{}),...(c.receive?{quantityReceived:n(c.line.quantityReceived)+c.receiveQty}:{}),...(c.saveDate?{externalExpectedDeliveryDate:c.expectedDate}:{})});
    }catch(e){errors.push(`${c.product.externalCode}: ${e.message}`);console.error(e);}
    setProgress(`Aplicando: ${done} guardados; ${errors.length} pendientes por error; ${done+errors.length} de ${changes.length} procesados.`);
   }
@@ -487,19 +593,20 @@ function bind(){makeStyles();ensureModal();boardModal();chooseModal();injectButt
   if(t.closest?.('#iberoImportClear')){document.querySelectorAll('.imp-apply').forEach(e=>e.checked=false);updateFooter();}
   if(t.closest?.('#iberoImportSave'))void applySelected();
   const find=t.closest?.('.imp-find');if(find){const tr=find.closest('.imp-row');searchingRow=Number(tr.dataset.index);$('#iberoMatchDescription').textContent=sourceLabel(parsed.products[searchingRow]);$('#iberoMatchSearch').value=parsed.products[searchingRow].description.split(' ').slice(0,2).join(' ');renderCandidates();chooseModal().showModal();}
-  const choice=t.closest?.('.iberoMatchChoice');if(choice){const tr=document.querySelector(`.imp-row[data-index="${searchingRow}"]`);let select=tr?.querySelector('.imp-target');const l=allLines.find(x=>lineKey(x)===choice.dataset.key);if(select&&l){const o=document.createElement('option');o.value=lineKey(l);o.textContent=labelLine(l);select.append(o);select.value=o.value;tr.querySelector('.imp-apply').checked=true;refreshMatchCard(tr);updateFooter();}chooseModal().close();}
+  const choice=t.closest?.('.iberoMatchChoice');if(choice){const tr=document.querySelector(`.imp-row[data-index="${searchingRow}"]`);let select=tr?.querySelector('.imp-target');const l=allLines.find(x=>lineKey(x)===choice.dataset.key);if(select&&l){const o=document.createElement('option');o.value=lineKey(l);o.textContent=labelLine(l);select.append(o);select.value=o.value;tr.querySelector('.imp-apply').checked=true;refreshMatchCard(tr);syncReceiptVisibility(tr);updateFooter();}chooseModal().close();}
   if(t.closest?.('#iberoBoardRefresh'))void showBoard();
   if(t.closest?.('#iberoBoardPrint'))printBoard();
  });
- document.addEventListener('input',e=>{if(e.target?.id==='iberoMatchSearch')renderCandidates();if(e.target?.id==='iberoBoardSearch')drawBoard();});
+ document.addEventListener('input',e=>{if(e.target?.id==='iberoMatchSearch')renderCandidates();if(e.target?.id==='iberoBoardSearch')drawBoard();if(e.target?.matches?.('.imp-receive-qty,.imp-price-value,.imp-date-value'))updateFooter();});
  document.addEventListener('change',e=>{
   if(e.target?.matches?.('.imp-apply,.imp-target')){
    const tr=e.target.closest('.imp-row');if(e.target.matches('.imp-target')&&tr){
-    refreshMatchCard(tr);
+    refreshMatchCard(tr);syncReceiptVisibility(tr);
    }
    updateFooter();
   }
-  if(e.target?.matches?.('.imp-stage-select'))syncReceiptVisibility(e.target.closest('.imp-row'));
+  if(e.target?.matches?.('.imp-stage-select,.imp-price,.imp-receive,.imp-target'))syncReceiptVisibility(e.target.closest('.imp-row'));
+  if(e.target?.matches?.('.imp-stage-select,.imp-price,.imp-receive,.imp-target,.imp-receive-qty,.imp-price-value,.imp-date,.imp-date-value,.imp-verify-units,.imp-confirm-reassign'))updateFooter();
   if(e.target?.id==='iberoBoardFilter'){boardMode=e.target.value;drawBoard();}
  });
  const observer=new MutationObserver(()=>injectButtons());observer.observe(document.body,{childList:true,subtree:true});
