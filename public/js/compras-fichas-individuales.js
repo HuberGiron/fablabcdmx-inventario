@@ -15,6 +15,7 @@ const FONT = "helvetica";
 const PAGE_WIDTH = 210;
 const PAGE_HEIGHT = 297;
 const MARGIN = 16;
+const FOOTER_TOP = PAGE_HEIGHT - 35;
 let busy = false;
 let rolePromise = null;
 let queued = false;
@@ -181,11 +182,9 @@ function addHeading(pdf, ficha, continuation = false) {
   pdf.setFontSize(17);
   pdf.setTextColor(22, 27, 34);
   pdf.text(continuation ? "FICHA DE PRODUCTO (CONTINUACIÓN)" : "FICHA INDIVIDUAL DE COMPRA", MARGIN, 28);
-  pdf.setFontSize(9);
-  pdf.setFont(FONT, "normal");
-  pdf.setTextColor(86, 94, 105);
-  pdf.text(`Solicitud: ${ficha.folio}${ficha.alias ? `  ·  ${ficha.alias}` : ""}`, MARGIN, 35, { maxWidth: PAGE_WIDTH - 2 * MARGIN });
-  return 43;
+  // El folio de la SC, su alias y el SKU son referencias internas:
+  // sólo deben aparecer en el pie, nunca en la cabecera comercial.
+  return 38;
 }
 
 function addFooter(pdf, ficha) {
@@ -193,17 +192,29 @@ function addFooter(pdf, ficha) {
   for (let page = 1; page <= pages; page += 1) {
     pdf.setPage(page);
     pdf.setDrawColor(216, 222, 229);
-    pdf.line(MARGIN, PAGE_HEIGHT - 17, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - 17);
+    pdf.line(MARGIN, FOOTER_TOP, PAGE_WIDTH - MARGIN, FOOTER_TOP);
+    pdf.setFont(FONT, "bold");
+    pdf.setFontSize(8);
+    pdf.setTextColor(91, 101, 112);
+    pdf.text("INFORMACIÓN INTERNA DEL FABLAB", MARGIN, FOOTER_TOP + 6);
     pdf.setFont(FONT, "normal");
     pdf.setFontSize(8);
-    pdf.setTextColor(105, 113, 123);
-    pdf.text(`Referencia de compra · ${ficha.folio} · SKU ${ficha.sku}`, MARGIN, PAGE_HEIGHT - 11);
-    pdf.text(`${page}/${pages}`, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - 11, { align: "right" });
+    pdf.text(`Solicitud de compra (SC): ${ficha.folio}`, MARGIN, FOOTER_TOP + 13, {
+      maxWidth: PAGE_WIDTH - 2 * MARGIN,
+    });
+    pdf.text(`SKU interno: ${ficha.sku}`, MARGIN, FOOTER_TOP + 20, {
+      maxWidth: PAGE_WIDTH - 2 * MARGIN,
+    });
+    if (ficha.alias) {
+      const alias = pdf.splitTextToSize(`Alias interno: ${ficha.alias}`, PAGE_WIDTH - 2 * MARGIN - 20);
+      pdf.text(alias[0] || "", MARGIN, FOOTER_TOP + 27);
+    }
+    pdf.text(`${page}/${pages}`, PAGE_WIDTH - MARGIN, FOOTER_TOP + 27, { align: "right" });
   }
 }
 
 function ensureRoom(pdf, ficha, y, height) {
-  if (y + height <= PAGE_HEIGHT - 25) return y;
+  if (y + height <= FOOTER_TOP - 7) return y;
   pdf.addPage();
   return addHeading(pdf, ficha, true) + 3;
 }
@@ -271,7 +282,7 @@ function buildPdf(ficha, image) {
   pdf.setFontSize(9);
   pdf.setFont(FONT, "normal");
   pdf.setTextColor(73, 82, 93);
-  const quantities = `SKU: ${ficha.sku}     Cantidad solicitada: ${ficha.quantity}     Pendiente: ${ficha.pending}`;
+  const quantities = `Cantidad solicitada: ${ficha.quantity}     Pendiente: ${ficha.pending}`;
   pdf.text(quantities, MARGIN, y, { maxWidth: PAGE_WIDTH - 2 * MARGIN });
   y += 6;
   pdf.text(`Estado: ${ficha.status}     Precio unitario de referencia: $${formatMoney(ficha.estimatedUnitPrice, ficha.currency)}`, MARGIN, y, { maxWidth: PAGE_WIDTH - 2 * MARGIN });
@@ -313,16 +324,23 @@ function buildPdf(ficha, image) {
   return pdf.output("arraybuffer");
 }
 
-function setBusyButtons(isBusy, label = "") {
-  for (const button of document.querySelectorAll(`.${HISTORY_BUTTON_CLASS}, #${DETAIL_BUTTON_ID}`)) {
-    button.disabled = isBusy;
-    if (isBusy) {
-      if (!button.dataset.originalFichasLabel) button.dataset.originalFichasLabel = button.textContent;
-      button.textContent = label || "Generando fichas…";
-    } else if (button.dataset.originalFichasLabel) {
+// La señal visual de progreso pertenece EXCLUSIVAMENTE al botón pulsado.
+// El resto de solicitudes conserva sus etiquetas y su apariencia original.
+function setBusyButton(button, isBusy, label = "") {
+  if (!button) return;
+  button.disabled = isBusy;
+  if (isBusy) {
+    if (!button.dataset.originalFichasLabel) {
+      button.dataset.originalFichasLabel = button.textContent;
+    }
+    button.textContent = label || "Generando fichas…";
+    button.setAttribute("aria-busy", "true");
+  } else {
+    if (button.dataset.originalFichasLabel) {
       button.textContent = button.dataset.originalFichasLabel;
       delete button.dataset.originalFichasLabel;
     }
+    button.removeAttribute("aria-busy");
   }
 }
 
@@ -363,7 +381,7 @@ function refreshButtonsSoon() {
   queueMicrotask(() => { queued = false; ensureButtons(); });
 }
 
-async function downloadFichasZip(requestId) {
+async function downloadFichasZip(requestId, sourceButton) {
   if (busy) return;
   if (!(await canReadPurchases())) {
     alert("Sólo el administrador y el supervisor pueden descargar fichas de las solicitudes.");
@@ -374,7 +392,7 @@ async function downloadFichasZip(requestId) {
     return;
   }
   busy = true;
-  setBusyButtons(true, "Preparando fichas…");
+  setBusyButton(sourceButton, true, "Preparando fichas…");
   try {
     const { request, lines } = await loadBundle(requestId);
     const catalog = await loadCatalogFallback(lines);
@@ -394,12 +412,12 @@ async function downloadFichasZip(requestId) {
       const pdf = buildPdf(ficha, photo);
       const filename = `${folio}_${String(index + 1).padStart(3, "0")}_${safeFilename(ficha.sku)}_${safeFilename(ficha.name).slice(0, 32)}.pdf`;
       zip.file(filename, pdf);
-      setBusyButtons(true, `Fichas ${index + 1}/${ordered.length}…`);
+      setBusyButton(sourceButton, true, `Fichas ${index + 1}/${ordered.length}…`);
       // Cede el turno al navegador para actualizar el contador en solicitudes grandes.
       if (index % 5 === 4) await new Promise(resolve => requestAnimationFrame(resolve));
     }
 
-    setBusyButtons(true, "Empaquetando ZIP…");
+    setBusyButton(sourceButton, true, "Empaquetando ZIP…");
     const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -420,7 +438,7 @@ async function downloadFichasZip(requestId) {
     alert(`No se pudieron generar las fichas: ${error.message}`);
   } finally {
     busy = false;
-    setBusyButtons(false);
+    setBusyButton(sourceButton, false);
   }
 }
 
@@ -430,7 +448,7 @@ document.addEventListener("click", event => {
   event.preventDefault();
   event.stopPropagation();
   const requestId = text(button.dataset.requestId || document.querySelector("#purchaseRequestDetailPdf")?.dataset.requestId);
-  if (requestId) void downloadFichasZip(requestId);
+  if (requestId) void downloadFichasZip(requestId, button);
 });
 
 document.addEventListener("purchase-request-detail-rendered", refreshButtonsSoon);
