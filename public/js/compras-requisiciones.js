@@ -5,7 +5,7 @@
 import { auth,db } from './firebase-app.js';
 import { getUserProfile,waitForUser } from './common.js';
 import { collection,doc,getDoc,getDocFromServer,getDocsFromServer,runTransaction,serverTimestamp,updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import { n,q,pending,folioKey,cleanFolio,amounts,stage,groupRequisitions,warehouseReady,stateTone,sortRequisitionGroups } from './compras-requisitions-model.js';
+import { n,q,pending,folioKey,cleanFolio,amounts,stage,groupRequisitions,warehouseReady,stateTone,sortRequisitionGroups } from './compras-requisitions-model.js?v=20261017d';
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=(amount,currency='MXN')=>{try{return new Intl.NumberFormat('es-MX',{style:'currency',currency}).format(n(amount));}catch{return `${n(amount).toFixed(2)} ${currency}`;}};
@@ -116,7 +116,7 @@ function ensureStyle(){if(document.getElementById('iberoRequisitionFolioStyles')
   #iberoRequisitionsPanel .req-pickup-cell{min-width:95px;text-align:center}
   #iberoRequisitionsPanel .req-report-card .table td{vertical-align:middle}
   #iberoRequisitionsPanel .req-warehouse-hint{color:#5b6168;font-size:.84rem}
-  @media(max-width:760px){#iberoRequisitionsPanel{width:100vw!important}.req-report-card .table{min-width:940px}}
+  @media(max-width:760px){#iberoRequisitionsPanel{width:100vw!important}.req-report-card .table{min-width:1100px}}
 `;document.head.append(s);}
 function modalBase(id,title,footer){let m=document.getElementById(id);if(m)return m;m=document.createElement('div');m.id=id;m.className='modal fade';m.tabIndex=-1;m.innerHTML=`<div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
  <div class="modal-header"><h5 class="modal-title">${esc(title)}</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button></div>
@@ -252,7 +252,7 @@ function ensureReadPanel(){let panel=document.getElementById('iberoRequisitionsP
  <div class="offcanvas-body">
  <div class="d-flex gap-2 flex-wrap align-items-center mb-2"><input id="iberoRequisitionSearch" type="search" class="form-control flex-grow-1" placeholder="Buscar requisición, SKU, producto, SC o alias" style="max-width:580px"><button id="iberoRequisitionRefresh" class="btn btn-outline-primary" type="button">Actualizar</button></div>
  <div class="req-warehouse-controls">
-   <div><label class="form-label small mb-1" for="iberoRequisitionSort">Ordenar por</label><select class="form-select" id="iberoRequisitionSort"><option value="folio">Número de requisición</option><option value="estado">Estado (almacén primero)</option><option value="gasto_desc">Gasto real: mayor a menor</option><option value="gasto_asc">Gasto real: menor a mayor</option><option value="nombre">Nombre de artículo (A–Z)</option></select></div>
+   <div><label class="form-label small mb-1" for="iberoRequisitionSort">Ordenar por</label><select class="form-select" id="iberoRequisitionSort"><option value="folio">Número de requisición</option><option value="estado">Estado (almacén primero)</option><option value="gasto_desc">Gasto real: mayor a menor</option><option value="gasto_asc">Gasto real: menor a mayor</option><option value="nombre">Nombre de artículo (A–Z)</option><option value="entrega_asc">Entrega estimada: próxima primero</option><option value="entrega_desc">Entrega estimada: lejana primero</option></select></div>
    <label class="form-check d-flex align-items-center gap-2 mb-2"><input type="checkbox" id="iberoRequisitionOnlyWarehouse" class="form-check-input"><span class="form-check-label">Sólo por recoger en almacén</span></label>
    <button class="btn btn-outline-warning mb-1" type="button" id="iberoRequisitionPrintWarehouse"><span aria-hidden="true">🖨️</span> Imprimir por recoger</button>
  </div>
@@ -273,6 +273,7 @@ function currencySummary(lines){
     const t=map.get(a.currency);t.spent+=a.spent;t.committed+=a.committed;t.used+=a.used;}
   return map;
 }
+function deliveryText(value){const iso=String(value||'');const match=iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);return match?`${match[3]}/${match[2]}/${match[1]}`:'—';}
 function groupHtml(g){
  const shown=warehouseOnly?g.lines.filter(warehouseReady):g.lines;
  if(!shown.length)return '';
@@ -283,9 +284,9 @@ function groupHtml(g){
  return `<details class="req-report-card ${groupTone}" data-group-key="${esc(g.key)}" data-search="${esc([g.folio,...shown.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
  <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''}</summary>
  <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
- <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
+ <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
  ${shown.map(l=>{const t=amounts(l),color=stateTone(l),ready=warehouseReady(l),allowToggle=admin()&&t.pending>0;
- return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td></tr>`;}).join('')}</tbody></table></div></div></details>`;
+ return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="small text-nowrap">${esc(deliveryText(l.externalExpectedDeliveryDate))}${l.externalExpectedDeliveryDate&&l.externalExpectedDeliveryDate<new Date().toISOString().slice(0,10)&&t.pending>0?'<div class="text-danger fw-semibold">Fecha vencida</div>':''}</td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td></tr>`;}).join('')}</tbody></table></div></div></details>`;
 }
 function drawPanel(){
  const content=document.getElementById('iberoRequisitionsContent');if(!content)return;

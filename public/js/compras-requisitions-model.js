@@ -60,6 +60,7 @@ export function sortRequisitionLines(lines, mode='folio') {
   return [...lines].sort((a,b)=>{
     if(mode==='estado')return stateRank(a)-stateRank(b)||fallback(a,b);
     if(mode==='nombre')return fallback(a,b);
+    if(mode==='entrega_asc'||mode==='entrega_desc'){const left=String(a.externalExpectedDeliveryDate||'9999-12-31'),right=String(b.externalExpectedDeliveryDate||'9999-12-31');return (left==='9999-12-31'&&right!=='9999-12-31'?1:right==='9999-12-31'&&left!=='9999-12-31'?-1:(mode==='entrega_desc'?-collate(left,right):collate(left,right)))||fallback(a,b);}
     if(mode==='gasto_desc'||mode==='gasto_asc'){
       const currency=currencyOrder(moneyCurrency(a),moneyCurrency(b));
       if(currency)return currency;
@@ -78,6 +79,7 @@ export function sortRequisitionGroups(groups,mode='folio') {
   return out.sort((a,b)=>{
     if(mode==='estado')return Math.min(...a.lines.map(stateRank))-Math.min(...b.lines.map(stateRank))||byFolio(a,b);
     if(mode==='nombre')return collate(groupName(a),groupName(b))||byFolio(a,b);
+    if(mode==='entrega_asc'||mode==='entrega_desc'){const best=g=>[...g.lines].map(l=>String(l.externalExpectedDeliveryDate||'9999-12-31')).sort()[0]||'9999-12-31';const result=collate(best(a),best(b));return (best(a)==='9999-12-31'&&best(b)!=='9999-12-31'?1:best(b)==='9999-12-31'&&best(a)!=='9999-12-31'?-1:(mode==='entrega_desc'?-result:result))||byFolio(a,b);}
     if(mode==='gasto_desc'||mode==='gasto_asc'){
       const c=currencyOrder(groupCurrency(a),groupCurrency(b));
       if(c)return c;
