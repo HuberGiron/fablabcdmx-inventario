@@ -216,8 +216,9 @@ service cloud.firestore {
       allow update: if isAdmin();
 
 
-      // Sólo Admin puede eliminar definitivamente solicitudes.
-      allow delete: if isAdmin();
+      // Una SC enviada es evidencia financiera permanente.
+      // Sólo es posible eliminar un borrador aún no enviado.
+      allow delete: if isAdmin() && resource.data.status == 'draft';
 
 
       // LEGACY / INACTIVO: retenido por compatibilidad documental.
@@ -372,8 +373,10 @@ service cloud.firestore {
         // ELIMINAR LÍNEA
         // --------------------------------------------------------
 
-        // Supervisor: sólo lectura. Sólo Admin puede eliminar líneas.
-        allow delete: if isAdmin();
+        // En borradores se puede quitar un SKU; tras enviar, siempre
+        // se cancela el pendiente y se conserva la línea histórica.
+        allow delete: if isAdmin()
+          && get(/databases/$(database)/documents/purchaseRequests/$(requestId)).data.status == 'draft';
 
 
         // ========================================================
