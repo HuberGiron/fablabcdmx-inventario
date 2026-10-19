@@ -35,7 +35,7 @@ function css(){if($('#iberoFollowupStyle'))return;const s=document.createElement
 function modal(){let m=$('#iberoFollowupModal');if(m)return m;
  m=document.createElement('div');m.id='iberoFollowupModal';m.className='modal fade';m.tabIndex=-1;
  m.innerHTML=`<div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
- <div class="modal-header"><div><h5 class="modal-title">Seguimiento institucional de requisiciones</h5><div class="small text-muted">No Generada → Firma Electrónica → Por Surtir → En Almacén → Entregado al Usuario</div></div><button class="btn-close" type="button" data-bs-dismiss="modal" aria-label="Cerrar"></button></div>
+ <div class="modal-header"><div><h5 class="modal-title">Seguimiento institucional de requisiciones</h5><div class="small text-muted">No Generada → Firma Electrónica → Cotizado → Por Surtir → En Almacén → Entregado al Usuario</div></div><button class="btn-close" type="button" data-bs-dismiss="modal" aria-label="Cerrar"></button></div>
  <div class="modal-body">
  <div class="followup-warn small mb-3"><strong>Vista de seguimiento.</strong> Las etapas institucionales provienen de los PDF revisados y aprobados. No cambian los estados generales del FabLab. «Entregado al Usuario» no registra existencias ni gasto sin confirmar una recepción.</div>
  <div class="row g-3 align-items-start mb-3"><div class="col-lg-4"><label class="form-label fw-semibold" for="iberoFollowupFolioFilter">Requisiciones a comparar</label><input id="iberoFollowupFolioFilter" class="form-control form-control-sm mb-2" type="search" placeholder="Buscar número de requisición"><div class="d-flex flex-wrap gap-2 mb-2"><button class="btn btn-sm btn-outline-secondary" id="iberoFollowupAll" type="button">Todas</button><button class="btn btn-sm btn-outline-secondary" id="iberoFollowupNone" type="button">Ninguna</button><span class="small text-muted align-self-center" id="iberoFollowupSelected"></span></div><div class="followup-selectbox" id="iberoFollowupFolios" role="group" aria-label="Seleccionar requisiciones"></div></div>
@@ -78,7 +78,7 @@ function drawCheckboxes(){const container=$('#iberoFollowupFolios');if(!containe
  $('#iberoFollowupSelected').textContent=`${selectedFolios.size}/${folios.length} seleccionadas`;
 }
 function tag(l){const i=statusInfo(l);return `<span class="followup-tag" style="background:${i.color}">${esc(i.label)}</span>`;}
-function progression(s){return `<div class="followup-flow mb-2">${STATUS_META.slice(0,6).map((m,i)=>`<small style="${m.key===s?'background:'+m.color+';color:white':''}">${i+1}. ${esc(m.label.replace(' al Usuario',''))}</small>`).join('<span class="text-muted">›</span>')}</div>`;}
+function progression(s){return `<div class="followup-flow mb-2">${STATUS_META.slice(0,7).map((m,i)=>`<small style="${m.key===s?'background:'+m.color+';color:white':''}">${i+1}. ${esc(m.label.replace(' al Usuario',''))}</small>`).join('<span class="text-muted">›</span>')}</div>`;}
 function render(){const host=$('#iberoFollowupResults');if(!host)return;
  const selected=selectLines(records,selectedFolios,$('#iberoFollowupSearch')?.value||'',$('#iberoFollowupStage')?.value||'all');
  const summary=summarize(selected);

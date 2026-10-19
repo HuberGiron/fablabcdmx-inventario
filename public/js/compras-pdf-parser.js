@@ -37,6 +37,7 @@ function parseMoneyBand(line){
  return {
   quantity,unit,
   unitPrice:validBand?values[0]:moneyRange(line,162,220),
+  exchangeRate:validBand?values[1]:null,
   vatTotal:validBand?values[2]:moneyRange(line,294,340),
   totalWithTax:validBand?values[3]:moneyRange(line,340,410),
   currency,expectedDate:dateISO(line.text),
@@ -47,6 +48,7 @@ const STATUSES=[
  ['Entregado al Usuario',/entregado\s+al\s+usuario/i],
  ['En Almacén',/en\s+almac[eé]n/i],
  ['Por Surtir',/por\s+surtir/i],
+ ['Cotizado',/\bcotizad[oa]s?\b/i],
  ['Firma Electrónica',/firma\s+electr[oó]nica/i],
  ['No Generada',/no\s+generada/i],
  ['Generada',/\bgenerada\b/i],
@@ -54,7 +56,7 @@ const STATUSES=[
 function parseRawItem(segment,record,notes){
  const desc=[];let status='',order='',estimated=null,quoted=null;
  for(const line of segment){
-  const description=inRange(line,52,149),label=inRange(line,50,113);
+  const description=inRange(line,38,149),label=inRange(line,38,113);
   if(!/\bActividad aprobada\b|^\s*Total Real\b/i.test(line.text)&&!/^(?:Estimado\s*:|Real\s*$|ver\s+archivo)/i.test(label)){
    // Extraer únicamente la columna de descripción, nunca costos ni estado.
    const cleaned=description.replace(/\(\s*\d{5,9}\s*\)/g,'').replace(/\bver archivo\b/gi,'')
@@ -91,9 +93,9 @@ export function parseProcurementReport(pages){
  for(const line of lines){
   // Los PDF comparten columna descriptiva en x≈54–69, pero cambian
   // márgenes; los códigos se fragmentan como "(245611" y ")".
-  const left=inRange(line,46,151);
+  const left=inRange(line,38,151);
   const match=left.match(/\(\s*(\d{5,9})\s*\)/);
-  const isCode=!!match&&line.tokens.some(t=>t.x>=50&&t.x<=85&&/\(\s*\d{5,9}/.test(t.str));
+  const isCode=!!match&&line.tokens.some(t=>t.x>=38&&t.x<=100&&/\(\s*\d{5,9}/.test(t.str));
   if(isCode){finalize();current={folio,observations,externalCode:match[1],sourcePage:line.page,ordinal:all.length+1};segment=[line];}
   else if(current&&!/^Requisici[oó]n de Material/i.test(line.text)&&!/\bTotal\s+Real\s+\$/i.test(line.text)&&!/El rengl[oó]n en rojo/i.test(line.text))segment.push(line);
  }
@@ -136,9 +138,53 @@ export function institutionalRank(status){
  if(/no generada/.test(v))return 0;
  if(/^generada$/.test(v))return 0.5;
  if(/firma electronica/.test(v))return 1;
+ if(/cotizad/.test(v))return 1.5;
  if(/por surtir/.test(v))return 2;
  if(/en almacen/.test(v))return 3;
  if(/entregado parcial/.test(v))return 4;
  if(/entregado al usuario/.test(v))return 5;
  return -1;
+}
+
+/** Analiza importes externos sin escribir en Firestore. Los precios MXN se
+ * obtienen del TOTAL institucional con IVA dividido entre la cantidad;
+ * la factura en USD se convierte sólo si el TC y la aritmética coinciden.
+ * La referencia se usa para detectar anomalías; jamás para suponer otro TC.
+ */
+export function assessQuoteMXN(product, referenceUnitPrice = null) {
+ const q=product?.quoted;
+ const fail=(reason, extra={})=>({safe:false,unitGrossMXN:null,reason,currency:String(q?.currency||'MXN').toUpperCase(),...extra});
+ if(!q)return fail('El reporte sólo tiene un precio estimado; todavía no hay cotización final.');
+ const currency=String(q.currency||'MXN').toUpperCase();
+ if(!['MXN','USD'].includes(currency))return fail(`Moneda ${currency} no compatible con la conversión automática.`);
+ const fx=currency==='USD'?Number(q.exchangeRate):1;
+ if(!Number.isFinite(fx)||fx<=0||(currency==='USD'&&(fx<5||fx>50)))
+  return fail('Cotización USD sin un tipo de cambio MXN/USD plausible y verificable.');
+ const qty=Number(q.quantity??product.quantity);
+ if(!Number.isInteger(qty)||qty<=0)return fail('La cantidad institucional no es legible; no se puede calcular precio por unidad.');
+ const rawUnit=Number(q.unitPrice);
+ if(!Number.isFinite(rawUnit)||rawUnit<0)return fail('El precio unitario cotizado no es legible.');
+ const iva=Number.isFinite(q.vatTotal)&&q.vatTotal>=0?q.vatTotal:rawUnit*.16;
+ const calculatedTotal=(rawUnit+iva)*fx*qty;
+ const printedTotal=q.totalWithTax == null?null:Number(q.totalWithTax);
+ if(printedTotal!=null&&(!Number.isFinite(printedTotal)||printedTotal<0))return fail('El total convertido impreso no es válido.');
+ // No aceptamos un total desconectado de la operación 16% / TC del reporte.
+ if(printedTotal!=null){
+  const tolerance=Math.max(10,calculatedTotal*.015);
+  if(Math.abs(printedTotal-calculatedTotal)>tolerance)
+   return fail(`El total institucional (${printedTotal.toFixed(2)} MXN) no coincide con cantidad, cotización, IVA y TC (${calculatedTotal.toFixed(2)} MXN).`,{exchangeRate:fx,printedTotal});
+ }
+ const totalMXN=printedTotal??calculatedTotal;
+ const unitGrossMXN=Math.round(totalMXN/qty*100)/100;
+ if(!Number.isFinite(unitGrossMXN)||unitGrossMXN<0)return fail('Precio convertido inválido.');
+ const candidates=[];
+ const est=product?.estimated;
+ if(est?.totalWithTax!=null&&Number(est.quantity)>0&&String(est.currency||'MXN').toUpperCase()==='MXN')
+  candidates.push({name:'estimado del PDF',unit:Number(est.totalWithTax)/Number(est.quantity)});
+ if(Number(referenceUnitPrice)>0)candidates.push({name:'precio de la SC FabLab',unit:Number(referenceUnitPrice)});
+ const wildlyDifferent=candidates.find(ref=>Number.isFinite(ref.unit)&&ref.unit>0&&
+  Math.abs(unitGrossMXN-ref.unit)>5000 && (unitGrossMXN/ref.unit>3 || unitGrossMXN/ref.unit<.05));
+ if(wildlyDifferent)return fail(`Precio atípico: ${unitGrossMXN.toFixed(2)} MXN/unidad frente a ${wildlyDifferent.unit.toFixed(2)} MXN del ${wildlyDifferent.name}; no actualizar automáticamente.`,{unitGrossMXN,exchangeRate:fx,printedTotal,flag:'outlier'});
+ if(unitGrossMXN>10_000_000)return fail('Cotización superior a $10,000,000 MXN por unidad; requiere revisión externa.',{unitGrossMXN,exchangeRate:fx,printedTotal,flag:'outlier'});
+ return {safe:true,unitGrossMXN,reason:'',currency,exchangeRate:fx,printedTotal,totalMXN,quantity:qty,vatCalculated:!(Number.isFinite(q.vatTotal)&&q.vatTotal>=0)};
 }

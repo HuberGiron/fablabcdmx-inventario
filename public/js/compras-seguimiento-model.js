@@ -3,6 +3,7 @@ export const STATUS_META = [
  {key:'no_generada',label:'No Generada',color:'#64748b',order:0,local:'En requisición'},
  {key:'generada',label:'Generada',color:'#607d8b',order:0.5,local:'En requisición'},
  {key:'firma',label:'Firma Electrónica',color:'#8053bd',order:1,local:'En requisición'},
+ {key:'cotizado',label:'Cotizado',color:'#4964ad',order:1.5,local:'En requisición'},
  {key:'surtir',label:'Por Surtir',color:'#0d6efd',order:2,local:'En requisición'},
  {key:'almacen',label:'En Almacén',color:'#d35400',order:3,local:'En almacén'},
  {key:'parcial',label:'Entregado Parcial al Usuario',color:'#087f8c',order:4,local:'Recepción parcial'},
@@ -19,6 +20,7 @@ export function statusKey(line){
  if(/entregado\s+al\s+usuario/.test(s))return 'entregado';
  if(/en\s+almacen/.test(s))return 'almacen';
  if(/por\s+surtir/.test(s))return 'surtir';
+ if(/cotizad/.test(s))return 'cotizado';
  if(/firma\s+electronica/.test(s))return 'firma';
  if(/no\s+generada/.test(s))return 'no_generada';
  if(/^generada$/.test(s))return 'generada';

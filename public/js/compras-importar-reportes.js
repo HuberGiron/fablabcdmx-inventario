@@ -6,7 +6,7 @@
 import {auth,db} from './firebase-app.js';
 import {getUserProfile,waitForUser} from './common.js';
 import {collection,doc,getDoc,getDocs,getDocsFromServer,runTransaction,updateDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank} from './compras-pdf-parser.js?v=20261017i';
+import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank,assessQuoteMXN} from './compras-pdf-parser.js?v=20261019a';
 const $=sel=>document.querySelector(sel);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
@@ -42,20 +42,25 @@ async function listLines(onProgress=()=>{}){
  });await Promise.all(workers);allLines=found;
  return found;
 }
-function moneyGross(p){
- const q=p.quoted;
- if(!q)return null;
- // Reportes cotizados en USD requieren conversión verificada; no etiquetar USD como MXN.
- if(String(q.currency||'MXN').toUpperCase()==='USD')return null;
- if(Number.isFinite(q.totalWithTax)&&Number.isFinite(q.quantity)&&q.quantity>0)
-  return Math.round(q.totalWithTax/q.quantity*100)/100;
-  // Se toma el IVA desglosado cuando exista; si falta, se calcula con el 16%.
-  // Sólo sobre la cotización REAL (nunca sobre el presupuesto Estimado).
-  if(Number.isFinite(q.unitPrice)&&q.unitPrice>=0){
-    const iva = Number.isFinite(q.vatTotal)&&q.vatTotal>=0 ? q.vatTotal : q.unitPrice * 0.16;
-    return Math.round((q.unitPrice + iva)*100)/100;
-  }
- return null;
+function moneyGross(p,line=null){
+ const evaluation=assessQuoteMXN(p,line?.unitPrice);
+ return evaluation.safe?evaluation.unitGrossMXN:null;
+}
+// La evaluación del precio se repite al seleccionar otra SC/SKU y al guardar.
+// Un monto atípico no impide registrar el estado, folio o fecha del artículo.
+function priceCheck(product,line,manualValue=null){
+ const assessment=assessQuoteMXN(product,line?.unitPrice);
+ if(!assessment.safe)return assessment;
+ if(line && String(line.currency||'MXN').toUpperCase()!=='MXN')
+  return {...assessment,safe:false,reason:'La SC registra importes en otra moneda. Se requiere conciliación antes de actualizarla con un precio MXN.'};
+ if(manualValue!==null){
+  const price=Number(manualValue);
+  if(!Number.isFinite(price)||price<0 ||
+     (Math.abs(price-assessment.unitGrossMXN)>5000 &&
+      (price>assessment.unitGrossMXN*3||price<assessment.unitGrossMXN*.05)))
+   return {...assessment,safe:false,reason:'El precio introducido difiere demasiado de la cotización institucional verificada; corrígelo o desmarca la actualización de precio.'};
+ }
+ return assessment;
 }
 // Validación automática: la unidad institucional puede representar una caja,
 // paquete o juego. Si la SC solicita exactamente la misma cantidad de unidades
@@ -97,6 +102,11 @@ function checkRow(tr,checkDuplicates=true){
  const priceRaw=tr.querySelector('.imp-price-value')?.value||'';
  const priceValue=Number(priceRaw);
  if(priceActive&&(!priceRaw.trim()||!Number.isFinite(priceValue)||priceValue<0))errors.push('Completa un precio unitario válido con IVA.');
+ if(priceActive){
+  const result=priceCheck(product,line,priceValue);
+  if(!result.safe)errors.push(result.reason);
+  if(line&&String(line.currency||'MXN').toUpperCase()!=='MXN')errors.push('La SC utiliza otra moneda: no se puede guardar un precio MXN sin conciliar primero sus importes históricos.');
+ }
  if(!['none','requisition','warehouse','received','partial'].includes(proposedStage))errors.push('Selecciona un estado válido.');
  if(line){
    const stock=receiptState(line),actualState=currentStage(line);
@@ -244,9 +254,11 @@ function productRow(p,i){
  const conf=best?.score||0,confClass=conf>=.83?'high':conf>=.62?'medium':'low';
  const selectedLine=allLines.find(x=>lineKey(x)===target);
  const options=(suggestion.options||[]).map(l=>`<option value="${esc(lineKey(l))}" ${target===lineKey(l)?'selected':''}>${esc(labelLine(l))} · ${Math.round(l.score*100)}%</option>`).join('');
- const s=externalStage(p.externalStatus),gross=moneyGross(p);
- const priceValid=gross!==null&&Number.isFinite(gross)&&gross>=0;
+ const s=externalStage(p.externalStatus),assessment=priceCheck(p,selectedLine),gross=assessment.unitGrossMXN;
+ const priceValid=assessment.safe;
  const quoteUnit=String(p.quoted?.currency||'MXN').toUpperCase();
+ const originalGross=p.quoted?.totalWithTax;
+ const conversionNote=p.quoted&&quoteUnit==='USD'&&Number.isFinite(p.quoted.exchangeRate)?`Tipo de cambio del PDF: <strong>1 USD = ${esc(Number(p.quoted.exchangeRate).toFixed(4))} MXN</strong>. ${Number.isFinite(originalGross)?`Total institucional: <strong>${esc(amount(originalGross))} MXN</strong>.`:''}`:'';
  const priceText=priceValid?Number(gross).toFixed(2):'';
  const isVatEstimated=Boolean(p.quoted && !Number.isFinite(p.quoted.totalWithTax) && !Number.isFinite(p.quoted.vatTotal) && Number.isFinite(p.quoted.unitPrice));
  const obs=p.quantity==null?'Cantidad no legible':`PDF: ${p.quantity} ${p.purchaseUnit||'unidad(es)'}`;
@@ -282,11 +294,12 @@ function productRow(p,i){
     </section>
     <section class="imp-data-box"><div class="imp-section-title">Cotización final de Compras</div>
       <div class="small">Sin IVA (${esc(quoteUnit)}): <strong>${p.quoted?.unitPrice!=null?esc(amount(p.quoted.unitPrice,quoteUnit==='USD'?'USD':'MXN')):'—'}</strong></div>
-      <div class="small mt-1">Con IVA / unidad en MXN: <strong>${priceValid?esc(amount(gross)):'No disponible'}</strong></div>
+      <div class="small mt-1">Con IVA / unidad en MXN: <strong>${priceValid?esc(amount(gross)):assessment.unitGrossMXN!=null?`${esc(amount(assessment.unitGrossMXN))} — BLOQUEADO`:'No disponible / requiere revisión'}</strong></div>
+      ${conversionNote?`<div class="small mt-1">${conversionNote}</div>`:''}
       ${isVatEstimated?'<div class="small mt-1 text-primary fw-semibold">IVA no desglosado: se calculó el 16% sobre el precio real institucional.</div>':''}
       <label class="d-flex gap-2 align-items-center mt-2"><input class="form-check-input imp-price" type="checkbox" ${priceValid?'checked':'disabled'}> <strong>Actualizar precio</strong></label>
       <label class="form-label small mt-2 mb-1">Precio unitario a registrar (MXN, IVA incluido)</label><input class="form-control form-control-sm imp-price-value" type="number" step="0.01" min="0" value="${priceText}" ${priceValid?'':'disabled'}>
-      ${!priceValid?'<div class="imp-note mt-2 text-danger fw-semibold">El PDF no permite calcular con certeza el precio unitario con IVA. Se omite la actualización del precio hasta revisarlo.</div>':''}
+      <div class="imp-note mt-2 text-danger fw-semibold imp-price-alert" ${priceValid?'hidden':''}>${priceValid?'':esc(assessment.reason)}</div>
     </section>
     <section class="imp-data-box"><div class="imp-section-title">Etapa propuesta y recepción física</div>
       <label class="form-label small mb-1">Estado institucional que se guardará</label>
@@ -310,6 +323,22 @@ function productRow(p,i){
   <div class="imp-validation" role="status" aria-live="polite"></div>
  </article>`;
 }
+function syncPriceValidation(row,line,product){
+ if(!row||!product)return;
+ const assessment=priceCheck(product,line);
+ const priceBox=row.querySelector('.imp-price');
+ const field=row.querySelector('.imp-price-value');
+ const note=row.querySelector('.imp-price-alert');
+ if(!assessment.safe){
+  if(priceBox){priceBox.checked=false;priceBox.disabled=true;}
+  if(field){field.disabled=true;field.value='';}
+ }else{
+  if(priceBox)priceBox.disabled=false;
+  if(field){field.disabled=false;field.value=assessment.unitGrossMXN.toFixed(2);}
+  if(priceBox)priceBox.checked=true;
+ }
+ if(note){note.hidden=assessment.safe;note.textContent=assessment.safe?'':`${assessment.reason} Puedes importar folio, etapa y fecha sin actualizar precio.`;}
+}
 function refreshMatchCard(row){
  if(!row)return;
  const index=Number(row.dataset.index),product=parsed?.products?.[index];
@@ -323,6 +352,7 @@ function refreshMatchCard(row){
  if(box)box.hidden=Boolean(selected);
  const current=row.querySelector('.imp-current');
  if(current)current.innerHTML=currentLineHtml(selected);
+ syncPriceValidation(row,selected,product);
  row.classList.toggle('imp-ambiguous',!selected||score<.83);
 }
 function syncReceiptVisibility(row){
@@ -420,6 +450,7 @@ function draftChanges(){
   const changePrice=tr.querySelector('.imp-price').checked;
   const unitPrice=Number(tr.querySelector('.imp-price-value').value);
   if(changePrice&&(!Number.isFinite(unitPrice)||unitPrice<0))throw new Error(`Precio inválido: ${product.description}`);
+  if(changePrice){const review=priceCheck(product,line,unitPrice);if(!review.safe)throw new Error(`${product.description}: ${review.reason}`);if(String(line.currency||'MXN').toUpperCase()!=='MXN')throw new Error(`${line.sku}: SC con moneda diferente a MXN, requiere conciliación.`);}
   const saveDate=tr.querySelector('.imp-date').checked,expectedDate=tr.querySelector('.imp-date-value').value;
   if(saveDate && (!expectedDate || !/^\d{4}-\d{2}-\d{2}$/.test(expectedDate)))throw new Error(`Fecha inválida: ${product.description}`);
   const receive=proposedStage==='received'&&tr.querySelector('.imp-receive').checked,receiveQty=Number(tr.querySelector('.imp-receive-qty').value);
@@ -461,6 +492,7 @@ async function applyChange(c){
   if(q===0&&n(l.quantityReceived)===0&&stage!=='none')throw new Error(`${choice.sku}: el artículo está cancelado.`);
   const mismatch=unitConflict(p,l);
   if((receive||changePrice)&&mismatch)throw new Error(`${choice.sku}: ${mismatch}`);
+  if(changePrice){const priceReview=priceCheck(p,l,unitPrice);if(!priceReview.safe)throw new Error(`${choice.sku}: ${priceReview.reason}`);if(String(l.currency||'MXN').toUpperCase()!=='MXN')throw new Error(`${choice.sku}: la SC está en moneda diferente de MXN; no se puede actualizar sin conciliar.`);}
   if(receive&&q<=0)throw new Error(`${choice.sku}: la recepción ya está contabilizada, no hay unidades pendientes.`);
   if(receive&&(receiveQty>q||receiveQty>Math.max(0,n(p.quantity||l.quantityRequested)-n(l.quantityReceived))))throw new Error(`${choice.sku}: la recepción propuesta supera el pendiente o la cantidad del documento descontando lo ya recibido.`);
   // Una segunda consulta dentro de la transacción evita que la fecha haya
@@ -481,7 +513,7 @@ async function applyChange(c){
     externalRequisitionNumber:p.folio,externalProcurementItemCode:p.externalCode,
     externalPurchaseOrderNumber:p.purchaseOrder||'',externalReportedStatus:p.externalStatus,
     externalQuotedUnitCost:p.quoted?.unitPrice??null,externalQuotedTotalGross:p.quoted?.totalWithTax??null,
-    externalQuotedUnitCostGross:moneyGross(p),externalReportFile:activePdfName,
+    externalQuotedUnitCostGross:moneyGross(p,l),externalQuotedCurrency:p.quoted?.currency||null,externalQuotedExchangeRate:p.quoted?.exchangeRate??null,externalQuotedPriceWarning:priceCheck(p,l).safe?'':priceCheck(p,l).reason,externalReportFile:activePdfName,
     externalReportDate:parsed.reportDate||l.externalReportDate||'', 
     externalReportLastImportedAt:serverTimestamp(),
     externalProcurementHistory:[...imported,{file:activePdfName,fileDigest:digest,code:p.externalCode,folio:p.folio,status:p.externalStatus,at:changeStamp,uid:auth.currentUser.uid,priceChanged:changePrice,warehouseFlag:stage==='warehouse',receiptQuantity:receive?receiveQty:0,previousFolio,previousExternalCode:previousCode,bindingCorrected,notes:'Importación aprobada artículo por artículo'}],
