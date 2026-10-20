@@ -264,7 +264,10 @@ function applyModalFilter(body){
    card.style.display=show?'':'none';
    nVisible+=show;
    const meta=card.querySelector('.request-stage-group-meta');
-   if(meta)meta.textContent=`${show} SKU visibles con los filtros combinados.`;
+   if(meta){
+    const value=`${show} SKU visibles con los filtros combinados.`;
+    if(meta.textContent!==value)meta.textContent=value;
+   }
   }else{
    const sku=card.querySelector('.request-line-meta')?.textContent?.split('·')[0]?.trim()||'';
    const yes=bySku.has(sku);
@@ -277,9 +280,10 @@ function applyModalFilter(body){
  }
  const label=`${visible.length} línea${visible.length===1?'':'s'} coinciden con búsqueda + etapa + requisición.`;
  const stageCounter=document.querySelector('#requestStageFilterCount');
- if(stageCounter)stageCounter.textContent=label;
+ if(stageCounter&&stageCounter.textContent!==label)stageCounter.textContent=label;
  const groupingCounter=document.querySelector('#requestDetailSearchCount');
- if(groupingCounter)groupingCounter.textContent=`${nVisible} coincidencia${nVisible===1?'':'s'} de ${detailLines.length}`;
+ const groupingValue=`${nVisible} coincidencia${nVisible===1?'':'s'} de ${detailLines.length}`;
+ if(groupingCounter&&groupingCounter.textContent!==groupingValue)groupingCounter.textContent=groupingValue;
 }
 function printCombinedFiltered(){
  const body=document.querySelector('#purchaseRequestDetailBody');
@@ -316,13 +320,29 @@ function prepareModal(requestId){
  void fetchLines(requestId).then(lines=>{
   if(id!==detailSeq)return;
   detailLines=lines;
-  const update=()=>{if(id!==detailSeq)return;modalMatchRows(body);};
-  update();let scheduled=false;
-  detailObserver=new MutationObserver(()=>{
-    if(scheduled)return;scheduled=true;
-    queueMicrotask(()=>{scheduled=false;update();});
+  // Otros módulos también escriben badges y contadores. Cada textContent
+  // genera eventos childList: observarlos sin filtrar causaba un ciclo infinito
+  // de microtareas y congelaba el navegador al abrir solicitudes grandes.
+  const update=()=>{
+   if(id!==detailSeq||!body.isConnected)return;
+   detailObserver?.disconnect(); // No observar nuestras propias modificaciones.
+   try{modalMatchRows(body);}
+   finally{if(id===detailSeq)detailObserver?.observe(body,{subtree:true,childList:true});}
+  };
+  let scheduled=false;
+  const structural=mutations=>mutations.some(m=>[...m.addedNodes,...m.removedNodes].some(node=>
+   node.nodeType===1&&(
+    node.matches?.('#requestGroupingToolbar,#requestGroupingContent,.request-line-row,.grouped-request-card')||
+    node.querySelector?.('#requestGroupingToolbar,#requestGroupingContent,.request-line-row,.grouped-request-card')
+   )
+  ));
+  detailObserver=new MutationObserver(mutations=>{
+   if(!structural(mutations)||scheduled)return;
+   scheduled=true;
+   // Coalescer reconstrucciones y ceder el hilo al navegador entre repintados.
+   setTimeout(()=>{scheduled=false;update();},35);
   });
-  detailObserver.observe(body,{subtree:true,childList:true});
+  update();
  }).catch(e=>console.warn('No se pudo consultar requisiciones de la SC:',e));
 }
 function installModalHook(){
