@@ -4,7 +4,7 @@
  * Requiere jsPDF 2.5.2 y JSZip 3.10.1 (cargados en compras.html).
  */
 import { auth, db } from "./firebase-app.js";
-import { apiFetch, getUserProfile, waitForUser } from "./common.js";
+import { apiFetch, fileViewUrl, getUserProfile, waitForUser } from "./common.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const ALLOWED = new Set(["admin", "supervisor"]);
@@ -66,13 +66,12 @@ function plain(value) {
 }
 
 async function loadCatalogFallback(lines) {
-  // Una sola ficha es suficientemente autónoma gracias al snapshot de la SC,
-  // pero se consultan datos vigentes si la SC no tiene foto, liga o descripción.
+  // Los datos de las SC son fotografías instantáneas del catálogo.
+  // SIEMPRE consultar la ficha vigente: una fotografía puede haberse reemplazado
+  // después de enviar la solicitud y su imageFileId anterior seguir presente.
+  // Sólo lectura; el número de consultas está limitado para evitar saturación.
   const catalog = new Map();
-  const ids = [...new Set(lines
-    .filter(line => !line.imageFileId || !validHttpUrl(line.purchaseUrl) || !line.descripcion || !line.nombre)
-    .map(line => text(line.itemId || line.id))
-    .filter(Boolean))];
+  const ids = [...new Set(lines.map(line => text(line.itemId || line.id)).filter(Boolean))];
   let index = 0;
   const workers = Array.from({ length: Math.min(6, ids.length) }, async () => {
     while (index < ids.length) {
@@ -108,8 +107,10 @@ function fichaData(request, line, catalog) {
     description: plain(line.descripcion || current.descripcion || "No se registró una descripción técnica."),
     purchaseUrl: validHttpUrl(line.purchaseUrl) || validHttpUrl(current.purchaseUrl),
     infoUrl: validHttpUrl(line.infoUrl) || validHttpUrl(current.infoUrl),
-    imageFileId: text(line.imageFileId || current.imageFileId),
-    imageFallbackId: text(current.imageFileId) !== text(line.imageFileId) ? text(current.imageFileId) : "",
+    // Preferir la imagen vigente del inventario; conservar el snapshot como
+    // segunda opción si el archivo actual no está accesible.
+    imageFileId: text(current.imageFileId || line.imageFileId),
+    imageFallbackId: text(line.imageFileId) && text(line.imageFileId) !== text(current.imageFileId) ? text(line.imageFileId) : "",
     quantity: requested,
     received: number(line.quantityReceived),
     cancelled: number(line.quantityCancelled),
@@ -123,40 +124,77 @@ function fichaData(request, line, catalog) {
   };
 }
 
+function imageMime(bytes, declared) {
+  // Algunas instalaciones de FastAPI devuelven la foto como octet-stream;
+  // comprobar su firma binaria antes de descartar un fichero válido.
+  const b = bytes;
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b.length >= 12 && String.fromCharCode(...b.slice(0,4)) === "RIFF" && String.fromCharCode(...b.slice(8,12)) === "WEBP") return "image/webp";
+  if (b.length >= 6 && String.fromCharCode(...b.slice(0,3)) === "GIF") return "image/gif";
+  const mime = String(declared || "").toLowerCase().split(";")[0].trim();
+  return ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime) ? mime : "";
+}
+
+async function canvasImageFromSource(src, { direct = false } = {}) {
+  const image = await new Promise((resolve, reject) => {
+    const element = new Image();
+    // Una imagen externa puede verse en <img> aunque no sea exportable a un PDF:
+    // solicitar CORS explícitamente antes de dibujarla en canvas.
+    if (direct) {
+      const origin = new URL(src, document.baseURI).origin;
+      if (origin !== location.origin) element.crossOrigin = "anonymous";
+    }
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error("No se pudo decodificar la fotografía."));
+    element.src = src;
+  });
+  const w = image.naturalWidth || image.width;
+  const h = image.naturalHeight || image.height;
+  if (!(w > 0 && h > 0)) throw new Error("La fotografía no tiene dimensiones válidas.");
+  const scale = Math.min(1, 1200 / w, 800 / h);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("El navegador no pudo preparar la fotografía.");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  // Integrar bytes JPEG dentro de cada PDF, NO enlaces temporales a imágenes.
+  return { url: canvas.toDataURL("image/jpeg", 0.83), width: canvas.width, height: canvas.height };
+}
+
+async function imageFromBackend(fileId) {
+  const response = await apiFetch(`/api/files/${encodeURIComponent(fileId)}/view`);
+  const blob = await response.blob();
+  const start = new Uint8Array(await blob.slice(0, 24).arrayBuffer());
+  const mime = imageMime(start, blob.type);
+  if (!mime) throw new Error(`Formato de imagen no compatible (${blob.type || "sin tipo"}).`);
+  const typed = new Blob([blob], { type: mime });
+  const tempUrl = URL.createObjectURL(typed);
+  try { return await canvasImageFromSource(tempUrl); }
+  finally { URL.revokeObjectURL(tempUrl); }
+}
+
 async function getImage(fileId, cache) {
   if (!fileId) return null;
   if (cache.has(fileId)) return cache.get(fileId);
   const promise = (async () => {
-    // El endpoint real de fotos usa el backend FastAPI del inventario;
-    // apiFetch agrega el token de Firebase cuando es necesario.
-    const result = await apiFetch(`/api/files/${encodeURIComponent(fileId)}/view`);
-    const blob = await result.blob();
-    if (!blob.type.startsWith("image/")) throw new Error("El archivo no es una imagen.");
-    const url = URL.createObjectURL(blob);
     try {
-      const image = await new Promise((resolve, reject) => {
-        const element = new Image();
-        element.onload = () => resolve(element);
-        element.onerror = () => reject(new Error("No se pudo decodificar la imagen."));
-        element.src = url;
-      });
-      const canvas = document.createElement("canvas");
-      const scale = Math.min(1, 1200 / image.naturalWidth, 800 / image.naturalHeight);
-      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("El navegador no pudo crear el lienzo de imagen.");
-      context.fillStyle = "white";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      return { url: canvas.toDataURL("image/jpeg", 0.83), width: canvas.width, height: canvas.height };
-    } finally {
-      URL.revokeObjectURL(url);
+      return await imageFromBackend(fileId);
+    } catch (primary) {
+      // Última vía: exactamente la URL que sí muestran las tarjetas de Compras.
+      // No se desactiva CORS ni se guarda una imagen que el navegador no autorice.
+      try {
+        return await canvasImageFromSource(fileViewUrl(fileId), { direct: true });
+      } catch (secondary) {
+        console.warn(`Fotografía no incorporada (id ${fileId}):`,
+          `API: ${primary.message}; imagen directa: ${secondary.message}`);
+        return null;
+      }
     }
-  })().catch(error => {
-    console.warn(`La fotografía ${fileId} no pudo integrarse:`, error);
-    return null;
-  });
+  })();
   cache.set(fileId, promise);
   return promise;
 }
@@ -343,13 +381,14 @@ async function downloadRequisitionSheets(event){
   const catalog=await loadCatalogFallback(lines);
   const zip=new window.JSZip(),photoCache=new Map();
   let missingLinks=0,missingPhotos=0;
+  const missingPhotoSkus=[];
   const reqNumber=text(group.folio||'SIN-NUMERO');
   for(let i=0;i<lines.length;i++){
    const line=lines[i],req={id:line.requestId,folio:line.requestFolio,alias:line.requestAlias};
    const ficha=fichaData(req,line,catalog);
    let photo=await getImage(ficha.imageFileId,photoCache);
    if(!photo&&ficha.imageFallbackId)photo=await getImage(ficha.imageFallbackId,photoCache);
-   if(!photo)missingPhotos++;
+   if(!photo){missingPhotos++;missingPhotoSkus.push(ficha.sku); }
    if(!ficha.purchaseUrl)missingLinks++;
    const bytes=buildPdf(ficha,photo);
    zip.file(`${safeFilename(reqNumber)}_${String(i+1).padStart(3,'0')}_${safeFilename(ficha.sku)}_${safeFilename(ficha.name).slice(0,32)}.pdf`,bytes);
@@ -361,7 +400,10 @@ async function downloadRequisitionSheets(event){
   const url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url;a.download=`REQUISICION_${safeFilename(reqNumber)}_FICHAS_INDIVIDUALES.zip`;
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
-  if(missingLinks||missingPhotos){alert(`Se generaron ${lines.length} fichas. Datos faltantes: ${missingLinks} ligas de compra y ${missingPhotos} fotografías.`);}
+  if(missingLinks||missingPhotos){
+    const examples = missingPhotoSkus.length ? `\nSin fotografía: ${missingPhotoSkus.slice(0,12).join(', ')}${missingPhotoSkus.length>12?'…':''}` : '';
+    alert(`Se generaron ${lines.length} fichas. Datos faltantes: ${missingLinks} ligas de compra y ${missingPhotos} fotografías.${examples}`);
+  }
  }catch(error){console.error('ZIP fichas de requisición:',error);alert('No se pudieron descargar las fichas: '+error.message);}
  finally{busy=false;busyButton(button,false);}
 }
