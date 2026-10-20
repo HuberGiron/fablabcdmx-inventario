@@ -160,7 +160,13 @@ async function getImage(fileId, cache) {
   if (!fileId) return null;
   if (cache.has(fileId)) return cache.get(fileId);
   const promise = (async () => {
-    const res = await apiFetch(`/api/files/${encodeURIComponent(fileId)}/view`);
+    // Evitar respuestas antiguas de cache que pueden carecer de encabezados
+    // CORS aunque la API actual ya autorice el origen. Es el mismo endpoint
+    // probado en Chrome con un parametro variable y cache: "no-store".
+    // No se anade ningun header extra que requiera permisos CORS nuevos.
+    const viewPath = `/api/files/${encodeURIComponent(fileId)}/view`;
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const res = await apiFetch(`${viewPath}?fichas=${unique}`, { cache: "no-store" });
     const blob = await res.blob();
     const signature = new Uint8Array(await blob.slice(0, 24).arrayBuffer());
     const mime = imageMime(signature, blob.type);
@@ -191,7 +197,11 @@ async function getImage(fileId, cache) {
     // HTML del inventario. Sólo funciona cuando el servidor permite leer los
     // píxeles en canvas (mismo origen o CORS habilitado).
     try {
-      const src = fileViewUrl(fileId);
+      // Tambien evitar el cache del navegador para la via de respaldo.
+      const originalSrc = fileViewUrl(fileId);
+      const srcUrl = new URL(originalSrc, document.baseURI);
+      srcUrl.searchParams.set('fichas', `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      const src = srcUrl.href;
       const image = await new Promise((resolve, reject) => {
         const element = new Image();
         if (new URL(src, document.baseURI).origin !== location.origin) element.crossOrigin = "anonymous";
@@ -208,7 +218,7 @@ async function getImage(fileId, cache) {
       ctx.drawImage(image,0,0,canvas.width,canvas.height);
       return {url:canvas.toDataURL("image/jpeg",0.83),width:canvas.width,height:canvas.height};
     } catch (fallbackError) {
-      console.warn(`No se pudo integrar fotografía ID ${fileId}:`, error, fallbackError);
+      console.warn(`No se pudo integrar fotografía ID ${fileId} tras omitir caché:`, error, fallbackError);
       return null;
     }
   });
