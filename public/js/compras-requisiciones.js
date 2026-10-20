@@ -430,18 +430,10 @@ function injectLauncher(){
   container.append(box);
  }
  box.classList.add('d-flex','flex-wrap','align-items-center','gap-2');
- const actions=[
-  ['iberoProcurementImportLauncherHero','Importar PDF Compras','btn btn-primary'],
-  ['iberoDeliveryBoardLauncherHero','Fechas de entrega','btn btn-outline-secondary'],
-  ['iberoFollowupOpenHero','Seguimiento de estados','btn btn-outline-dark']
- ];
- for(const [id,title,classes] of actions){
-  if(document.getElementById(id))continue;
-  const button=document.createElement('button');
-  button.id=id;button.type='button';button.className=classes;
-  button.textContent=title;
-  button.setAttribute('aria-label',title);
-  box.append(button);
+ // Los accesos a importación, fechas y seguimiento se muestran únicamente
+ // dentro del panel Requisiciones (organizados por el módulo de avance).
+ for(const id of ['iberoProcurementImportLauncherHero','iberoDeliveryBoardLauncherHero','iberoFollowupOpenHero']){
+   document.getElementById(id)?.remove();
  }
 }
 function stop(e){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();}
@@ -455,19 +447,6 @@ function capture(e){const t=e.target;if(!(t instanceof Element))return;
 function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
  // Los botones del encabezado reutilizan los mismos flujos comprobados
  // que los botones originales en el panel lateral.
- const bridge=[
-  ['#iberoProcurementImportLauncherHero','#iberoProcurementImportLauncher','importación PDF'],
-  ['#iberoDeliveryBoardLauncherHero','#iberoDeliveryBoardLauncher','tablero de fechas'],
-  ['#iberoFollowupOpenHero','#iberoFollowupOpen','seguimiento institucional']
- ];
- for(const [hero,original,description] of bridge){
-  if(t.closest(hero)){
-   const target=document.querySelector(original);
-   if(target){target.click();}
-   else alert(`No se inició el módulo de ${description}. Revisa que todos los archivos JS de la actualización estén en public/js/ y consulta la consola del navegador (F12).`);
-   return;
-  }
- }
  if(t.closest('#iberoRequisitionIndividualSave'))void saveIndividual();
  else if(t.closest('#iberoRequisitionEditorSave'))void saveEditor();
  else if(t.closest('#iberoRequisitionEditButton')){const id=document.querySelector('#purchaseRequestDetailPdf')?.dataset.requestId;if(id)void openEditor(id);}
