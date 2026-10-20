@@ -5,7 +5,7 @@
  */
 import { auth, db } from "./firebase-app.js";
 import { apiFetch, fileViewUrl, getUserProfile, waitForUser } from "./common.js";
-import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import { doc, getDoc, getDocs, query, collection, where, limit } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const ALLOWED = new Set(["admin", "supervisor"]);
 const RED = [199, 16, 46];
@@ -66,12 +66,13 @@ function plain(value) {
 }
 
 async function loadCatalogFallback(lines) {
-  // Los datos de las SC son fotografías instantáneas del catálogo.
-  // SIEMPRE consultar la ficha vigente: una fotografía puede haberse reemplazado
-  // después de enviar la solicitud y su imageFileId anterior seguir presente.
-  // Sólo lectura; el número de consultas está limitado para evitar saturación.
+  // IMPORTANTE: reproducir la misma política que Fichas ZIP de SC, que sí
+  // incorpora fotografías. El snapshot de la solicitud es la primera fuente.
   const catalog = new Map();
-  const ids = [...new Set(lines.map(line => text(line.itemId || line.id)).filter(Boolean))];
+  const linesToLookup = lines.filter(line =>
+    !text(line.imageFileId) || !validHttpUrl(line.purchaseUrl) || !line.descripcion || !line.nombre
+  );
+  const ids = [...new Set(linesToLookup.map(line => text(line.itemId || line.id)).filter(Boolean))];
   let index = 0;
   const workers = Array.from({ length: Math.min(6, ids.length) }, async () => {
     while (index < ids.length) {
@@ -86,6 +87,22 @@ async function loadCatalogFallback(lines) {
   });
   await Promise.all(workers);
   return catalog;
+}
+
+// Recuperación excepcional cuando una SC histórica guarda un ID antiguo de
+// artículo, pero el SKU sí existe en el catálogo. Sólo lectura, sin escribir.
+async function catalogBySku(line, catalog, bySkuCache) {
+  const sku = text(line.sku);
+  if (!sku) return null;
+  if (!bySkuCache.has(sku)) {
+    bySkuCache.set(sku, (async () => {
+      const result = await getDocs(query(collection(db, "items"), where("sku", "==", sku), limit(2)));
+      if (result.empty) return null;
+      if (result.size > 1) throw new Error(`SKU duplicado en catálogo: ${sku}`);
+      return result.docs[0].data();
+    })().catch(error => { console.warn(`No se pudo resolver la foto por SKU ${sku}:`, error); return null; }));
+  }
+  return await bySkuCache.get(sku);
 }
 
 function fichaData(request, line, catalog) {
@@ -109,8 +126,9 @@ function fichaData(request, line, catalog) {
     infoUrl: validHttpUrl(line.infoUrl) || validHttpUrl(current.infoUrl),
     // Preferir la imagen vigente del inventario; conservar el snapshot como
     // segunda opción si el archivo actual no está accesible.
-    imageFileId: text(current.imageFileId || line.imageFileId),
-    imageFallbackId: text(line.imageFileId) && text(line.imageFileId) !== text(current.imageFileId) ? text(line.imageFileId) : "",
+    // Prioridad idéntica a Fichas ZIP de SC: snapshot original -> catálogo.
+    imageFileId: text(line.imageFileId || current.imageFileId),
+    imageFallbackId: text(current.imageFileId) && text(current.imageFileId) !== text(line.imageFileId) ? text(current.imageFileId) : "",
     quantity: requested,
     received: number(line.quantityReceived),
     cancelled: number(line.quantityCancelled),
@@ -136,65 +154,64 @@ function imageMime(bytes, declared) {
   return ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime) ? mime : "";
 }
 
-async function canvasImageFromSource(src, { direct = false } = {}) {
-  const image = await new Promise((resolve, reject) => {
-    const element = new Image();
-    // Una imagen externa puede verse en <img> aunque no sea exportable a un PDF:
-    // solicitar CORS explícitamente antes de dibujarla en canvas.
-    if (direct) {
-      const origin = new URL(src, document.baseURI).origin;
-      if (origin !== location.origin) element.crossOrigin = "anonymous";
-    }
-    element.onload = () => resolve(element);
-    element.onerror = () => reject(new Error("No se pudo decodificar la fotografía."));
-    element.src = src;
-  });
-  const w = image.naturalWidth || image.width;
-  const h = image.naturalHeight || image.height;
-  if (!(w > 0 && h > 0)) throw new Error("La fotografía no tiene dimensiones válidas.");
-  const scale = Math.min(1, 1200 / w, 800 / h);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(w * scale));
-  canvas.height = Math.max(1, Math.round(h * scale));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("El navegador no pudo preparar la fotografía.");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-  // Integrar bytes JPEG dentro de cada PDF, NO enlaces temporales a imágenes.
-  return { url: canvas.toDataURL("image/jpeg", 0.83), width: canvas.width, height: canvas.height };
-}
-
-async function imageFromBackend(fileId) {
-  const response = await apiFetch(`/api/files/${encodeURIComponent(fileId)}/view`);
-  const blob = await response.blob();
-  const start = new Uint8Array(await blob.slice(0, 24).arrayBuffer());
-  const mime = imageMime(start, blob.type);
-  if (!mime) throw new Error(`Formato de imagen no compatible (${blob.type || "sin tipo"}).`);
-  const typed = new Blob([blob], { type: mime });
-  const tempUrl = URL.createObjectURL(typed);
-  try { return await canvasImageFromSource(tempUrl); }
-  finally { URL.revokeObjectURL(tempUrl); }
-}
-
+// Método de descarga, decodificación y JPEG tomado del generador probado de
+// Solicitudes de compra; conservamos además la detección de tipos genéricos.
 async function getImage(fileId, cache) {
   if (!fileId) return null;
   if (cache.has(fileId)) return cache.get(fileId);
   const promise = (async () => {
+    const res = await apiFetch(`/api/files/${encodeURIComponent(fileId)}/view`);
+    const blob = await res.blob();
+    const signature = new Uint8Array(await blob.slice(0, 24).arrayBuffer());
+    const mime = imageMime(signature, blob.type);
+    if (!mime) throw new Error(`El archivo no es una imagen compatible (${blob.type || "sin tipo"}).`);
+    const url = URL.createObjectURL(new Blob([blob], {type: mime}));
     try {
-      return await imageFromBackend(fileId);
-    } catch (primary) {
-      // Última vía: exactamente la URL que sí muestran las tarjetas de Compras.
-      // No se desactiva CORS ni se guarda una imagen que el navegador no autorice.
-      try {
-        return await canvasImageFromSource(fileViewUrl(fileId), { direct: true });
-      } catch (secondary) {
-        console.warn(`Fotografía no incorporada (id ${fileId}):`,
-          `API: ${primary.message}; imagen directa: ${secondary.message}`);
-        return null;
-      }
+      const img = await new Promise((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error("No se pudo decodificar la imagen."));
+        element.src = url;
+      });
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(1, 1200 / img.naturalWidth, 800 / img.naturalHeight);
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("El navegador no pudo crear el lienzo de imagen.");
+      context.fillStyle = "white";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return {url: canvas.toDataURL("image/jpeg", 0.83), width:canvas.width, height:canvas.height};
+    } finally {
+      URL.revokeObjectURL(url);
     }
-  })();
+  })().catch(async error => {
+    // Respaldo de la versión anterior: la misma dirección usada por la tarjeta
+    // HTML del inventario. Sólo funciona cuando el servidor permite leer los
+    // píxeles en canvas (mismo origen o CORS habilitado).
+    try {
+      const src = fileViewUrl(fileId);
+      const image = await new Promise((resolve, reject) => {
+        const element = new Image();
+        if (new URL(src, document.baseURI).origin !== location.origin) element.crossOrigin = "anonymous";
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error("El enlace de imagen no pudo cargarse."));
+        element.src = src;
+      });
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(1,1200/image.naturalWidth,800/image.naturalHeight);
+      canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));
+      canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));
+      const ctx=canvas.getContext("2d");
+      ctx.fillStyle="white";ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(image,0,0,canvas.width,canvas.height);
+      return {url:canvas.toDataURL("image/jpeg",0.83),width:canvas.width,height:canvas.height};
+    } catch (fallbackError) {
+      console.warn(`No se pudo integrar fotografía ID ${fileId}:`, error, fallbackError);
+      return null;
+    }
+  });
   cache.set(fileId, promise);
   return promise;
 }
@@ -379,15 +396,21 @@ async function downloadRequisitionSheets(event){
  try{
   const lines=[...group.lines].sort((a,b)=>String(a.sku||'').localeCompare(String(b.sku||''),'es',{numeric:true}));
   const catalog=await loadCatalogFallback(lines);
-  const zip=new window.JSZip(),photoCache=new Map();
+  const zip=new window.JSZip(),photoCache=new Map(),bySkuCache=new Map();
   let missingLinks=0,missingPhotos=0;
   const missingPhotoSkus=[];
   const reqNumber=text(group.folio||'SIN-NUMERO');
   for(let i=0;i<lines.length;i++){
    const line=lines[i],req={id:line.requestId,folio:line.requestFolio,alias:line.requestAlias};
    const ficha=fichaData(req,line,catalog);
+   // Las primeras dos rutas SON las mismas que usa Fichas ZIP de SC.
    let photo=await getImage(ficha.imageFileId,photoCache);
    if(!photo&&ficha.imageFallbackId)photo=await getImage(ficha.imageFallbackId,photoCache);
+   // Sólo para SC antiguas sin imagen funcional: resolver ID vigente por SKU.
+   if(!photo){
+     const current = await catalogBySku(line,catalog,bySkuCache);
+     if(current?.imageFileId)photo=await getImage(text(current.imageFileId),photoCache);
+   }
    if(!photo){missingPhotos++;missingPhotoSkus.push(ficha.sku); }
    if(!ficha.purchaseUrl)missingLinks++;
    const bytes=buildPdf(ficha,photo);
@@ -402,7 +425,7 @@ async function downloadRequisitionSheets(event){
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
   if(missingLinks||missingPhotos){
     const examples = missingPhotoSkus.length ? `\nSin fotografía: ${missingPhotoSkus.slice(0,12).join(', ')}${missingPhotoSkus.length>12?'…':''}` : '';
-    alert(`Se generaron ${lines.length} fichas. Datos faltantes: ${missingLinks} ligas de compra y ${missingPhotos} fotografías.${examples}`);
+    alert(`Se generaron ${lines.length} fichas. Datos faltantes: ${missingLinks} ligas de compra y ${missingPhotos} fotografías.\nLas fotos no disponibles pueden deberse a ausencia de imageFileId o error de acceso; revisa la consola del navegador.${examples}`);
   }
  }catch(error){console.error('ZIP fichas de requisición:',error);alert('No se pudieron descargar las fichas: '+error.message);}
  finally{busy=false;busyButton(button,false);}
