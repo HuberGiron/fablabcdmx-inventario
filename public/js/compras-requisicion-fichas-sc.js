@@ -211,14 +211,104 @@ function modalMatchRows(body){
  applyModalFilter(body);
  return touched;
 }
+// Los tres filtros de SC (texto, etapa y número de requisición) deben usar
+// LA MISMA lista de líneas. El módulo original de etapas sólo busca nombre/SKU:
+// si se busca un folio, imprime cero aunque las tarjetas sí coincidan.
+function selectedModalStages(){
+ const checks=[...document.querySelectorAll('#requestStageFilterGroup .request-stage-filter-check')];
+ return checks.length?new Set(checks.filter(c=>c.checked).map(c=>c.value)):new Set(['ordered','requisition','received','cancelled']);
+}
+function matchesStage(line,selected){
+ if(!line||!selected.size)return false;
+ const req=number(line.quantityRequested),got=number(line.quantityReceived),cancel=number(line.quantityCancelled);
+ const pending=Math.max(0,req-got-cancel);
+ return Boolean((pending>0&&line.requisitionStatus==='requisitioned'&&selected.has('requisition'))
+  ||(pending>0&&line.requisitionStatus!=='requisitioned'&&selected.has('ordered'))
+  ||(got>0&&selected.has('received'))||(cancel>0&&selected.has('cancelled')));
+}
+function matchesText(line,tokens){
+ if(!tokens.length)return true;
+ const haystack=simple([line.sku,line.nombre,line.descripcion,line.requisitionNumber,line.externalRequisitionNumber,
+  line.externalReportedStatus,line.externalProcurementItemCode,line.externalPurchaseOrderNumber,
+  line.zoneId,line.zoneName,line.subzoneId,line.subzoneName,line.locationName,line.locationCode].filter(Boolean).join(' '));
+ return tokens.every(token=>haystack.includes(token));
+}
+function visibleDetailLines(body){
+ const chosen=body.querySelector('#iberoScReqFilter')?.value||body.dataset.iberoReqSelected||'';
+ const stages=selectedModalStages();
+ const tokens=simple(document.querySelector('#requestDetailSearch')?.value||'').split(/\s+/).filter(Boolean);
+ return detailLines.filter(line=>(!chosen||folio(line)===chosen)&&matchesStage(line,stages)&&matchesText(line,tokens));
+}
+function groupedSku(tr){
+ return tr.querySelector('td:first-child strong')?.textContent?.trim()
+   ||tr.querySelector('td:first-child')?.childNodes?.[0]?.textContent?.trim()||'';
+}
 function applyModalFilter(body){
- const selected=body.querySelector('#iberoScReqFilter')?.value||body.dataset.iberoReqSelected||'';
- body.querySelectorAll('.request-line-row').forEach(card=>{
-   const refs=(card.dataset.iberoReqNums||'').split('|');card.style.display=selected&&!refs.includes(selected)?'none':'';
- });
- body.querySelectorAll('.grouped-breakdown-table tbody tr').forEach(tr=>{
-   const refs=(tr.dataset.iberoReqNums||'').split('|');tr.style.display=selected&&!refs.includes(selected)?'none':'';
- });
+ if(!body||!detailLines.length)return;
+ const visible=visibleDetailLines(body);
+ const bySku=new Set(visible.map(l=>String(l.sku||'').trim()));
+ let nVisible=0;
+ for(const card of body.querySelectorAll('.request-line-row')){
+  if(card.classList.contains('grouped-request-card')){
+   let show=0;
+   for(const tr of card.querySelectorAll('.grouped-breakdown-table tbody tr')){
+    const yes=bySku.has(groupedSku(tr));
+    tr.classList.toggle('request-stage-row-hidden',!yes);
+    tr.hidden=!yes;
+    tr.style.display=yes?'':'none';
+    if(yes)show++;
+   }
+   card.classList.toggle('request-stage-hidden',!show);
+   card.classList.toggle('d-none',!show);
+   card.hidden=!show;
+   card.style.display=show?'':'none';
+   nVisible+=show;
+   const meta=card.querySelector('.request-stage-group-meta');
+   if(meta)meta.textContent=`${show} SKU visibles con los filtros combinados.`;
+  }else{
+   const sku=card.querySelector('.request-line-meta')?.textContent?.split('·')[0]?.trim()||'';
+   const yes=bySku.has(sku);
+   card.classList.toggle('request-stage-hidden',!yes);
+   card.classList.toggle('d-none',!yes);
+   card.hidden=!yes;
+   card.style.display=yes?'':'none';
+   if(yes)nVisible++;
+  }
+ }
+ const label=`${visible.length} línea${visible.length===1?'':'s'} coinciden con búsqueda + etapa + requisición.`;
+ const stageCounter=document.querySelector('#requestStageFilterCount');
+ if(stageCounter)stageCounter.textContent=label;
+ const groupingCounter=document.querySelector('#requestDetailSearchCount');
+ if(groupingCounter)groupingCounter.textContent=`${nVisible} coincidencia${nVisible===1?'':'s'} de ${detailLines.length}`;
+}
+function printCombinedFiltered(){
+ const body=document.querySelector('#purchaseRequestDetailBody');
+ if(!body||!detailLines.length){alert('Abre una SC y espera a que terminen de cargarse los artículos.');return;}
+ const lines=visibleDetailLines(body);
+ if(!lines.length){alert('No hay artículos que coincidan con los filtros seleccionados.');return;}
+ const popup=window.open('','_blank');if(!popup){alert('Permite ventanas emergentes para imprimir el listado.');return;}
+ const req=body.querySelector('#iberoScReqFilter')?.value||'Todas';
+ const selected=[...document.querySelectorAll('#requestStageFilterGroup .request-stage-filter-check:checked')].map(x=>x.parentElement?.textContent?.trim()).filter(Boolean).join(', ');
+ const request=document.querySelector('#purchaseRequestDetailTitle')?.textContent?.trim()||'Solicitud';
+ const amount=(n,c)=>{try{return new Intl.NumberFormat('es-MX',{style:'currency',currency:c||'MXN'}).format(number(n));}catch{return number(n).toFixed(2)+' '+(c||'MXN');}};
+ const rows=lines.map(l=>{
+  const wanted=number(l.quantityRequested),received=number(l.quantityReceived),cancel=number(l.quantityCancelled),out=Math.max(0,wanted-received-cancel);
+  const unit=number(l.requisitionUnitCost??l.unitPrice),spent=Object.hasOwn(l,'actualCostTotal')?number(l.actualCostTotal):received*number(l.lastActualUnitCost??l.unitPrice);
+  return `<tr><td>${esc(l.sku)}</td><td><strong>${esc(l.nombre)}</strong><div class="muted">${esc(l.zoneName||'')} · ${esc(l.subzoneName||'')} · ${esc(l.locationName||'')}</div></td>
+  <td>${esc(folio(l)||'Sin folio')}</td><td>${esc(l.externalReportedStatus|| (l.requisitionStatus==='requisitioned'?'En requisición':'Solicitado'))}</td>
+  <td class="num">${wanted}</td><td class="num">${received}</td><td class="num">${cancel}</td><td class="num">${out}</td>
+  <td class="num">${esc(amount(unit,l.currency))}</td><td class="num">${esc(amount(spent,l.currency))}</td><td class="num">${esc(amount(out*unit,l.currency))}</td></tr>`;
+ }).join('');
+ popup.document.open();popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(request)} · Filtrados</title><style>
+ @page{size:A4 landscape;margin:10mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}body{font:10pt Arial,sans-serif;color:#202327;margin:0}
+ header{border-bottom:3px solid #c8102e;padding:8px 0 10px;margin-bottom:14px}h1{font-size:20pt;margin:3px 0}.small,.muted{color:#637080;font-size:8pt}table{width:100%;border-collapse:collapse;font-size:8pt}
+ th,td{padding:6px 5px;border-bottom:1px solid #d7dce3;text-align:left;vertical-align:top}th{background:#f1f3f7}.num{text-align:right;white-space:nowrap}.tools{text-align:right;margin:6px 0 15px}
+ @media print{.tools{display:none}}</style></head><body><div class="tools"><button onclick="window.print()">Imprimir / Guardar PDF</button><button onclick="window.close()">Cerrar</button></div>
+ <header><div class="small">UNIVERSIDAD IBEROAMERICANA CIUDAD DE MÉXICO · FABLAB</div><h1>${esc(request)} · Listado filtrado</h1>
+ <div class="small">${lines.length} artículos · Requisición: ${esc(req)} · Etapas: ${esc(selected||'Todas')} · Búsqueda: ${esc(document.querySelector('#requestDetailSearch')?.value||'Sin búsqueda')}</div></header>
+ <table><thead><tr><th>SKU</th><th>Producto / Área</th><th>Requisición</th><th>Etapa</th><th>Solic.</th><th>Rec.</th><th>Cancel.</th><th>Pend.</th><th>Costo unit.</th><th>Gasto recibido</th><th>Compromiso</th></tr></thead><tbody>${rows}</tbody></table>
+ <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));<\/script></body></html>`);
+ popup.document.close();
 }
 function prepareModal(requestId){
  const id=++detailSeq;detailRequest=requestId;detailObserver?.disconnect();
@@ -236,6 +326,19 @@ function prepareModal(requestId){
  }).catch(e=>console.warn('No se pudo consultar requisiciones de la SC:',e));
 }
 function installModalHook(){
+ // El botón original imprime según un buscador que no reconoce folios.
+ // Capturamos el clic ANTES de su manejador y usamos el mismo conjunto visible.
+ document.addEventListener('click',e=>{
+   if(!e.target?.closest?.('#requestPrintFiltered'))return;
+   e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();printCombinedFiltered();
+ },true);
+ const refilter=()=>window.setTimeout(()=>{
+   const body=document.querySelector('#purchaseRequestDetailBody');
+   if(body&&detailLines.length)applyModalFilter(body);
+ },45);
+ document.addEventListener('input',e=>{if(e.target?.matches?.('#requestDetailSearch'))refilter();});
+ document.addEventListener('change',e=>{if(e.target?.matches?.('#requestStageFilterGroup .request-stage-filter-check'))refilter();});
+ document.addEventListener('click',e=>{if(e.target?.closest?.('#requestStageSelectAll,.request-view-mode'))refilter();});
  document.addEventListener('purchase-request-detail-rendered',e=>{
    const id=String(e.detail?.requestId||'');if(id){prepared.delete(id);prepareModal(id);}
  });

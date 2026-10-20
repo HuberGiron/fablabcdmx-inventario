@@ -283,7 +283,7 @@ function groupHtml(g){
  const tone=shown.some(warehouseReady)?'warehouse':shown.some(l=>pending(l)>0)?'requisition':shown.some(l=>q(l.quantityReceived)>0)?'received':'cancelled';
  const groupTone=`req-group-${tone}`;
  return `<details class="req-report-card ${groupTone}" data-group-key="${esc(g.key)}" data-search="${esc([g.folio,...shown.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
- <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''} <button type="button" class="btn btn-outline-danger btn-sm req-pdf-extended" data-group-key="${esc(g.key)}" title="Imprimir las fichas completas de esta requisición">PDF extendido</button></summary>
+ <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''} <button type="button" class="btn btn-outline-danger btn-sm req-pdf-extended" data-group-key="${esc(g.key)}" title="Imprimir las fichas completas de esta requisición">PDF extendido</button> <button type="button" class="btn btn-outline-primary btn-sm req-zip-individual" data-group-key="${esc(g.key)}" title="Descargar un PDF independiente por producto, con foto y liga de compra">Fichas ZIP</button></summary>
  <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
  <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
  ${shown.map(l=>{const t=amounts(l),color=stateTone(l),ready=warehouseReady(l),allowToggle=admin()&&t.pending>0;
@@ -473,6 +473,13 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
  else if(t.closest('#iberoRequisitionEditButton')){const id=document.querySelector('#purchaseRequestDetailPdf')?.dataset.requestId;if(id)void openEditor(id);}
  else if(t.closest('#iberoRequisitionRefresh'))void loadPanel();
  else if(t.closest('.req-pdf-extended')){e.preventDefault();e.stopPropagation();printRequisitionExtendedPdf(t.closest('.req-pdf-extended').dataset.groupKey);}
+ else if(t.closest('.req-zip-individual')){
+   e.preventDefault();e.stopPropagation();
+   const button=t.closest('.req-zip-individual'),groupKey=button.dataset.groupKey;
+   const group=groupRequisitions(lastBundles).find(g=>g.key===groupKey);
+   if(!group){alert('No se encontró la requisición. Pulsa «Actualizar» y vuelve a intentarlo.');return;}
+   document.dispatchEvent(new CustomEvent('ibero:requisition-sheets',{detail:{group,button}}));
+ }
  else if(t.closest('#iberoRequisitionPrintWarehouse'))printWarehouseReport();
  else if(t.closest('#iberoRequisitionSelectAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-row:not([hidden]) .req-edit-select').forEach(x=>x.checked=true);
  else if(t.closest('#iberoRequisitionClearAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-select').forEach(x=>x.checked=false);
