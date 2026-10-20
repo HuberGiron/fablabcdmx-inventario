@@ -3,7 +3,7 @@
    Requiere los módulos de compras cargados previamente desde compras.html.
    Ninguna escritura cambia stock, cantidades recibidas o gasto real histórico. */
 import { auth,db } from './firebase-app.js';
-import { getUserProfile,waitForUser } from './common.js';
+import { getUserProfile,waitForUser,fileViewUrl } from './common.js';
 import { collection,doc,getDoc,getDocFromServer,getDocsFromServer,runTransaction,serverTimestamp,updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import { n,q,pending,folioKey,cleanFolio,amounts,stage,groupRequisitions,warehouseReady,stateTone,sortRequisitionGroups } from './compras-requisitions-model.js?v=20261017d';
 
@@ -93,6 +93,7 @@ function ensureStyle(){if(document.getElementById('iberoRequisitionFolioStyles')
   .req-report-summary>span{border:1px solid #d9dee3;background:#f8f9fa;padding:.35rem .65rem;border-radius:.5rem}
   .req-report-card{border:1px solid #d8dde3;border-left:5px solid #0d6efd;border-radius:.6rem;padding:1rem;margin:.8rem 0}
   .req-report-card summary{cursor:pointer;font-size:1.05rem;font-weight:650}
+  .req-pdf-extended{margin-left:1rem;white-space:nowrap;vertical-align:middle;font-size:.82rem;}
   .req-report-card .table{font-size:.87rem}
   .req-folio-inline{border:1px solid #b6d4fe;background:#eff6ff;padding:.7rem;border-radius:.5rem;margin:.6rem 0}
   .req-number-input{max-width:540px}
@@ -282,7 +283,7 @@ function groupHtml(g){
  const tone=shown.some(warehouseReady)?'warehouse':shown.some(l=>pending(l)>0)?'requisition':shown.some(l=>q(l.quantityReceived)>0)?'received':'cancelled';
  const groupTone=`req-group-${tone}`;
  return `<details class="req-report-card ${groupTone}" data-group-key="${esc(g.key)}" data-search="${esc([g.folio,...shown.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
- <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''}</summary>
+ <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''} <button type="button" class="btn btn-outline-danger btn-sm req-pdf-extended" data-group-key="${esc(g.key)}" title="Imprimir las fichas completas de esta requisición">PDF extendido</button></summary>
  <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
  <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
  ${shown.map(l=>{const t=amounts(l),color=stateTone(l),ready=warehouseReady(l),allowToggle=admin()&&t.pending>0;
@@ -364,6 +365,51 @@ function printWarehouseReport(){
    popup.document.close();
  })().catch(e=>{console.error(e);popup.document.open();popup.document.write(`<p>No se pudo generar el reporte: ${esc(e.message)}</p>`);popup.document.close();});
 }
+// Documento A4 apaisado con fichas individuales, por FOLIO DE REQUISICIÓN.
+// Se vuelve a consultar Firestore justo al imprimir; no se usa el caché del panel.
+function reportReqCard(l){
+ const a=amounts(l), curr=a.currency, image=l.imageFileId?fileViewUrl(l.imageFileId):'assets/placeholder.svg';
+ const entered=String(l.externalReportedStatus||'').trim(), date=deliveryText(l.externalExpectedDeliveryDate);
+ const badge=warehouseReady(l)?'En almacén':a.pending>0?'En requisición':a.received>0?'Recibido':'Cancelado';
+ const badgeTone=warehouseReady(l)?'warehouse':a.pending>0?'requisition':a.received>0?'received':'cancelled';
+ const unitPrice=Math.max(0,n(l.requisitionUnitCost??l.unitPrice));
+ const initial=l.originalUnitPrice!=null&&Math.abs(n(l.originalUnitPrice)-unitPrice)>.01?`<span><b>Precio estimado inicial:</b> ${esc(money(l.originalUnitPrice,curr))}</span>`:'';
+ const links=[['Información',l.infoUrl],['Liga de compra',l.purchaseUrl]].filter(([,url])=>/^https?:\/\//i.test(String(url||''))).map(([label,url])=>`<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`).join('');
+ return `<article class="req-report-item ${badgeTone}">
+  <div class="req-report-photo"><img src="${esc(image)}" alt="Foto ${esc(l.nombre||l.sku||'producto')}" onerror="this.src='assets/placeholder.svg'"></div>
+  <div class="req-report-body">
+    <div class="req-report-top"><div><h2>${esc(l.nombre||l.sku||'Artículo')}</h2><div class="small">SKU ${esc(l.sku||'—')} · ${esc(l.tipo||'')} · <b>${esc(l.requestFolio||'SC')}</b>${l.requestAlias?` · ${esc(l.requestAlias)}`:''}</div></div><span class="state-pill ${badgeTone}">${esc(badge)}</span></div>
+    <div class="req-report-proc"><span><b>Requisición:</b> ${esc(l.requisitionNumber||'Sin número asignado')}</span><span><b>Estado de Compras:</b> ${esc(entered||'Sin reporte institucional')}</span><span><b>Entrega estimada:</b> ${esc(date)}</span>${l.externalPurchaseOrderNumber?`<span><b>Orden de compra:</b> ${esc(l.externalPurchaseOrderNumber)}</span>`:''}</div>
+    <div class="req-report-finance"><span><b>Costo unitario actualizado:</b> ${esc(money(unitPrice,curr))}</span>${initial}<span><b>Subtotal solicitado vigente:</b> ${esc(money(a.requested*unitPrice,curr))}</span><span><b>Gasto real recibido:</b> ${esc(money(a.spent,curr))}</span><span><b>Compromiso pendiente:</b> ${esc(money(a.committed,curr))}</span></div>
+    <div class="req-report-area"><b>Zona:</b> ${esc(l.zoneName||l.zoneId||'—')} · <b>Subzona:</b> ${esc(l.subzoneName||l.subzoneId||'—')} · <b>Área:</b> ${esc([l.locationCode,l.locationName].filter(Boolean).join(' ')||'—')}</div>
+    ${l.descripcion?`<p>${esc(l.descripcion)}</p>`:''}
+    ${links?`<div class="req-report-links">${links}</div>`:''}
+    <div class="req-report-stock">Solicitado: <b>${a.requested}</b> · Recibido: <b>${a.received}</b> · Cancelado: <b>${a.cancelled}</b> · Pendiente: <b>${a.pending}</b></div>
+  </div></article>`;
+}
+function reportReqHtml(group){
+ const lines=group.lines, folio=group.folio||'Sin número asignado', currencies=currencySummary(lines);
+ const pieces=lines.reduce((s,l)=>s+amounts(l).requested,0),related=[...new Set(lines.map(l=>l.requestFolio||l.requestId))];
+ const tiles=[...currencies.entries()].map(([currency,v])=>`<div class="req-total"><span>Gasto real · ${esc(currency)}</span><strong>${esc(money(v.spent,currency))}</strong><span>Compromiso: ${esc(money(v.committed,currency))}</span><span>Total utilizado: ${esc(money(v.used,currency))}</span></div>`).join('');
+ return `<!doctype html><html lang="es"><head><meta charset="utf-8"><base href="${esc(document.baseURI)}"><title>Requisición ${esc(folio)} · PDF extendido</title>
+ <style>
+ @page{size:A4 landscape;margin:9mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}body{font-family:Arial,sans-serif;color:#191919;background:#fff;margin:0}
+ .toolbar{text-align:right;padding:8px;border-bottom:1px solid #ccc}.toolbar button{margin-left:8px;padding:6px 12px}.kicker{color:#c8102e;font-weight:700;font-size:9pt;text-transform:uppercase}header{border-bottom:3px solid #c8102e;padding-bottom:9px;margin:6px 0 12px}h1{margin:4px 0;font-size:23pt}header .small{color:#555;font-size:9pt}
+ .req-report-totals{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}.req-total{min-width:180px;flex:1;border:1px solid #ccc;padding:9px;border-radius:5px}.req-total span{display:block;font-size:9pt;color:#525c66}.req-total strong{display:block;font-size:13pt;margin:5px 0;color:#171717}
+ .req-report-item{display:grid;grid-template-columns:42mm minmax(0,1fr);border:1.5px solid #d2d8df;border-left:6px solid #0d6efd;border-radius:5px;margin:0 0 13px;page-break-inside:avoid;break-inside:avoid;overflow:hidden}.req-report-item.warehouse{border-left-color:#d35400;background:#fff9f4}.req-report-item.received{border-left-color:#198754;background:#f4fcf8}.req-report-item.cancelled{border-left-color:#6c757d}.req-report-photo{border-right:1px solid #eee;padding:10px;display:flex;justify-content:center;align-items:center}.req-report-photo img{max-width:100%;max-height:46mm;object-fit:contain}.req-report-body{padding:10px}.req-report-top{display:flex;justify-content:space-between;gap:9px}.req-report-top h2{font-size:14pt;margin:0 0 4px}.req-report-top .small{color:#666;font-size:8pt}.state-pill{border-radius:20px;font-size:8pt;font-weight:700;color:white;background:#0d6efd;padding:5px 10px;white-space:nowrap;height:max-content}.state-pill.warehouse{background:#d35400}.state-pill.received{background:#198754}.state-pill.cancelled{background:#6c757d}
+ .req-report-proc,.req-report-finance{display:flex;flex-wrap:wrap;column-gap:18px;row-gap:4px;padding:7px;margin-top:8px;font-size:9pt;border:1px solid #cfe0f9;background:#f3f8ff}.req-report-finance{border-color:#efd9b8;background:#fff8ed}.req-report-area{font-size:8pt;background:#fafafa;border:1px solid #eee;padding:6px;margin:7px 0}.req-report-body p{font-size:9pt;margin:8px 0}.req-report-links{display:flex;gap:8px;margin:6px 0}.req-report-links a{font-size:8pt;color:#176b3a;border:1px solid #198754;border-radius:15px;padding:5px 9px;text-decoration:none}.req-report-stock{background:#e7f1ff;border-left:5px solid #0d6efd;padding:7px;font-size:9pt;border-radius:3px;margin-top:6px}
+ @media print{.toolbar{display:none!important}body{margin:0}}
+ </style></head><body><div class="toolbar"><button onclick="window.print()">Imprimir / Guardar PDF</button><button onclick="window.close()">Cerrar</button></div><header><div class="kicker">Universidad Iberoamericana Ciudad de México · FabLab</div><h1>Requisición ${esc(folio)} · PDF extendido</h1><div class="small">${lines.length} líneas / SKU · ${pieces} piezas solicitadas · SC relacionadas: ${esc(related.join(', '))} · Generado: ${esc(new Date().toLocaleString('es-MX'))}</div></header><section class="req-report-totals">${tiles}</section><section>${lines.map(reportReqCard).join('')}</section><script>window.addEventListener('load',()=>{const waits=[...document.images].map(i=>i.complete?Promise.resolve():new Promise(r=>{i.addEventListener('load',r,{once:true});i.addEventListener('error',r,{once:true});}));Promise.race([Promise.all(waits),new Promise(r=>setTimeout(r,6500))]).then(()=>setTimeout(()=>window.print(),300));});<\/script></body></html>`;
+}
+function printRequisitionExtendedPdf(groupKey){
+ const popup=window.open('','_blank');if(!popup){alert('Permite las ventanas emergentes para generar el PDF.');return;}
+ popup.document.write('<!doctype html><html lang="es"><title>Preparando requisición</title><body style="font:16px Arial;padding:25px">Preparando PDF extendido de requisición…</body></html>');popup.document.close();
+ void (async()=>{
+  const bundles=await getBundles(),groups=groupRequisitions(bundles),group=groups.find(g=>g.key===groupKey);
+  if(!group||!group.lines.length)throw new Error('No se encontraron productos en esta requisición. Actualiza el listado.');
+  popup.document.open();popup.document.write(reportReqHtml(group));popup.document.close();
+ })().catch(e=>{console.error('PDF extendido requisición:',e);if(!popup.closed){popup.document.open();popup.document.write(`<p style="font:16px Arial;color:#a00;padding:30px">No se pudo generar el PDF: ${esc(e.message)}</p>`);popup.document.close();}});
+}
 async function loadPanel(){const content=document.getElementById('iberoRequisitionsContent');if(!content)return;content.innerHTML='<p class="text-muted">Consultando solicitudes y requisiciones en Firestore…</p>';
  try{lastBundles=await getBundles();drawPanel();}catch(e){console.error(e);content.innerHTML=`<div class="alert alert-danger">No se pudo obtener la información actual de Firestore: ${esc(e.message)}</div>`;}
 }
@@ -426,6 +472,7 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
  else if(t.closest('#iberoRequisitionEditorSave'))void saveEditor();
  else if(t.closest('#iberoRequisitionEditButton')){const id=document.querySelector('#purchaseRequestDetailPdf')?.dataset.requestId;if(id)void openEditor(id);}
  else if(t.closest('#iberoRequisitionRefresh'))void loadPanel();
+ else if(t.closest('.req-pdf-extended')){e.preventDefault();e.stopPropagation();printRequisitionExtendedPdf(t.closest('.req-pdf-extended').dataset.groupKey);}
  else if(t.closest('#iberoRequisitionPrintWarehouse'))printWarehouseReport();
  else if(t.closest('#iberoRequisitionSelectAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-row:not([hidden]) .req-edit-select').forEach(x=>x.checked=true);
  else if(t.closest('#iberoRequisitionClearAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-select').forEach(x=>x.checked=false);
