@@ -15,6 +15,8 @@ const linesRef=id=>collection(db,'purchaseRequests',id,'items');
 const stamp=()=>new Date().toISOString();
 let role='',profile=null,busy=false,restoreDetailId='',lastBundles=[],viewFilter='';
 let requisitionSortMode='folio', warehouseOnly=false, reportLoading=false;
+// Selección local y temporal. Ninguna casilla provoca escrituras en Firestore.
+const removeSelection=new Set();
 const admin=()=>role==='admin';
 function requireAdmin(){if(!admin()||!auth.currentUser)throw new Error('Sólo el administrador puede registrar o editar números de requisición.');}
 function validateFolio(raw){const value=cleanFolio(raw);if(value.length>80)throw new Error('El número de requisición excede 80 caracteres.');if(/[\u0000-\u001f]/.test(value))throw new Error('El folio contiene caracteres no permitidos.');return value;}
@@ -155,6 +157,7 @@ async function removeFromRequisitionClick(button){
   busy=true;button.disabled=true;const caption=button.textContent;button.textContent='Quitando…';
   try{
     await removeFromRequisition(requestId,lineId);
+    removeSelection.delete(removeKey(requestId,lineId));
     // El panel recupera grupos y folios desde Firestore. La línea retirada
     // desaparece de la requisición y queda disponible en su SC para reasignar.
     await loadPanel();
@@ -162,6 +165,107 @@ async function removeFromRequisitionClick(button){
     alert(`${l.sku||lineId} regresó a «En compras». Ya puedes registrarlo en otra requisición.`);
   }catch(e){console.error('No se pudo quitar de requisición',e);alert(`No se pudo quitar de requisición: ${e.message}`);button.disabled=false;button.textContent=caption;}
   finally{busy=false;}
+}
+
+// Seleccionar varios artículos reutilizando la misma operación transaccional individual.
+const removeKey=(requestId,lineId)=>JSON.stringify([String(requestId),String(lineId)]);
+function removableLookup(){
+  const map=new Map();
+  for(const bundle of lastBundles){
+    for(const l of bundle.lines||[]){
+      if(reversibleLine(l))map.set(removeKey(bundle.request.id,l.id),{
+        requestId:bundle.request.id,lineId:l.id,sku:l.sku||l.id,
+        requisition:l.requisitionNumber||l.externalRequisitionNumber||'Sin número'
+      });
+    }
+  }
+  return map;
+}
+function visibleRemoveChecks(){
+  return [...document.querySelectorAll('#iberoRequisitionsContent .req-remove-check:not(:disabled)')]
+    .filter(check=>!check.closest('.req-report-card')?.hidden);
+}
+function syncRemoveSelection(){
+  if(!admin())return;
+  const lookup=removableLookup();
+  for(const key of [...removeSelection])if(!lookup.has(key))removeSelection.delete(key);
+  const inputs=[...document.querySelectorAll('#iberoRequisitionsContent .req-remove-check')];
+  for(const input of inputs){
+    input.checked=removeSelection.has(removeKey(input.dataset.requestId,input.dataset.lineId));
+    input.disabled=busy;
+  }
+  for(const head of document.querySelectorAll('#iberoRequisitionsContent .req-remove-group-check')){
+    const rows=[...head.closest('.req-report-card').querySelectorAll('.req-remove-check')];
+    const selected=rows.filter(c=>c.checked).length;
+    head.checked=Boolean(rows.length&&selected===rows.length);
+    head.indeterminate=selected>0&&selected<rows.length;
+    head.disabled=busy||!rows.length;
+  }
+  const total=removeSelection.size;
+  const visible=visibleRemoveChecks().length;
+  const selectedVisible=visibleRemoveChecks().filter(c=>c.checked).length;
+  const count=document.getElementById('iberoReqRemoveCount');
+  if(count)count.textContent=`${total} seleccionado${total===1?'':'s'} · ${selectedVisible}/${visible} elegibles visibles`;
+  const save=document.getElementById('iberoReqRemoveSelected');
+  if(save){save.disabled=busy||!total;if(!busy)save.textContent=`Quitar seleccionados (${total})`;}
+  for(const id of ['iberoReqRemoveSelectVisible','iberoReqRemoveClear']){
+    const button=document.getElementById(id);if(button)button.disabled=busy||(id==='iberoReqRemoveClear'&&!total);
+  }
+}
+function setGroupRemoveSelection(input){
+  const card=input.closest('.req-report-card');if(!card)return;
+  for(const row of card.querySelectorAll('.req-remove-check')){
+    const key=removeKey(row.dataset.requestId,row.dataset.lineId);
+    if(input.checked)removeSelection.add(key);
+    else removeSelection.delete(key);
+  }
+  syncRemoveSelection();
+}
+function selectAllVisibleRemovable(){
+  for(const input of visibleRemoveChecks())removeSelection.add(removeKey(input.dataset.requestId,input.dataset.lineId));
+  syncRemoveSelection();
+}
+async function removeSelectedRequisitions(){
+  if(busy||!removeSelection.size)return;
+  requireAdmin();
+  const lookup=removableLookup();
+  const selected=[...removeSelection].map(key=>({key,entry:lookup.get(key)})).filter(x=>x.entry);
+  if(!selected.length){removeSelection.clear();syncRemoveSelection();alert('Actualiza las requisiciones: los artículos seleccionados ya no se pueden quitar.');return;}
+  const distinct=new Set(selected.map(x=>x.entry.requisition));
+  if(!confirm(`¿Quitar ${selected.length} artículo${selected.length===1?'':'s'} de ${distinct.size} requisición${distinct.size===1?'':'es'}?\n\nRegresarán a «En compras» y podrán asociarse después con otro folio.\nNO se alterarán cantidades, precios, existencias ni gasto real.\n\nEsto NO cancela las requisiciones ni las órdenes de compra institucionales.`))return;
+  busy=true;syncRemoveSelection();
+  const button=document.getElementById('iberoReqRemoveSelected');
+  const errors=[];const changedRequests=new Set();let done=0;
+  try{
+    for(let i=0;i<selected.length;i++){
+      const {key,entry}=selected[i];
+      if(button)button.textContent=`Quitando ${i+1}/${selected.length}…`;
+      try{
+        await removeFromRequisition(entry.requestId,entry.lineId);
+        removeSelection.delete(key);
+        changedRequests.add(entry.requestId);
+        done++;
+      }catch(error){
+        errors.push(`${entry.sku} (req. ${entry.requisition}): ${error.message}`);
+      }
+      // Permitir que Chrome actualice el progreso en listas largas.
+      if(i%5===4)await new Promise(resolve=>requestAnimationFrame(resolve));
+    }
+    if(done){
+      await loadPanel();
+      for(const requestId of changedRequests)refreshUI(requestId);
+    }
+    const result=`Se quitaron ${done} de ${selected.length} artículos de sus requisiciones.`;
+    if(errors.length){
+      alert(result+`\n\nNo se modificaron ${errors.length} artículos por errores de validación.\n`+errors.slice(0,12).join('\n')+(errors.length>12?`\n… y ${errors.length-12} más.`:''));
+    }else alert(result+' Quedaron disponibles en «En compras».');
+  }catch(error){
+    console.error('Fallo al actualizar las requisiciones después de quitar varios artículos',error);
+    alert(`Se quitaron ${done} artículos, pero ocurrió un error al refrescar la vista: ${error.message}. Pulsa «Actualizar».`);
+  }finally{
+    busy=false;
+    syncRemoveSelection();
+  }
 }
 
 function ensureStyle(){if(document.getElementById('iberoRequisitionFolioStyles'))return;const s=document.createElement('style');s.id='iberoRequisitionFolioStyles';s.textContent=`
@@ -193,6 +297,9 @@ function ensureStyle(){if(document.getElementById('iberoRequisitionFolioStyles')
   #iberoRequisitionsPanel .req-pickup-check:disabled{cursor:not-allowed}
   #iberoRequisitionsPanel .req-pickup-cell{min-width:95px;text-align:center}
   #iberoRequisitionsPanel .req-report-card .table td{vertical-align:middle}
+  #iberoRequisitionsPanel .req-remove-check,#iberoRequisitionsPanel .req-remove-group-check{width:1.1rem;height:1.1rem;cursor:pointer;accent-color:#c8102e}
+  #iberoRequisitionsPanel .req-bulk-toolbar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.8rem;border:1px solid #ebd5d5;border-radius:.6rem;background:#fffafa;margin:.65rem 0}
+  #iberoRequisitionsPanel .req-bulk-toolbar button{white-space:nowrap}
   #iberoRequisitionsPanel .req-warehouse-hint{color:#5b6168;font-size:.84rem}
   @media(max-width:760px){#iberoRequisitionsPanel{width:100vw!important}.req-report-card .table{min-width:1100px}}
 `;document.head.append(s);}
@@ -361,10 +468,10 @@ function groupHtml(g){
  const groupTone=`req-group-${tone}`;
  return `<details class="req-report-card ${groupTone}" data-group-key="${esc(g.key)}" data-search="${esc([g.folio,...shown.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
  <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''} <button type="button" class="btn btn-outline-danger btn-sm req-pdf-extended" data-group-key="${esc(g.key)}" title="Imprimir las fichas completas de esta requisición">PDF extendido</button> <button type="button" class="btn btn-outline-primary btn-sm req-zip-individual" data-group-key="${esc(g.key)}" title="Descargar un PDF independiente por producto, con foto y liga de compra">Fichas ZIP</button></summary>
- <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
- <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th>${admin()?'<th>Acciones</th>':''}</tr></thead><tbody>
+ <div class="mt-2">${admin()&&shown.some(reversibleLine)?`<label class="d-inline-flex gap-2 align-items-center small mb-2"><input type="checkbox" class="form-check-input req-remove-group-check" aria-label="Seleccionar todos los artículos elegibles de requisición ${esc(g.folio||'Sin número')}" title="Seleccionar artículos elegibles de este folio">Seleccionar elegibles de esta requisición</label>`:''}<div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
+ <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th>${admin()?'<th>Seleccionar</th><th>Acciones</th>':''}</tr></thead><tbody>
  ${shown.map(l=>{const t=amounts(l),color=stateTone(l),ready=warehouseReady(l),allowToggle=admin()&&t.pending>0;
- return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="small text-nowrap">${esc(deliveryText(l.externalExpectedDeliveryDate))}${l.externalExpectedDeliveryDate&&l.externalExpectedDeliveryDate<new Date().toISOString().slice(0,10)&&t.pending>0?'<div class="text-danger fw-semibold">Fecha vencida</div>':''}</td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td>${admin()?`<td class="text-nowrap">${reversibleLine(l)?`<button class="btn btn-outline-warning btn-sm req-remove-requisition" type="button" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" title="Volver a En compras, liberar el folio y poder asignarlo de nuevo">Quitar de requisición</button>`:'<span class="text-muted small" title="Los artículos recibidos, cancelados o entregados no pueden desvincularse">No reversible</span>'}</td>`:''}</tr>`;}).join('')}</tbody></table></div></div></details>`;
+ return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="small text-nowrap">${esc(deliveryText(l.externalExpectedDeliveryDate))}${l.externalExpectedDeliveryDate&&l.externalExpectedDeliveryDate<new Date().toISOString().slice(0,10)&&t.pending>0?'<div class="text-danger fw-semibold">Fecha vencida</div>':''}</td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td>${admin()?`<td class="text-center">${reversibleLine(l)?`<input class="form-check-input req-remove-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" aria-label="Seleccionar ${esc(l.sku||l.nombre||'artículo')} para quitar de requisición" title="Seleccionar para quitar en lote">`:'<span class="text-muted small" title="Artículo recibido, cancelado o entregado: no reversible">—</span>'}</td><td class="text-nowrap">${reversibleLine(l)?`<button class="btn btn-outline-warning btn-sm req-remove-requisition" type="button" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" title="Volver a En compras, liberar el folio y poder asignarlo de nuevo">Quitar de requisición</button>`:'<span class="text-muted small" title="Los artículos recibidos, cancelados o entregados no pueden desvincularse">No reversible</span>'}</td>`:''}</tr>`;}).join('')}</tbody></table></div></div></details>`;
 }
 function drawPanel(){
  const content=document.getElementById('iberoRequisitionsContent');if(!content)return;
@@ -379,12 +486,15 @@ function drawPanel(){
  content.innerHTML=`<div class="small text-muted mb-2">${warehouseOnly?'Vista: por recoger · ':''}${rendered.length} requisiciones visibles · ${visibleLines.length} líneas visibles · ${new Set(visibleLines.map(l=>l.requestId)).size} SC · <strong>${pickupCount} artículo${pickupCount===1?'':'s'} por recoger</strong></div>
  <div class="req-report-summary">${currencies.map(c=>`<span><strong>${esc(c)}</strong> · Gasto real ${esc(money(spentBy.get(c)||0,c))} · Comprometido ${esc(money(commitBy.get(c)||0,c))}</span>`).join('')}</div>
  ${(requisitionSortMode==='gasto_asc'||requisitionSortMode==='gasto_desc')?'<p class="small text-muted">Montos ordenados dentro de cada moneda, sin conversión entre divisas. En grupos con varias divisas se toma MXN como referencia principal.</p>':''}
+ ${admin()?`<div class="req-bulk-toolbar"><strong>Quitar de requisición:</strong><button type="button" class="btn btn-outline-secondary btn-sm" id="iberoReqRemoveSelectVisible">Seleccionar todos los elegibles visibles</button><button type="button" class="btn btn-outline-secondary btn-sm" id="iberoReqRemoveClear">Quitar selección</button><span id="iberoReqRemoveCount" class="small text-muted" aria-live="polite">0 seleccionados</span><button type="button" class="btn btn-danger btn-sm ms-auto" id="iberoReqRemoveSelected" disabled>Quitar seleccionados (0)</button></div>`:''}
  ${rendered.length?rendered.join(''):'<p class="alert alert-info">No hay artículos que coincidan con el filtro.</p>'}`;
  content.querySelectorAll('.req-report-card').forEach(el=>{if(expanded.has(el.dataset.groupKey))el.open=true;});
  filterReport();
+ syncRemoveSelection();
 }
 function filterReport(){const search=document.getElementById('iberoRequisitionSearch');const raw=(search?.value||'').trim().toLocaleLowerCase('es-MX');const tokens=raw.split(/\s+/).filter(Boolean);
- document.querySelectorAll('#iberoRequisitionsContent .req-report-card').forEach(card=>{card.hidden=tokens.length>0&&!tokens.every(t=>card.dataset.search.includes(t));});}
+ document.querySelectorAll('#iberoRequisitionsContent .req-report-card').forEach(card=>{card.hidden=tokens.length>0&&!tokens.every(t=>card.dataset.search.includes(t));});
+ syncRemoveSelection();}
 // Guardamos el aviso en la propia línea; toda la operación es atómica.
 // No tocamos quantityReceived, stockAlmacen ni actualCostTotal.
 async function saveWarehouseNotice(requestId,id,checked){
@@ -537,6 +647,9 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
    document.dispatchEvent(new CustomEvent('ibero:requisition-sheets',{detail:{group,button}}));
  }
   else if(t.closest('.req-remove-requisition')){e.preventDefault();e.stopPropagation();void removeFromRequisitionClick(t.closest('.req-remove-requisition'));}
+ else if(t.closest('#iberoReqRemoveSelectVisible')){e.preventDefault();selectAllVisibleRemovable();}
+ else if(t.closest('#iberoReqRemoveClear')){e.preventDefault();removeSelection.clear();syncRemoveSelection();}
+ else if(t.closest('#iberoReqRemoveSelected')){e.preventDefault();void removeSelectedRequisitions();}
  else if(t.closest('#iberoRequisitionPrintWarehouse'))printWarehouseReport();
  else if(t.closest('#iberoRequisitionSelectAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-row:not([hidden]) .req-edit-select').forEach(x=>x.checked=true);
  else if(t.closest('#iberoRequisitionClearAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-select').forEach(x=>x.checked=false);
@@ -550,7 +663,7 @@ async function init(){const user=await waitForUser();if(!user)return;profile=awa
  document.addEventListener('shown.bs.modal',e=>addMassFolioInput(e.target));
  document.addEventListener('purchase-request-detail-rendered',e=>{ensureDetailButton();const id=String(e.detail?.requestId||'');if(id)void showDetailRequisitionNumbers(id);});
  document.addEventListener('show.bs.offcanvas',e=>{if(e.target?.id==='iberoRequisitionsPanel')void loadPanel();});
- document.addEventListener('change',e=>{if(e.target?.id==='iberoRequisitionSort'){requisitionSortMode=e.target.value;drawPanel();}else if(e.target?.id==='iberoRequisitionOnlyWarehouse'){warehouseOnly=e.target.checked;drawPanel();}else if(e.target?.matches?.('#iberoRequisitionsPanel .req-pickup-check'))void toggleWarehouse(e.target);});
+ document.addEventListener('change',e=>{if(e.target?.id==='iberoRequisitionSort'){requisitionSortMode=e.target.value;drawPanel();}else if(e.target?.id==='iberoRequisitionOnlyWarehouse'){warehouseOnly=e.target.checked;drawPanel();}else if(e.target?.matches?.('#iberoRequisitionsPanel .req-pickup-check'))void toggleWarehouse(e.target);else if(e.target?.matches?.('#iberoRequisitionsPanel .req-remove-check')){const c=e.target,key=removeKey(c.dataset.requestId,c.dataset.lineId);if(c.checked)removeSelection.add(key);else removeSelection.delete(key);syncRemoveSelection();}else if(e.target?.matches?.('#iberoRequisitionsPanel .req-remove-group-check'))setGroupRemoveSelection(e.target);});
  document.addEventListener('input',e=>{if(e.target?.id==='iberoRequisitionSearch')filterReport();if(e.target?.id==='iberoRequisitionEditSearch'){
   const tokens=e.target.value.trim().toLocaleLowerCase('es-MX').split(/\s+/).filter(Boolean);
   document.querySelectorAll('#iberoRequisitionEditor .req-edit-row').forEach(row=>row.hidden=tokens.length>0&&!tokens.every(t=>row.dataset.search.includes(t)));
