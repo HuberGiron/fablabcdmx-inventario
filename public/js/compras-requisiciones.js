@@ -4,7 +4,7 @@
    Ninguna escritura cambia stock, cantidades recibidas o gasto real histórico. */
 import { auth,db } from './firebase-app.js';
 import { getUserProfile,waitForUser,fileViewUrl } from './common.js';
-import { collection,doc,getDoc,getDocFromServer,getDocsFromServer,runTransaction,serverTimestamp,updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+import { collection,doc,deleteField,getDoc,getDocFromServer,getDocsFromServer,runTransaction,serverTimestamp,updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import { n,q,pending,folioKey,cleanFolio,amounts,stage,groupRequisitions,warehouseReady,stateTone,sortRequisitionGroups } from './compras-requisitions-model.js?v=20261017d';
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -87,6 +87,83 @@ async function editOne(requestId,lineId,folio,reason=''){
     if(updatedRefs.some((x,i)=>x!==refs[i]))tx.update(ir,{purchaseRequisitionRefs:updatedRefs,updatedAt:serverTimestamp()});
   });
 }
+// Quitar un SKU de su requisición local sin borrar la SC ni perder el historial.
+// Las referencias globales se actualizan en la MISMA transacción Firestore.
+function reversibleLine(l){
+  if(!l||l.requisitionStatus!=='requisitioned'||pending(l)<=0)return false;
+  if(q(l.quantityReceived)!==0||q(l.quantityCancelled)!==0)return false;
+  // El documento institucional ya declara entrega: requiere conciliación previa.
+  if(/entregado\s+(?:parcial\s+)?al\s+usuario/i.test(String(l.externalReportedStatus||'')))return false;
+  return true;
+}
+async function removeFromRequisition(requestId,lineId){
+  requireAdmin();
+  const who=auth.currentUser,now=stamp();
+  await runTransaction(db,async tx=>{
+    const lr=lineRef(requestId,lineId),rr=reqRef(requestId);
+    const [ls,rs]=await Promise.all([tx.get(lr),tx.get(rr)]);
+    if(!ls.exists()||!rs.exists()||rs.data().status==='draft')throw new Error('La línea o la solicitud no existe, o está en borrador.');
+    const l=ls.data();
+    if(!reversibleLine(l))throw new Error(`${l.sku||lineId}: no se permite retirar una requisición con recepciones, cancelaciones o entrega institucional.`);
+    const itemId=String(l.itemId||lineId),ir=itemRefFor(l,lineId),is=await tx.get(ir);
+    if(!is.exists())throw new Error(`${l.sku||lineId}: no se encontró el registro del inventario.`);
+    const refs=refsFor(is.data()),matches=refs.filter(x=>x.requestId===requestId&&x.lineId===itemId);
+    const counted=matches.reduce((sum,x)=>sum+n(x.requisitionQty),0),expected=pending(l);
+    if(matches.length!==1||Math.abs(counted-expected)>0.00001){
+      throw new Error(`${l.sku||lineId}: las referencias de requisición (${counted}) no coinciden con el pendiente (${expected}). No se cambió nada.`);
+    }
+    const remaining=refs.filter(x=>!(x.requestId===requestId&&x.lineId===itemId));
+    const priorNumber=String(l.requisitionNumber||l.externalRequisitionNumber||'').trim();
+    const history=Array.isArray(l.requisitionNumberHistory)?l.requisitionNumberHistory:[];
+    const audit=Array.isArray(l.requisitionUndoHistory)?l.requisitionUndoHistory:[];
+    if(history.length>=200||audit.length>=150)throw new Error('El historial de este SKU alcanzó su límite; requiere revisión administrativa.');
+    const record={previous:priorNumber,current:'',at:now,by:who.uid,reason:'Retirado de requisición desde el listado agrupado'};
+    const linePatch={
+      requisitionStatus:deleteField(),requisitionNumber:deleteField(),
+      requisitionedAt:deleteField(),requisitionedBy:deleteField(),requisitionedByName:deleteField(),
+      requisitionUnitCost:deleteField(),
+      // Limpiar el estado LOGÍSTICO actual y la vinculación externa vigente.
+      // Conservamos los historiales ya existentes para auditoría.
+      warehousePickupPending:deleteField(),warehousePickupSetAt:deleteField(),
+      warehousePickupUpdatedAt:deleteField(),warehousePickupUpdatedBy:deleteField(),warehousePickupUpdatedByName:deleteField(),
+      externalRequisitionNumber:deleteField(),externalProcurementItemCode:deleteField(),
+      externalPurchaseOrderNumber:deleteField(),externalReportedStatus:deleteField(),
+      externalQuotedUnitCost:deleteField(),externalQuotedTotalGross:deleteField(),
+      externalQuotedUnitCostGross:deleteField(),externalQuotedCurrency:deleteField(),
+      externalQuotedExchangeRate:deleteField(),externalQuotedPriceWarning:deleteField(),
+      externalExpectedDeliveryDate:deleteField(),externalExpectedDeliveryAtUpdated:deleteField(),
+      externalReportFile:deleteField(),externalReportDate:deleteField(),externalReportLastImportedAt:deleteField(),
+      requisitionNumberHistory:[...history,record],
+      requisitionUndoHistory:[...audit,{folio:priorNumber,at:now,uid:who.uid,byName:profile?.nombre||who.email||'',pending:expected}],
+      requisitionUndoAt:serverTimestamp(),requisitionUndoBy:who.uid,
+      requisitionUndoByName:profile?.nombre||who.email||'',updatedAt:serverTimestamp(),
+    };
+    tx.update(ir,{purchaseRequisitionRefs:remaining,
+      purchaseRequisitionQty:remaining.reduce((sum,x)=>sum+n(x.requisitionQty),0),updatedAt:serverTimestamp()});
+    tx.update(lr,linePatch);
+    tx.update(rr,{updatedAt:serverTimestamp()});
+  });
+}
+async function removeFromRequisitionClick(button){
+  if(busy)return;
+  const requestId=button.dataset.requestId,lineId=button.dataset.lineId;
+  const l=lastBundles.find(bundle=>bundle.request.id===requestId)?.lines.find(x=>x.id===lineId);
+  if(!l){alert('Este artículo ya no está cargado. Pulsa «Actualizar» para consultar los datos vigentes.');return;}
+  if(!reversibleLine(l)){alert('Este artículo no puede retirarse: ya hay recepción, cancelación o entrega institucional registrada.');return;}
+  const name=l.nombre||l.sku||'Artículo',folio=l.requisitionNumber||'(sin número)';
+  if(!confirm(`¿Quitar de la requisición ${folio} el SKU ${l.sku||lineId} (${name})?\n\nVolverá a «En compras» y podrás incluirlo en otra requisición.\nNo se alterarán existencias, cantidades, precios ni gasto real.\n\nATENCIÓN: esto sólo desvincula el registro de FabLab; NO cancela la requisición ni la orden de compra en el sistema institucional.`))return;
+  busy=true;button.disabled=true;const caption=button.textContent;button.textContent='Quitando…';
+  try{
+    await removeFromRequisition(requestId,lineId);
+    // El panel recupera grupos y folios desde Firestore. La línea retirada
+    // desaparece de la requisición y queda disponible en su SC para reasignar.
+    await loadPanel();
+    refreshUI(requestId);
+    alert(`${l.sku||lineId} regresó a «En compras». Ya puedes registrarlo en otra requisición.`);
+  }catch(e){console.error('No se pudo quitar de requisición',e);alert(`No se pudo quitar de requisición: ${e.message}`);button.disabled=false;button.textContent=caption;}
+  finally{busy=false;}
+}
+
 function ensureStyle(){if(document.getElementById('iberoRequisitionFolioStyles'))return;const s=document.createElement('style');s.id='iberoRequisitionFolioStyles';s.textContent=`
   .req-number-tag{font-size:.79rem;color:#0b5ed7;font-weight:600;display:inline-block}
   .req-report-summary{display:flex;flex-wrap:wrap;gap:.6rem;margin:.7rem 0}
@@ -285,9 +362,9 @@ function groupHtml(g){
  return `<details class="req-report-card ${groupTone}" data-group-key="${esc(g.key)}" data-search="${esc([g.folio,...shown.flatMap(l=>[l.sku,l.nombre,l.requestFolio,l.requestAlias]),...statuses].join(' ').toLocaleLowerCase('es-MX'))}">
  <summary>${esc(g.folio||'Sin número asignado')} ${g.unassigned?`<span class="badge text-bg-warning ms-2">SC ${esc(shown[0]?.requestFolio||'')}</span>`:''} <span class="text-secondary small ms-2">${shown.length} SKU · ${new Set(shown.map(l=>l.requestId)).size} SC</span>${pickup?` <span class="req-state-pill req-state-warehouse ms-2">${pickup} por recoger</span>`:''} <button type="button" class="btn btn-outline-danger btn-sm req-pdf-extended" data-group-key="${esc(g.key)}" title="Imprimir las fichas completas de esta requisición">PDF extendido</button> <button type="button" class="btn btn-outline-primary btn-sm req-zip-individual" data-group-key="${esc(g.key)}" title="Descargar un PDF independiente por producto, con foto y liga de compra">Fichas ZIP</button></summary>
  <div class="mt-2"><div class="small text-muted mb-2">Estados: ${esc([...statuses].join(' · '))}</div><div class="d-flex gap-2 flex-wrap">${data}</div>
- <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th></tr></thead><tbody>
+ <div class="table-responsive mt-3"><table class="table table-sm align-middle"><thead><tr><th>SC</th><th>SKU</th><th>Artículo</th><th>Estado</th><th>Entrega estimada</th><th>Almacén</th><th class="text-end">Solicitado</th><th class="text-end">Recibido</th><th class="text-end">Cancelado</th><th class="text-end">Pendiente</th><th class="text-end">Gasto real</th><th class="text-end">Compromiso</th>${admin()?'<th>Acciones</th>':''}</tr></thead><tbody>
  ${shown.map(l=>{const t=amounts(l),color=stateTone(l),ready=warehouseReady(l),allowToggle=admin()&&t.pending>0;
- return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="small text-nowrap">${esc(deliveryText(l.externalExpectedDeliveryDate))}${l.externalExpectedDeliveryDate&&l.externalExpectedDeliveryDate<new Date().toISOString().slice(0,10)&&t.pending>0?'<div class="text-danger fw-semibold">Fecha vencida</div>':''}</td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td></tr>`;}).join('')}</tbody></table></div></div></details>`;
+ return `<tr class="req-row-${color}"><td><button type="button" class="btn btn-link btn-sm p-0 req-open-sc" data-request-id="${esc(l.requestId)}">${esc(l.requestFolio||'SC')}</button><div class="small text-muted">${esc(l.requestAlias)}</div></td><td>${esc(l.sku||'')}</td><td>${esc(l.nombre||'')}</td><td><span class="req-state-pill req-state-${color}">${esc(stage(l))}</span></td><td class="small text-nowrap">${esc(deliveryText(l.externalExpectedDeliveryDate))}${l.externalExpectedDeliveryDate&&l.externalExpectedDeliveryDate<new Date().toISOString().slice(0,10)&&t.pending>0?'<div class="text-danger fw-semibold">Fecha vencida</div>':''}</td><td class="req-pickup-cell"><label class="d-inline-flex flex-column align-items-center gap-1 small"><input class="req-pickup-check" type="checkbox" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" ${ready?'checked':''} ${allowToggle?'':'disabled'} title="${allowToggle?'Marcar aviso de almacén listo para recoger':'Solo administrador; se requiere una cantidad pendiente'}" aria-label="Aviso de almacén: ${esc(l.sku||l.nombre||'Artículo')}"><span>${ready?'Por recoger':(t.pending>0?'Avisar':'Cerrado')}</span></label>${ready?`<div class="small text-muted mt-1">${esc(dateText(l.warehousePickupSetAt))}</div>`:''}</td><td class="text-end">${t.requested}</td><td class="text-end">${t.received}</td><td class="text-end">${t.cancelled}</td><td class="text-end">${t.pending}</td><td class="text-end">${esc(money(t.spent,t.currency))}</td><td class="text-end">${esc(money(t.committed,t.currency))}</td>${admin()?`<td class="text-nowrap">${reversibleLine(l)?`<button class="btn btn-outline-warning btn-sm req-remove-requisition" type="button" data-request-id="${esc(l.requestId)}" data-line-id="${esc(l.id)}" title="Volver a En compras, liberar el folio y poder asignarlo de nuevo">Quitar de requisición</button>`:'<span class="text-muted small" title="Los artículos recibidos, cancelados o entregados no pueden desvincularse">No reversible</span>'}</td>`:''}</tr>`;}).join('')}</tbody></table></div></div></details>`;
 }
 function drawPanel(){
  const content=document.getElementById('iberoRequisitionsContent');if(!content)return;
@@ -459,6 +536,7 @@ function ordinaryClick(e){const t=e.target;if(!(t instanceof Element))return;
    if(!group){alert('No se encontró la requisición. Pulsa «Actualizar» y vuelve a intentarlo.');return;}
    document.dispatchEvent(new CustomEvent('ibero:requisition-sheets',{detail:{group,button}}));
  }
+  else if(t.closest('.req-remove-requisition')){e.preventDefault();e.stopPropagation();void removeFromRequisitionClick(t.closest('.req-remove-requisition'));}
  else if(t.closest('#iberoRequisitionPrintWarehouse'))printWarehouseReport();
  else if(t.closest('#iberoRequisitionSelectAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-row:not([hidden]) .req-edit-select').forEach(x=>x.checked=true);
  else if(t.closest('#iberoRequisitionClearAll'))document.querySelectorAll('#iberoRequisitionEditor .req-edit-select').forEach(x=>x.checked=false);
