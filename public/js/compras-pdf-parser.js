@@ -26,8 +26,8 @@ function dateISO(str){const m=String(str).match(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2
 function parseMoneyBand(line){
  // PDF.js agrupa a veces «1 PZA» en un único fragmento; no se puede depender
  // de que cantidad y unidad sean tokens independientes del texto.
- const unitIndex=line.tokens.findIndex(t=>/^(?:PZA|PZAS|CAJA|CAJAS|PAQ|PAQUETE|JGO|JUEGO|LT|LTS|ROLLO|METRO|MTS)$/i.test(t.str));
- const combined=line.text.match(/\b(\d+(?:[.,]\d+)?)\s+(PZA|PZAS|CAJA|CAJAS|PAQ|PAQUETE|JGO|JUEGO|LT|LTS|ROLLO|METRO|MTS)\b/i);
+ const unitIndex=line.tokens.findIndex(t=>/^(?:PZA|PZAS|CAJA|CAJAS|BOLSA|BOLSAS|PAQ|PAQUETE|JGO|JUEGO|LT|LTS|ROLLO|METRO|MTS)$/i.test(t.str));
+ const combined=line.text.match(/\b(\d+(?:[.,]\d+)?)\s+(PZA|PZAS|CAJA|CAJAS|BOLSA|BOLSAS|PAQ|PAQUETE|JGO|JUEGO|LT|LTS|ROLLO|METRO|MTS)\b/i);
  const quantity=unitIndex>0?number(line.tokens[unitIndex-1].str):combined?number(combined[1]):null;
  const unit=line.tokens[unitIndex]?.str||combined?.[2]||'';
  const currencyText=inRange(line,218,265);
@@ -80,7 +80,22 @@ function parseRawItem(segment,record,notes){
 }
 export function parseProcurementReport(pages){
  const notes=[],all=[];
- const lines=clusterLines((pages||[]).flatMap((p,i)=>(p.items||[]).map(t=>({page:i+1,x:t.x,y:t.y,str:t.str}))));
+ // El modelo institucional puede imprimirse en A4 vertical u horizontal.
+ // En horizontal los datos de la tabla mantienen su distribución, pero
+ // aparecen desplazados por el margen de impresión. Recuperamos el espacio
+ // del formato vertical utilizando el encabezado «Folio:» como referencia.
+ // No tocamos coordenadas de páginas verticales (compatibilidad anterior).
+ const first=(pages||[]).find(p=>p?.items?.length)||{};
+ const folioAnchor=(first.items||[]).find(t=>/^Folio\s*:/i.test(String(t.str||'')));
+ const anchorWidth=Number(first.width)||792;
+ const landscapeLeftOffset=folioAnchor ?
+   Math.max(0,Math.min(250,Number(folioAnchor.x)*anchorWidth/595.32-55)) : 100;
+ const lines=clusterLines((pages||[]).flatMap((p,i)=>(p.items||[]).map(t=>{
+  const landscape=Boolean(p.isLandscape) || (Number(p.width)>Number(p.height)&&Number(p.height)>0);
+  return { page:i+1,
+   x:landscape?t.x*(Number(p.width)||792)/595.32-landscapeLeftOffset:t.x,
+   y:t.y,str:t.str };
+ })));
  const full=lines.map(l=>l.text).join('\n');
  const folio=full.match(/Folio\s*:\s*(\d{4,12})/i)?.[1]||'';
  const observations=full.match(/Observaciones\s*:\s*([^\n]+)/i)?.[1]?.trim()||'';

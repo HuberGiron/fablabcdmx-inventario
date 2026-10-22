@@ -6,7 +6,7 @@
 import {auth,db} from './firebase-app.js';
 import {getUserProfile,waitForUser} from './common.js';
 import {collection,doc,getDoc,getDocs,getDocsFromServer,runTransaction,updateDoc,serverTimestamp} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank,assessQuoteMXN} from './compras-pdf-parser.js?v=20261019a';
+import {parseProcurementReport,suggestMatches,matchingScore,externalStage,institutionalRank,assessQuoteMXN} from './compras-pdf-parser.js?v=20261021a';
 const $=sel=>document.querySelector(sel);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
@@ -243,7 +243,7 @@ async function parsePdf(file){
  for(let i=1;i<=pdf.numPages;i++){
   setProgress(`Leyendo página ${i} de ${pdf.numPages}…`);
   const page=await pdf.getPage(i),view=page.getViewport({scale:1}),content=await page.getTextContent();
-  pages.push({items:content.items.filter(t=>t.str&&t.transform).map(t=>({str:t.str,x:t.transform[4]/view.width*595.32,y:(view.height-t.transform[5])/view.height*841.92}))});
+  pages.push({width:view.width,height:view.height,isLandscape:view.width>view.height,items:content.items.filter(t=>t.str&&t.transform).map(t=>({str:t.str,x:t.transform[4]/view.width*595.32,y:(view.height-t.transform[5])/view.height*841.92}))});
  }
  const report=parseProcurementReport(pages);
  if(!report.recognized)throw new Error(`No se pudo interpretar el formato del reporte. ${report.notes.join(' ')}`);
