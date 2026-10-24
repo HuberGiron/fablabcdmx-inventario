@@ -53,7 +53,7 @@ function setup(){
         <label>Medir<select id="iarMetric" class="form-select form-select-sm"><option value="amount">Costo</option><option value="quantity">Cantidades</option></select></label>
       </div>
     </div>
-    <p class="iar-note">Las gráficas y el listado incluyen sólo los estados marcados y la búsqueda. El porcentaje recibido conserva todos los estados del alcance. Pulsa un nombre para entrar al área o un segmento para ver ese estado.</p>
+    <p class="iar-note">Cada barra representa el 100% del total de su zona, subzona o área en los estados seleccionados. Los colores muestran la proporción de cada estado. Las gráficas y el listado incluyen la búsqueda; el porcentaje recibido conserva todos los estados del alcance. Pulsa un nombre para entrar al área o un segmento para ver ese estado.</p>
     <div id="iarCharts" class="iar-charts"></div>
     <div class="iar-pager"><button type="button" id="iarChartPrev" class="btn btn-outline-secondary btn-sm">Anterior</button><span id="iarChartPages"></span><button type="button" id="iarChartNext" class="btn btn-outline-secondary btn-sm">Siguiente</button></div>
     <div class="iar-section-head iar-detail-tools"><h3>Elementos en los estados seleccionados</h3><div class="iar-inline-controls"><label><span class="visually-hidden">Buscar en el reporte</span><input type="search" id="iarSearch" class="form-control form-control-sm" placeholder="Nombre, SKU, SC o requisición"></label><label><span class="visually-hidden">Ordenar listado</span><select id="iarSort" class="form-select form-select-sm"><option value="route">Zona / área</option><option value="name">Nombre</option><option value="date">Fecha de entrega</option><option value="stage">Estado</option></select></label></div></div>
@@ -128,13 +128,13 @@ function renderCharts(rows){
   const level=$('Group').value,metric=$('Metric').value,groups=groupRecords(rows,level),pages=Math.max(1,Math.ceil(groups.length/CHART_SIZE));
   const contextTotals=new Map(groupRecords(selectRecords(records,filters(),null,$('Search').value),level).map(g=>[g.key,g.totals]));
   chartPage=Math.min(chartPage,pages);$('LevelLabel').textContent={zone:'zona',subzone:'subzona',area:'área'}[level];
-  const max=Math.max(0,...groups.map(g=>g.totals[metric]));
   $('Charts').innerHTML=groups.slice((chartPage-1)*CHART_SIZE,chartPage*CHART_SIZE).map(g=>{
     const t=g.totals,r=g.route,context=level==='zone'?'':level==='subzone'?r.zoneLabel:r.zoneLabel+' / '+r.subLabel;
     const whole=metric==='amount'?money(t.amount):qty(t.quantity)+' unidades';
     const segments=STAGES.filter(s=>t.stages[s.key][metric]>0).map(s=>{
       const value=t.stages[s.key][metric],text=metric==='amount'?money(value):qty(value)+' unidades';
-      return `<button type="button" class="iar-segment" style="width:${max?value/max*100:0}%;background:${s.color}" data-stage="${s.key}" title="${esc(s.label+': '+text)}" aria-label="${esc(g.label+' · '+s.label+': '+text+'. Filtrar este estado')}"></button>`;
+      const share=t[metric]?value/t[metric]*100:0;
+      return `<button type="button" class="iar-segment" style="width:${share}%;background:${s.color}" data-stage="${s.key}" title="${esc(s.label+': '+text+' · '+pct(share))}" aria-label="${esc(g.label+' · '+s.label+': '+text+' · '+pct(share)+'. Filtrar este estado')}"></button>`;
     }).join('');
     const progress=contextTotals.get(g.key)?.progress||0;
     return `<div class="iar-chart-row"><div class="iar-chart-label"><button type="button" data-route="${esc(g.key)}" title="Filtrar esta ubicación">${esc(g.label)}</button>${context?`<small>${esc(context)}</small>`:''}</div><div class="iar-bar" aria-label="${esc(g.label+': '+whole)}">${segments||'<span class="iar-zero">Sin importe registrado</span>'}</div><strong>${esc(whole)}<small>${pct(progress)} recibido</small></strong></div>`;
@@ -189,10 +189,10 @@ function printReport(){
   const scopeLabel=['Zone','Subzone','Area'].map(id=>$(id).selectedOptions[0]?.textContent).join(' / ');
   const rows=sortedRows(),t=summarize(rows);
   // Imprimir todas las páginas de gráficas y listado, conservando filtros.
-  const groups=groupRecords(rows,$('Group').value),metric=$('Metric').value,max=Math.max(0,...groups.map(g=>g.totals[metric]));
+  const groups=groupRecords(rows,$('Group').value),metric=$('Metric').value;
   const groupLabel=g=>$('Group').value==='zone'?g.label:$('Group').value==='subzone'?g.route.zoneLabel+' / '+g.label:g.route.zoneLabel+' / '+g.route.subLabel+' / '+g.label;
-  const charts=groups.map(g=>`<div class="iar-print-chart"><strong>${esc(groupLabel(g))}</strong><div class="iar-bar">${STAGES.map(s=>`<span style="display:block;height:100%;background:${s.color};width:${max?g.totals.stages[s.key][metric]/max*100:0}%"></span>`).join('')}</div><span>${esc(metric==='amount'?money(g.totals.amount):qty(g.totals.quantity)+' unidades')}</span></div>`).join('');
-  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Avance por áreas · FabLab IBERO</title><link rel="stylesheet" href="${esc(styleLink)}"></head><body class="iar-print"><div class="iar-print-controls"><button id="printNow">Imprimir / Guardar PDF</button></div><section id="inventoryAreaReport"><h1>FabLab IBERO · Inventario y avance por áreas</h1><p>${esc(scopeLabel)} · ${esc(currentCurrency())}<br>Actualizado ${esc(loadedAt)} (CDMX)${stale?' · DATOS PENDIENTES DE ACTUALIZAR':''}</p><div class="iar-kpis">${$('Kpis').innerHTML}</div><p>${esc($('Progress').textContent)}</p><p class="iar-note">${esc(root.querySelector('.iar-note').textContent)}</p><p>Estados: ${esc(STAGES.filter(s=>stageSelection.has(s.key)).map(s=>s.label).join(', ')||'Ninguno')} · Búsqueda: ${esc($('Search').value||'Todas')} · Selección: ${esc(money(t.amount))} / ${qty(t.quantity)} unidades</p><div class="iar-print-legend">${STAGES.map(s=>`<span style="border-left:9px solid ${s.color};padding-left:5px;margin-right:10px">${s.label}</span>`).join('')}</div>${charts}<table class="iar-table"><thead>${root.querySelector('thead').innerHTML}</thead><tbody>${tableRows(rows)}</tbody></table></section></body></html>`);
+  const charts=groups.map(g=>`<div class="iar-print-chart"><strong>${esc(groupLabel(g))}</strong><div class="iar-bar">${STAGES.map(s=>`<span style="display:block;height:100%;background:${s.color};width:${g.totals[metric]?g.totals.stages[s.key][metric]/g.totals[metric]*100:0}%"></span>`).join('')}</div><span>${esc(metric==='amount'?money(g.totals.amount):qty(g.totals.quantity)+' unidades')}</span></div>`).join('');
+  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Avance por áreas · FabLab IBERO</title><link rel="stylesheet" href="${esc(styleLink)}"></head><body class="iar-print"><div class="iar-print-controls"><button id="printNow">Imprimir / Guardar PDF</button></div><section id="inventoryAreaReport"><h1>FabLab IBERO · Inventario y avance por áreas</h1><p>${esc(scopeLabel)} · ${esc(currentCurrency())}<br>Actualizado ${esc(loadedAt)} (CDMX)${stale?' · DATOS PENDIENTES DE ACTUALIZAR':''}</p><div class="iar-kpis">${$('Kpis').innerHTML}</div><p>${esc($('Progress').textContent)}</p><p class="iar-note">${esc(root.querySelector('.iar-note').textContent)}</p><p>Estados: ${esc(STAGES.filter(s=>stageSelection.has(s.key)).map(s=>s.label).join(', ')||'Ninguno')} · Búsqueda: ${esc($('Search').value||'Todas')} · Selección: ${esc(money(t.amount))} / ${qty(t.quantity)} unidades</p><div class="iar-print-legend">${STAGES.map(s=>`<span style="border-left:9px solid ${s.color};padding-left:5px;margin-right:10px">${s.label}</span>`).join('')}</div><p class="iar-note">Cada barra representa el 100% del total de su grupo en los estados seleccionados; los colores muestran la proporción de cada estado.</p>${charts}<table class="iar-table"><thead>${root.querySelector('thead').innerHTML}</thead><tbody>${tableRows(rows)}</tbody></table></section></body></html>`);
   popup.document.close();
   popup.document.getElementById('printNow').addEventListener('click',()=>popup.print());
 }
@@ -245,3 +245,4 @@ if(root){
   // invalida la fecha de corte sin lanzar lecturas repetidas en segundo plano.
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)markStale();});
 }
+
