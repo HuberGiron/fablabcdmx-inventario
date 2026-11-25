@@ -97,7 +97,11 @@ export function parseProcurementReport(pages){
    y:t.y,str:t.str };
  })));
  const full=lines.map(l=>l.text).join('\n');
- const folio=full.match(/Folio\s*:\s*(\d{4,12})/i)?.[1]||'';
+ // El portal institucional puede recortar la F inicial al imprimir un PDF
+ // (por ejemplo: «…olio: 113829»). Buscar sólo en el encabezado de la
+ // primera página evita confundir folios con códigos, OC o importes.
+ const folioHeader=lines.filter(l=>l.page===1&&l.y<210).map(l=>l.text).join('\n');
+ const folio=folioHeader.match(/^\s*(?:Folio|(?:…|\.{1,3})?olio)\s*:\s*(\d{4,12})\b/im)?.[1]||'';
  const observations=full.match(/Observaciones\s*:\s*([^\n]+)/i)?.[1]?.trim()||'';
  // Fecha impresa al pie de página (no confundir con fecha prometida de entrega).
  const footer=lines.filter(l=>/\b\d+\s+de\s+\d+\b/i.test(l.text)&&/\d{1,2}\/\d{1,2}\/20\d{2}/.test(l.text)).at(-1);
